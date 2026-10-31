@@ -264,7 +264,8 @@ fn latest_local_rate_limits() -> Option<(Value, i64)> {
     for (path, mtime) in files.into_iter().take(5) {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         for line in text.lines().rev().filter(|l| l.contains("\"rate_limits\"")) {
-            let Ok(obj) = serde_json::from_str::<Value>(line) else { continue };
+            // 有的编辑器 / PowerShell 写文件会带 BOM，去掉再解析
+            let Ok(obj) = serde_json::from_str::<Value>(line.trim_start_matches('\u{feff}')) else { continue };
             let rl = obj["payload"]["rate_limits"].clone();
             if rl.is_object() {
                 return Some((rl, mtime));

@@ -114,7 +114,8 @@ pub fn render(value: Option<i64>, fill: f64) -> Image<'static> {
 
     // 进度条：底部 4 像素（缩小后正好 2 像素），位置也都是偶数
     let track_w = SIZE - 8;
-    c.rect(4, 24, track_w, 4, [255, 255, 255, 70]);
+    // rect 是直接覆盖像素、不做混合，所以轨道要用不透明的灰（不然在浅色任务栏上会透出白色，看着像满格）
+    c.rect(4, 24, track_w, 4, [102, 102, 104, 255]);
     let filled = ((fill.clamp(0.0, 100.0) / 100.0) * (track_w / 2) as f64).round() as usize * 2;
     c.rect(4, 24, filled, 4, WHITE);
 
