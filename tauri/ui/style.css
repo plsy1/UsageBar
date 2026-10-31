@@ -186,10 +186,9 @@ body.card main { padding: 0; overflow: hidden; }
 .c-bar > div { height: 100%; border-radius: 99px; background: var(--cfill); }
 .c-reset { font-size: calc(10 * var(--u)); color: var(--c2); }
 .c-updated { font-size: calc(10 * var(--u)); color: var(--c3); margin-top: calc(14 * var(--u)); }
-.c-lines { display: flex; flex-direction: column; gap: calc(6 * var(--u)); }
-.c-line { display: flex; align-items: baseline; gap: calc(14 * var(--u)); }
-.c-line .c-name { width: calc(54 * var(--u)); }
-.c-line .c-err { max-width: calc(260 * var(--u)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 紧凑：网格，各行同一列对齐 */
+.c-lines { display: grid; align-items: baseline; column-gap: calc(14 * var(--u)); row-gap: calc(6 * var(--u)); }
+.c-lines .c-err { max-width: calc(260 * var(--u)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-pair { display: inline-flex; align-items: baseline; gap: calc(5 * var(--u)); }
 .c-lab { font-size: calc(11 * var(--u)); color: var(--c2); }
 .c-num { font-size: calc(12 * var(--u)); }
@@ -200,3 +199,4 @@ html.guides, body.guides { background: transparent; margin: 0; overflow: hidden;
 .guide { position: fixed; background: var(--accent); opacity: 0.9; pointer-events: none; }
 .guide.v { top: 0; bottom: 0; width: 1px; }
 .guide.h { left: 0; right: 0; height: 1px; }
+.note.indent { margin-top: 2px; padding-left: 14px; }

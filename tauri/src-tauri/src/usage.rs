@@ -32,6 +32,15 @@ pub struct Provider {
     pub error: Option<String>,
     pub note: Option<String>,
     pub detail: Option<i64>,
+    /// Codex 的额度重置（OpenAI 送的「立即重置 5 小时和本周额度」）
+    pub resets: Option<ResetCredits>,
+}
+
+/// 可用的重置次数，和每次的到期时间（Unix 秒，从早到晚；详情没拿到时为空）
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct ResetCredits {
+    pub count: u64,
+    pub expiries: Vec<i64>,
 }
 
 impl Provider {
@@ -218,6 +227,32 @@ async fn codex(client: &reqwest::Client) -> Provider {
                         let Some(used) = w["used_percent"].as_f64() else { continue };
                         let secs = w["limit_window_seconds"].as_f64().unwrap_or(0.0);
                         p.windows.push(codex_window(secs, used, w["reset_at"].as_f64().map(|v| v as i64)));
+                    }
+                    // 有可用的重置次数才去查详情（只读，拿每次的到期时间）
+                    let count = j["rate_limit_reset_credits"]["available_count"].as_u64().unwrap_or(0);
+                    if count > 0 {
+                        let mut detail = client
+                            .get("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
+                            .bearer_auth(at)
+                            .header("User-Agent", "codex-cli")
+                            .timeout(Duration::from_secs(15));
+                        if let Some(aid) = auth.as_ref().and_then(|a| a["tokens"]["account_id"].as_str()) {
+                            detail = detail.header("ChatGPT-Account-Id", aid);
+                        }
+                        let mut expiries: Vec<i64> = match detail.send().await {
+                            Ok(r) if r.status().as_u16() == 200 => r.json::<Value>().await.ok()
+                                .and_then(|d| d["credits"].as_array().cloned())
+                                .unwrap_or_default()
+                                .iter()
+                                .filter(|c| c["status"].as_str() == Some("available"))
+                                .filter_map(|c| c["expires_at"].as_str())
+                                .filter_map(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                                .map(|t| t.timestamp())
+                                .collect(),
+                            _ => vec![],
+                        };
+                        expiries.sort();
+                        p.resets = Some(ResetCredits { count, expiries });
                     }
                     if !p.windows.is_empty() {
                         return p;

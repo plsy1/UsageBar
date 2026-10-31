@@ -34,6 +34,10 @@ const T = {
   r_absolute: ['具体时间', '日時', 'Date & Time'],
   card_hint: ['在卡片上按住拖动可以换位置，右键有更多选项', 'カードをドラッグして移動、右クリックでその他の操作', 'Drag the card to move it; right-click for more options'],
   resets_at: ['%s 重置', '%s にリセット', 'resets %s'],
+  reset_one: ['可用重置 1 次', 'リセット 1 回分', '1 reset available'],
+  reset_count: ['可用重置 %s 次', 'リセット %s 回分', '%s resets available'],
+  expires: ['%s 到期', '%s まで', 'expires %s'],
+  earliest: ['最早 %s 到期', '最も早いもの %s まで', 'earliest expires %s'],
   usage_sub: ['Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量', 'Remaining Claude and Codex usage'],
   settings_sub: ['托盘、语言和刷新频率', 'トレイ、言語、更新頻度', 'Tray, language and refresh frequency'],
   refresh: ['立即刷新', '今すぐ更新', 'Refresh Now'],
@@ -121,6 +125,15 @@ function resetText(at, style = 'relative') {
   return t('resets_in', rel);
 }
 
+// Codex 的额度重置：「可用重置 1 次 · 11/7 06:50 到期」；多次时写最早那次，lines 是逐条的到期时间
+const resetCountText = (r) => (r.count === 1 ? t('reset_one') : t('reset_count', r.count));
+function resetCreditsText(r) {
+  if (!r.expiries.length) return resetCountText(r);
+  const first = dateTime(r.expiries[0]);
+  return resetCountText(r) + ' · ' + (r.count > 1 ? t('earliest', first) : t('expires', first));
+}
+const resetCreditLines = (r) => (r.count > 1 ? r.expiries.map((e) => t('expires', dateTime(e))) : []);
+
 function providerHTML(p) {
   const used = state.settings.display === 'used';
   let html = `<div class="panel provider"><div class="name">${esc(p.name)}${p.plan ? `<span class="plan">${esc(p.plan)}</span>` : ''}</div>`;
@@ -132,6 +145,10 @@ function providerHTML(p) {
       <div class="bar"><div style="width:${v}%"></div></div>
       ${w.resets_at ? `<div class="reset">${esc(resetText(w.resets_at))}</div>` : ''}
     </div>`;
+  }
+  if (p.resets) {
+    html += `<div class="note">↻ ${esc(resetCreditsText(p.resets))}</div>`;
+    for (const l of resetCreditLines(p.resets)) html += `<div class="note indent">${esc(l)}</div>`;
   }
   if (p.note) html += `<div class="note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>`;
   return html + '</div>';
@@ -179,8 +196,10 @@ function cardRow(w) {
   return `<div class="c-row">
     <div class="c-top"><span>${esc(windowLabel(w))}</span><span class="c-val">${t(used ? 'used' : 'left', Math.round(v))}</span></div>
     <div class="c-bar"><div style="width:${v}%"></div></div>
-    ${s.card_reset !== 'hidden' && w.resets_at ? `<div class="c-reset">${esc(resetText(w.resets_at, s.card_reset))}</div>` : ''}
-  </div>`;
+    ${s.card_reset !== 'hidden' && w.resets_at
+      ? `<div class="c-reset">${esc(resetText(w.resets_at, s.card_reset))}</div>`
+      : '<div class="c-reset" style="visibility:hidden">·</div>'}
+  </div>`;  // 不显示重置时间时留着这一行的位置：布局不动，只是字不见了
 }
 
 function cardColumn(p) {
@@ -188,27 +207,34 @@ function cardColumn(p) {
     <div class="c-name">${esc(p.name)}${p.plan ? `<span class="c-plan">${esc(p.plan)}</span>` : ''}</div>
     ${p.error ? `<div class="c-err">${esc(t(p.error, p.detail ?? ''))}</div>` : ''}
     ${p.windows.map(cardRow).join('')}
+    ${p.resets ? `<div class="c-reset">↻ ${esc(resetCreditsText(p.resets))}</div>` : ''}
     ${p.note ? `<div class="c-note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>` : ''}
   </div>`;
 }
 
-// 紧凑：一家一行，只有数字
-function cardCompactRow(p) {
+// 紧凑：一家一行，放在网格里，各行的同一列上下对齐（cols：最多的那行有几格）
+function cardCompactRow(p, cols) {
   const used = state.settings.display === 'used';
-  return `<div class="c-line"><span class="c-name">${esc(p.name)}</span>
-    ${p.error && p.windows.length === 0 ? `<span class="c-err">${esc(t(p.error, p.detail ?? ''))}</span>` : ''}
-    ${p.windows.map((w) => {
+  const cells = p.error && p.windows.length === 0
+    ? [`<span class="c-err" style="grid-column: span ${cols - 1}">${esc(t(p.error, p.detail ?? ''))}</span>`]
+    : p.windows.map((w) => {
       const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
       return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num">${t(used ? 'used' : 'left', Math.round(v))}</span></span>`;
-    }).join('')}
-  </div>`;
+    });
+  if (p.resets) cells.push(`<span class="c-lab">${esc(resetCountText(p.resets))}</span>`);
+  while (cells.length < cols - 1) cells.push('<span></span>');
+  return `<span class="c-name">${esc(p.name)}</span>${cells.join('')}`;
 }
+const compactCells = (p) => 1 + (p.error && p.windows.length === 0 ? 1 : p.windows.length) + (p.resets ? 1 : 0);
 
 function cardPage() {
   const s = state.settings;
   const shown = shownProviders();
   const body = state.providers.length === 0 ? `<div class="c-reset">${t('loading')}</div>`
-    : s.card_layout === 'compact' ? `<div class="c-lines">${shown.map(cardCompactRow).join('')}</div>`
+    : s.card_layout === 'compact' ? (() => {
+      const cols = Math.max(2, ...shown.map(compactCells));
+      return `<div class="c-lines" style="grid-template-columns: repeat(${cols}, max-content)">${shown.map((p) => cardCompactRow(p, cols)).join('')}</div>`;
+    })()
     : `<div class="c-cols ${s.card_layout === 'vertical' ? 'vertical' : ''}">${shown.map(cardColumn).join('')}</div>`;
   const style = `--s:${s.card_scale};--bgop:${s.card_bg_opacity};opacity:${s.card_opacity}`;
   return `<div class="card-box bg-${esc(s.card_background)} text-${esc(s.card_text)}" style="${style}">
@@ -239,7 +265,7 @@ function cardSettingsPage() {
       <div class="field"><span>${t('show_card')}</span>${toggle('card_show', s.card_show)}</div>
       <div class="field"><span>${t('on_top')}<div class="hint">${t('on_top_hint')}</div></span>${toggle('card_on_top', s.card_on_top)}</div>
       <div class="field"><span>${t('layout')}</span>${seg('card_layout', [['horizontal', t('l_horizontal')], ['vertical', t('l_vertical')], ['compact', t('l_compact')]])}</div>
-      <div class="field"><span>${t('size')}</span>${slider('card_scale', 0.8, 1.6, 0.1)}</div>
+      <div class="field"><span>${t('size')}</span>${slider('card_scale', 0.8, 2.5, 0.1)}</div>
       <div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>
     </div>
     <div class="group-title">${t('g_look')}</div>
