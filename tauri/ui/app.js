@@ -9,6 +9,7 @@ const T = {
   usage_sub: ['Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量', 'Remaining Claude and Codex usage'],
   settings_sub: ['托盘、语言和刷新频率', 'トレイ、言語、更新頻度', 'Tray, language and refresh frequency'],
   refresh: ['立即刷新', '今すぐ更新', 'Refresh Now'],
+  open_window: ['打开窗口', 'ウィンドウを開く', 'Open Window'],
   refreshing: ['正在刷新…', '更新中…', 'Refreshing…'],
   updated: ['更新于 %s', '更新 %s', 'Updated %s'],
   loading: ['正在获取用量…', '使用量を取得中…', 'Fetching usage…'],
@@ -50,6 +51,8 @@ const T = {
 
 let state = null;
 let page = 'usage';
+// 托盘点开的小面板（Windows）：同一个页面，地址带 #flyout
+const FLYOUT = location.hash === '#flyout';
 let autostart = false;
 
 const L = () => ({ zh: 0, ja: 1, en: 2 })[state?.lang] ?? 2;
@@ -107,6 +110,24 @@ function usagePage() {
     <div class="footnote">${t('footnote')}</div>`;
 }
 
+function flyoutPage() {
+  const s = state.settings;
+  const shown = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex));
+  const status = state.loading ? t('refreshing') : state.updated ? t('updated', clock(state.updated)) : t('loading');
+  return `<div class="providers">${shown.map(providerHTML).join('')}</div>
+    <div class="fly-foot">
+      <span class="sub">${status}</span><span class="spacer"></span>
+      <button class="btn" id="refresh" ${state.loading ? 'disabled' : ''}>${t('refresh')}</button>
+      <button class="btn" id="open-main">${t('open_window')}</button>
+    </div>`;
+}
+
+// 小面板的高度跟着内容走
+function fitFlyout() {
+  const h = Math.ceil(document.getElementById('content').scrollHeight);
+  window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(340, h)).catch(() => {});
+}
+
 function seg(key, options) {
   const cur = state.settings[key];
   return `<div class="seg">${options.map(([v, label]) => `<button data-set="${key}" data-val="${v}" class="${cur === v ? 'on' : ''}">${esc(label)}</button>`).join('')}</div>`;
@@ -139,6 +160,11 @@ function render() {
   document.documentElement.lang = state.lang;
   document.querySelectorAll('[data-t]').forEach((el) => (el.textContent = t(el.dataset.t)));
   document.querySelectorAll('.nav').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  if (FLYOUT) {
+    document.getElementById('content').innerHTML = flyoutPage();
+    fitFlyout();
+    return;
+  }
   document.getElementById('content').innerHTML = page === 'usage' ? usagePage() : settingsPage();
 }
 
@@ -152,6 +178,7 @@ document.addEventListener('click', (e) => {
   const nav = e.target.closest('.nav');
   if (nav) { page = nav.dataset.page; render(); return; }
   if (e.target.id === 'refresh') { invoke('refresh_now'); return; }
+  if (e.target.id === 'open-main') { invoke('open_main'); return; }
   const b = e.target.closest('[data-set]');
   if (b) save({ [b.dataset.set]: b.dataset.val });
 });
@@ -168,11 +195,12 @@ document.addEventListener('change', async (e) => {
 });
 
 (async () => {
+  if (FLYOUT) document.body.classList.add('flyout');
   document.getElementById('version').textContent = await window.__TAURI__.app.getVersion().catch(() => '');
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
   state = await invoke('get_state');
   render();
   await listen('state', (e) => { state = e.payload; render(); });
   // 重置倒计时每分钟走一次
-  setInterval(() => { if (page === 'usage') render(); }, 60000);
+  setInterval(() => { if (FLYOUT || page === 'usage') render(); }, 60000);
 })();

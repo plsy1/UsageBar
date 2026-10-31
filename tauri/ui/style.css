@@ -134,3 +134,12 @@ select option { color: var(--text); background: var(--bg); }
   padding: 4px 12px; cursor: pointer;
 }
 .btn:disabled { color: var(--tertiary); cursor: default; }
+
+/* 托盘小面板（Windows） */
+body.flyout .sidebar { display: none; }
+body.flyout main { padding: 12px; overflow: hidden; }
+body.flyout .providers { grid-template-columns: 1fr; gap: 10px; }
+body.flyout .provider { padding: 14px 16px; }
+body.flyout .row { margin-top: 10px; }
+.fly-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.fly-foot .spacer { flex: 1; }

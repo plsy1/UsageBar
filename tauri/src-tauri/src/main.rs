@@ -1,17 +1,23 @@
 // UsageBar（Windows / Linux 版）：托盘显示 Claude / Codex 剩余用量
-//   托盘：Linux 顶栏直接显示「Cc 56%  Cx 47%」，Windows 显示在鼠标悬停提示里；菜单里有各额度
+//   托盘：Linux 顶栏直接显示「Cc 56%  Cx 47%」；Windows 上 Claude、Codex 各一个托盘图标，图标上画着百分比
+//   Windows 左键点托盘弹出小面板（flyout），菜单里有各额度
 //   窗口：「额度」和「设置」两页（ui/）
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod i18n;
+mod trayicon;
 mod usage;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent};
+
+/// Windows 上每家一个画着数字的托盘图标；Linux 上一个图标、旁边显示文字
+const PER_PROVIDER_TRAY: bool = cfg!(target_os = "windows");
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
@@ -43,7 +49,9 @@ struct AppState {
     providers: Mutex<Vec<usage::Provider>>,
     updated: Mutex<Option<i64>>,
     loading: Mutex<bool>,
-    tray: Mutex<Option<TrayIcon>>,
+    trays: Mutex<Vec<TrayIcon>>,
+    /// 小面板因失去焦点收起的时间：紧接着的那次托盘点击是「关掉」，不要再打开
+    flyout_hidden_at: Mutex<Option<Instant>>,
 }
 
 /// 给界面的完整状态
@@ -106,6 +114,15 @@ fn set_settings(app: AppHandle, settings: Settings) -> Snapshot {
 #[tauri::command]
 fn refresh_now(app: AppHandle) {
     tauri::async_runtime::spawn(refresh(app));
+}
+
+/// 小面板里的「打开窗口」
+#[tauri::command]
+fn open_main(app: AppHandle) {
+    if let Some(f) = app.get_webview_window("flyout") {
+        let _ = f.hide();
+    }
+    show_main(&app);
 }
 
 // MARK: - 刷新
@@ -187,16 +204,71 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 fn update_tray(app: &AppHandle) {
     let snap = snapshot(app);
-    let text = tray_text(&snap.settings, &snap.providers);
+    let used = snap.settings.display == "used";
+    let lang = snap.lang;
+    let menu = build_menu(app).ok();
     let st = app.state::<AppState>();
-    let guard = st.tray.lock().unwrap();
-    let Some(tray) = guard.as_ref() else { return };
-    let _ = tray.set_tooltip(Some(&text));
-    // 只有 Linux（AppIndicator）和 macOS 会在图标旁边显示文字；Windows 上忽略
-    let _ = tray.set_title(Some(&text));
-    if let Ok(menu) = build_menu(app) {
-        let _ = tray.set_menu(Some(menu));
+    for tray in st.trays.lock().unwrap().iter() {
+        if let Some(m) = &menu {
+            let _ = tray.set_menu(Some(m.clone()));
+        }
+        let id = tray.id().as_ref().to_string();
+        if id == "main" {
+            let text = tray_text(&snap.settings, &snap.providers);
+            let _ = tray.set_tooltip(Some(&text));
+            // Linux（AppIndicator）会在图标旁边显示这段文字
+            let _ = tray.set_title(Some(&text));
+            continue;
+        }
+        // 每家一个图标：画最紧那个额度的数字，悬停提示里列出全部额度
+        let visible = if id == "Claude" { snap.settings.show_claude } else { snap.settings.show_codex };
+        let _ = tray.set_visible(visible);
+        let p = snap.providers.iter().find(|p| p.name == id);
+        let w = p.and_then(|p| p.binding());
+        let v = w.map(|w| if used { w.used.min(100.0) } else { w.remaining() });
+        let _ = tray.set_icon(Some(trayicon::render(v.map(|v| v.round() as i64), v.unwrap_or(0.0))));
+        let mut tip = match p.and_then(|p| p.plan.clone()) { Some(plan) => format!("{id} {plan}"), None => id.clone() };
+        if let Some(p) = p {
+            if p.error.is_some() {
+                tip.push_str(&format!("\n{}", i18n::t(lang, "error")));
+            }
+            for w in &p.windows {
+                tip.push_str(&format!("\n{}  {}", i18n::window_label(lang, w), i18n::value_text(lang, w, used)));
+            }
+        }
+        let _ = tray.set_tooltip(Some(&tip));
     }
+}
+
+/// Windows：在托盘图标旁边弹出小面板（再点一次收起）
+fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
+    let Some(f) = app.get_webview_window("flyout") else { return };
+    if f.is_visible().unwrap_or(false) {
+        let _ = f.hide();
+        return;
+    }
+    // 刚因为点托盘而失去焦点收起的，这次点击就是要关掉它
+    let st = app.state::<AppState>();
+    if st.flyout_hidden_at.lock().unwrap().map(|t| t.elapsed().as_millis() < 400).unwrap_or(false) {
+        return;
+    }
+    let size = f.outer_size().unwrap_or_default();
+    let (w, h) = (size.width as f64, size.height as f64);
+    let mut x = click.x - w / 2.0;
+    // 任务栏在下面时往上弹，在上面时往下弹
+    let mut y = click.y - h - 12.0;
+    if let Ok(Some(m)) = app.monitor_from_point(click.x, click.y) {
+        let (mx, my) = (m.position().x as f64, m.position().y as f64);
+        let (mw, mh) = (m.size().width as f64, m.size().height as f64);
+        if click.y < my + mh / 2.0 {
+            y = click.y + 12.0;
+        }
+        x = x.clamp(mx + 8.0, mx + mw - w - 8.0);
+        y = y.clamp(my + 8.0, my + mh - h - 8.0);
+    }
+    let _ = f.set_position(PhysicalPosition::new(x, y));
+    let _ = f.show();
+    let _ = f.set_focus();
 }
 
 fn show_main(app: &AppHandle) {
@@ -208,35 +280,50 @@ fn show_main(app: &AppHandle) {
 }
 
 fn main() {
+    // 调试用：UsageBar --dump-icon <文件> <数字> 把托盘数字图标导出成 32×32 RGBA 原始数据
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--dump-icon") {
+        let value = args.get(i + 2).and_then(|v| v.parse::<i64>().ok());
+        let img = trayicon::render(value, value.unwrap_or(0) as f64);
+        let _ = std::fs::write(&args[i + 1], img.rgba());
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main])
         .setup(|app| {
             let handle = app.handle().clone();
             *app.state::<AppState>().settings.lock().unwrap() = load_settings(&handle);
 
-            let tray = TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().cloned().expect("app icon"))
-                .tooltip("UsageBar")
-                .menu(&build_menu(&handle)?)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "refresh" => {
-                        tauri::async_runtime::spawn(refresh(app.clone()));
-                    }
-                    "open" => show_main(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                // Windows：左键点托盘图标直接打开窗口（Linux 的 AppIndicator 只支持菜单）
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        show_main(tray.app_handle());
-                    }
-                })
-                .build(app)?;
-            *app.state::<AppState>().tray.lock().unwrap() = Some(tray);
+            // Codex 先建：Windows 会把后建的图标放在左边，这样从左到右是 Claude、Codex
+            let ids: &[&str] = if PER_PROVIDER_TRAY { &["Codex", "Claude"] } else { &["main"] };
+            let mut trays = Vec::new();
+            for id in ids {
+                let icon = if *id == "main" { app.default_window_icon().cloned().expect("app icon") } else { trayicon::render(None, 0.0) };
+                let tray = TrayIconBuilder::with_id(*id)
+                    .icon(icon)
+                    .tooltip("UsageBar")
+                    .menu(&build_menu(&handle)?)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "refresh" => {
+                            tauri::async_runtime::spawn(refresh(app.clone()));
+                        }
+                        "open" => show_main(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    // Windows：左键点托盘图标弹出小面板（Linux 的 AppIndicator 只有菜单）
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, position, .. } = event {
+                            toggle_flyout(tray.app_handle(), position);
+                        }
+                    })
+                    .build(app)?;
+                trays.push(tray);
+            }
+            *app.state::<AppState>().trays.lock().unwrap() = trays;
 
             // 带 --show 启动时直接打开窗口（从应用列表启动、或调试时用）
             if std::env::args().any(|a| a == "--show") {
@@ -246,11 +333,17 @@ fn main() {
             Ok(())
         })
         // 关窗口只是隐藏，程序继续在托盘里运行
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // 小面板点别处就收起
+            WindowEvent::Focused(false) if window.label() == "flyout" => {
+                let _ = window.hide();
+                *window.app_handle().state::<AppState>().flyout_hidden_at.lock().unwrap() = Some(Instant::now());
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running UsageBar");

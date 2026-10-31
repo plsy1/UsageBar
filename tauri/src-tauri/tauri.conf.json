@@ -18,6 +18,19 @@
         "minHeight": 500,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "flyout",
+        "title": "UsageBar",
+        "url": "index.html#flyout",
+        "width": 340,
+        "height": 320,
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "shadow": true
       }
     ],
     "security": {
