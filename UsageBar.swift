@@ -238,6 +238,88 @@ func resetText(_ d: Date?) -> String {
     return "\(rel)后重置（\(f.string(from: d))）"
 }
 
+// MARK: - 设置
+
+enum Pref {
+    static let showCard = "showCard"
+    static let background = "cardBackground"   // none / dark / light
+    static let textColor = "cardText"          // white / black
+    static let scale = "cardScale"
+    static let opacity = "cardOpacity"
+    static let showReset = "showReset"
+    static let showClaude = "showClaude"
+    static let showCodex = "showCodex"
+    static let refreshMinutes = "refreshMinutes"
+    static let menuLabel = "menuLabel"         // short / full
+
+    static func register() {
+        UserDefaults.standard.register(defaults: [
+            showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0,
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short",
+        ])
+    }
+    static func visible(_ name: String) -> Bool {
+        UserDefaults.standard.bool(forKey: name == "Claude" ? showClaude : showCodex)
+    }
+}
+
+struct SettingsView: View {
+    @AppStorage(Pref.showCard) var showCard = true
+    @AppStorage(Pref.background) var background = "none"
+    @AppStorage(Pref.textColor) var textColor = "white"
+    @AppStorage(Pref.scale) var scale = 1.0
+    @AppStorage(Pref.opacity) var opacity = 1.0
+    @AppStorage(Pref.showReset) var showReset = true
+    @AppStorage(Pref.showClaude) var showClaude = true
+    @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
+    @AppStorage(Pref.menuLabel) var menuLabel = "short"
+
+    var body: some View {
+        Form {
+            Section("桌面卡片") {
+                Toggle("显示桌面卡片", isOn: $showCard)
+                Picker("背景", selection: $background) {
+                    Text("无").tag("none")
+                    Text("深色毛玻璃").tag("dark")
+                    Text("浅色毛玻璃").tag("light")
+                }
+                Picker("文字颜色", selection: $textColor) {
+                    Text("白色").tag("white")
+                    Text("黑色").tag("black")
+                }
+                LabeledContent("大小") {
+                    Slider(value: $scale, in: 0.8...1.6, step: 0.1) { EmptyView() }
+                    Text("\(Int((scale * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+                }
+                LabeledContent("不透明度") {
+                    Slider(value: $opacity, in: 0.3...1.0, step: 0.05) { EmptyView() }
+                    Text("\(Int((opacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+                }
+                Toggle("显示重置时间", isOn: $showReset)
+            }
+            Section("菜单栏") {
+                Picker("名称", selection: $menuLabel) {
+                    Text("简写（Cc / Cx）").tag("short")
+                    Text("全名（Claude / Codex）").tag("full")
+                }
+            }
+            Section("显示内容（卡片和菜单栏）") {
+                Toggle("Claude", isOn: $showClaude)
+                Toggle("Codex", isOn: $showCodex)
+            }
+            Section("刷新") {
+                Picker("自动刷新间隔", selection: $refreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text("\($0) 分钟").tag($0) }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 380)
+        .fixedSize()
+    }
+}
+
 // MARK: - 桌面卡片
 
 final class UsageModel: ObservableObject {
@@ -245,10 +327,12 @@ final class UsageModel: ObservableObject {
     @Published var lastUpdate: Date?
     var onRefresh: () -> Void = {}
     var onHide: () -> Void = {}
+    var onSettings: () -> Void = {}
 }
 
 /// 毛玻璃背景（透出壁纸）
 struct Blur: NSViewRepresentable {
+    let dark: Bool
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.material = .hudWindow
@@ -256,28 +340,32 @@ struct Blur: NSViewRepresentable {
         v.state = .active
         return v
     }
-    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {
+        v.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    }
 }
 
 struct UsageRow: View {
     let w: LimitWindow
+    let s: CGFloat
+    let showReset: Bool
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 3 * s) {
             HStack {
-                Text(w.label).font(.system(size: 12))
+                Text(w.label).font(.system(size: 12 * s))
                 Spacer()
                 Text("剩 \(Int(w.remaining.rounded()))%")
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.1))
-                    Capsule().fill(Color.primary.opacity(0.6)).frame(width: g.size.width * w.remaining / 100)
+                    Capsule().fill(Color.primary.opacity(0.25))
+                    Capsule().fill(Color.primary.opacity(0.9)).frame(width: g.size.width * w.remaining / 100)
                 }
             }
-            .frame(height: 4)
-            if w.resetsAt != nil {
-                Text(resetText(w.resetsAt)).font(.system(size: 10)).foregroundStyle(.secondary)
+            .frame(height: 4 * s)
+            if showReset, w.resetsAt != nil {
+                Text(resetText(w.resetsAt)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
             }
         }
     }
@@ -285,39 +373,61 @@ struct UsageRow: View {
 
 struct CardView: View {
     @ObservedObject var model: UsageModel
+    @AppStorage(Pref.background) var background = "none"
+    @AppStorage(Pref.textColor) var textColor = "white"
+    @AppStorage(Pref.scale) var scale = 1.0
+    @AppStorage(Pref.opacity) var opacity = 1.0
+    @AppStorage(Pref.showReset) var showReset = true
+    @AppStorage(Pref.showClaude) var showClaude = true
+    @AppStorage(Pref.showCodex) var showCodex = true
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let s = CGFloat(scale)
+        let white = textColor == "white"
+        let shown = model.results.filter { $0.name == "Claude" ? showClaude : showCodex }
+        VStack(alignment: .leading, spacing: 14 * s) {
             if model.results.isEmpty {
-                Text("正在获取用量…").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("正在获取用量…").font(.system(size: 12 * s)).foregroundStyle(.secondary)
             }
-            ForEach(model.results, id: \.name) { u in
-                VStack(alignment: .leading, spacing: 8) {
+            ForEach(shown, id: \.name) { u in
+                VStack(alignment: .leading, spacing: 8 * s) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(u.name).font(.system(size: 13, weight: .semibold))
-                        if let p = u.plan { Text(p).font(.system(size: 10)).foregroundStyle(.secondary) }
+                        Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+                        if let p = u.plan { Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
                     }
                     if let e = u.error {
-                        Text(e).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in UsageRow(w: w) }
+                    ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
+                        UsageRow(w: w, s: s, showReset: showReset)
+                    }
                     if let n = u.note {
-                        Text(n).font(.system(size: 10)).foregroundStyle(.tertiary)
+                        Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             if let t = model.lastUpdate {
                 Text("更新于 \(t.formatted(date: .omitted, time: .shortened))")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
-        .padding(16)
-        .frame(width: CardWindow.width, alignment: .leading)
-        .background(Blur())
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(16 * s)
+        .frame(width: CardWindow.width * s, alignment: .leading)
+        .environment(\.colorScheme, white ? .dark : .light)
+        // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
+        .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
+        .background {
+            if background != "none" {
+                Blur(dark: background == "dark")
+                    .clipShape(RoundedRectangle(cornerRadius: 20 * s, style: .continuous))
+            }
+        }
+        .opacity(opacity)
         .contextMenu {
             Button("立即刷新") { model.onRefresh() }
+            Button("设置…") { model.onSettings() }
             Button("隐藏桌面卡片") { model.onHide() }
         }
     }
@@ -330,11 +440,10 @@ final class CardWindow: NSWindow {
         let host = NSHostingController(rootView: CardView(model: model))
         host.sizingOptions = .preferredContentSize
         contentViewController = host
-        // 固定深色外观：文字始终是白色，和菜单栏一致
-        appearance = NSAppearance(named: .darkAqua)
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false
+        ignoresMouseEvents = false  // 透明区域也能拖动
         isMovableByWindowBackground = true
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
@@ -365,19 +474,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var lastUpdate: Date?
     var loading = false
     var timer: Timer?
+    var timerMinutes = 0
+    var settingsWindow: NSWindow?
     var showCard: Bool {
-        get { UserDefaults.standard.object(forKey: "showCard") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "showCard") }
+        get { UserDefaults.standard.bool(forKey: Pref.showCard) }
+        set { UserDefaults.standard.set(newValue, forKey: Pref.showCard) }
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        item.button?.title = "Cl …  Cx …"
+        Pref.register()
+        item.button?.title = "Cc …  Cx …"
         model.onRefresh = { [weak self] in self?.refresh() }
         model.onHide = { [weak self] in self?.toggleCard() }
+        model.onSettings = { [weak self] in self?.openSettings() }
         if showCard { setCardVisible(true) }
         rebuildMenu()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.refresh() }
+        scheduleTimer()
+        // 设置窗口里改了什么，这里同步到卡片显隐、刷新间隔和菜单栏
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.syncPrefs()
+        }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.refresh() }
@@ -413,6 +531,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func scheduleTimer() {
+        timerMinutes = UserDefaults.standard.integer(forKey: Pref.refreshMinutes)
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: TimeInterval(max(1, timerMinutes) * 60), repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func syncPrefs() {
+        if UserDefaults.standard.integer(forKey: Pref.refreshMinutes) != timerMinutes { scheduleTimer() }
+        if (card?.isVisible ?? false) != showCard { setCardVisible(showCard) }
+        updateTitle()
+        rebuildMenu()
+    }
+
+    @objc func openSettings() {
+        if settingsWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
+            w.title = "UsageBar 设置"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.center()
+            settingsWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
     @objc func toggleCard() {
         showCard.toggle()
         setCardVisible(showCard)
@@ -422,9 +568,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func updateTitle() {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let s = NSMutableAttributedString()
-        for (i, u) in results.enumerated() {
+        let full = UserDefaults.standard.string(forKey: Pref.menuLabel) == "full"
+        for (i, u) in results.filter({ Pref.visible($0.name) }).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
-            let short = u.name == "Claude" ? "Cl " : "Cx "
+            let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
             if let b = u.binding {
                 s.append(NSAttributedString(string: "\(Int(b.remaining.rounded()))%", attributes: [.font: font]))
@@ -432,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 s.append(NSAttributedString(string: "–", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
             }
         }
-        item.button?.attributedTitle = s
+        item.button?.attributedTitle = s.length > 0 ? s : NSAttributedString(string: "UsageBar", attributes: [.font: font])
     }
 
     func rebuildMenu() {
@@ -444,7 +591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let mi = NSMenuItem(); mi.attributedTitle = a; mi.isEnabled = false; menu.addItem(mi)
         }
 
-        for u in results {
+        for u in results where Pref.visible(u.name) {
             let head = NSMutableAttributedString(string: u.name, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
             if let p = u.plan {
                 head.append(NSAttributedString(string: "  \(p)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
@@ -476,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if loading { status = "正在刷新…" }
         else if let t = lastUpdate {
             let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-            status = "更新于 \(f.string(from: t)) · 每 5 分钟自动刷新"
+            status = "更新于 \(f.string(from: t)) · 每 \(timerMinutes) 分钟自动刷新"
         } else { status = "" }
         if !status.isEmpty { info(NSAttributedString(string: status, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor])) }
 
@@ -486,6 +633,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.target = self
         c.state = showCard ? .on : .off
         menu.addItem(c)
+        let st = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ","); st.target = self
+        menu.addItem(st)
         let q = NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(q)
         item.menu = menu
