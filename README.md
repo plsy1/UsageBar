@@ -12,7 +12,7 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
 - **In-app updates**: checks GitHub Releases daily; one click downloads the new version, verifies its SHA-256, replaces the app and restarts
 - **Languages**: English / 简体中文 / 日本語, following the system by default
 - Requires macOS 13 or later, Apple silicon and Intel
-- **Windows / Linux**: a [preview](https://github.com/plsy1/UsageBar/releases/tag/tauri-v0.1.0) with the tray, limits and settings (source in `tauri/`)
+- **Windows / Linux**: a [preview](https://github.com/plsy1/UsageBar/releases/tag/tauri-v0.2.0) with the tray, desktop card, limits and settings (source in `tauri/`)
 
 ## Install
 

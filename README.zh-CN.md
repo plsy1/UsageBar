@@ -12,7 +12,7 @@
 - **应用内更新**：每天自动检查 GitHub Releases，一键下载新版、校验 SHA-256、替换并重启
 - **语言**：English / 简体中文 / 日本語，默认跟随系统
 - 系统要求 macOS 13 及以上，Apple 芯片和 Intel 都支持
-- **Windows / Linux**：有[预览版](https://github.com/plsy1/UsageBar/releases/tag/tauri-v0.1.0)，包含托盘、额度和设置（源码在 `tauri/`）
+- **Windows / Linux**：有[预览版](https://github.com/plsy1/UsageBar/releases/tag/tauri-v0.2.0)，包含托盘、桌面卡片、额度和设置（源码在 `tauri/`）
 
 ## 安装
 
