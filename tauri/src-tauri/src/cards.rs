@@ -267,9 +267,12 @@ fn show_guides(app: &AppHandle, m: &Monitor, x: Option<f64>, y: Option<f64>) {
     if g.outer_size().ok() != Some(*ms) {
         let _ = g.set_size(*ms);
     }
-    let _ = g.emit("guides", (x.map(|v| (v - mp.x as f64) / sf), y.map(|v| (v - mp.y as f64) / sf)));
+    // 按窗口实际在哪算线的位置：GNOME 会自己摆这个窗口（比如挪到 Dock 右边），不一定在屏幕左上角
+    let origin = g.outer_position().unwrap_or(*mp);
+    let _ = g.emit("guides", (x.map(|v| (v - origin.x as f64) / sf), y.map(|v| (v - origin.y as f64) / sf)));
     if !g.is_visible().unwrap_or(false) {
-        let _ = g.set_ignore_cursor_events(true);
+        // 先显示再设鼠标穿透：Linux 上窗口没显示过时还没真正建出来，先设穿透会让 tao 崩溃
         let _ = g.show();
+        let _ = g.set_ignore_cursor_events(true);
     }
 }
