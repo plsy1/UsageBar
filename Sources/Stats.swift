@@ -499,6 +499,8 @@ struct StatsView: View {
     /// 请求明细的当前页（从 0 开始）；换时间范围或来源时回到第一页
     @State var page = 0
     static let pageSize = 50
+    /// 请求明细每格左边留的空：表头的分隔线在两列交界处，文字不能贴着它
+    static let cellInset: CGFloat = 8
     @State var showRange = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
@@ -921,7 +923,7 @@ struct StatsView: View {
             ForEach(cols, id: \.self) { c in
                 let w = width(c, saved: saved)
                 Text(c.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                    .padding(.trailing, 10)
+                    .padding(.leading, Self.cellInset).padding(.trailing, 4)  // 文字和左边的分隔线隔开
                     .frame(width: w, alignment: .leading)
                     .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
                     .frame(height: 38)
@@ -947,7 +949,7 @@ struct StatsView: View {
                         })
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 20 - Self.cellInset)
         // 列都拖成固定宽度后不够宽：靠左放，底色铺满
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.035))
@@ -1029,7 +1031,7 @@ struct StatsView: View {
         let cols = orderedColumns.filter { !hidden.contains($0) }
         let saved = savedWidths
         // 列多了放不下就左右滚动；放得下时模型那一列占满剩余宽度
-        let fixed = cols.reduce(40) { $0 + (width($1, saved: saved) ?? 0) }
+        let fixed = cols.reduce(2 * (20 - Self.cellInset)) { $0 + (width($1, saved: saved) ?? 0) }
         let needed = fixed + (cols.contains { width($0, saved: saved) == nil } ? 170 : 0)
         let flex = max(170, tableWidth - fixed)  // 占满剩余宽度那一列现在的实际宽度
         let table = LazyVStack(spacing: 0) {
@@ -1071,13 +1073,13 @@ struct StatsView: View {
                 let w = width(c, saved: saved)
                 c.cell(r, time: time)
                     .lineLimit(1)
-                    .padding(.trailing, 10)
+                    .padding(.leading, Self.cellInset).padding(.trailing, 4)
                     .frame(width: w, alignment: .leading)
                     .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
             }
         }
         .font(.body.monospacedDigit())
-        .padding(.horizontal, 20).frame(height: 42)
+        .padding(.horizontal, 20 - Self.cellInset).frame(height: 42)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(selected?.id == r.id ? ChartColor.color(chartColor).opacity(0.12) : .clear)
         .contentShape(Rectangle())
@@ -1115,7 +1117,7 @@ enum LogColumn: String, CaseIterable {
         case .app: return 64
         case .model: return nil
         case .cost: return 84
-        case .input, .cacheRead, .cacheWrite: return 80
+        case .input, .cacheRead, .cacheWrite: return 92
         case .output: return 72
         case .hitRate: return 70
         case .speed: return 84
