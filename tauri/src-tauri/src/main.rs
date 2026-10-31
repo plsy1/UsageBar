@@ -6,7 +6,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod i18n;
-mod trayicon;
 mod usage;
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +16,6 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent};
 
 /// Windows 上每家一个画着数字的托盘图标；Linux 上一个图标、旁边显示文字
-const PER_PROVIDER_TRAY: bool = cfg!(target_os = "windows");
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
@@ -204,39 +202,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 fn update_tray(app: &AppHandle) {
     let snap = snapshot(app);
-    let used = snap.settings.display == "used";
-    let lang = snap.lang;
     let menu = build_menu(app).ok();
     let st = app.state::<AppState>();
     for tray in st.trays.lock().unwrap().iter() {
         if let Some(m) = &menu {
             let _ = tray.set_menu(Some(m.clone()));
         }
-        let id = tray.id().as_ref().to_string();
-        if id == "main" {
-            let text = tray_text(&snap.settings, &snap.providers);
-            let _ = tray.set_tooltip(Some(&text));
-            // Linux（AppIndicator）会在图标旁边显示这段文字
-            let _ = tray.set_title(Some(&text));
-            continue;
-        }
-        // 每家一个图标：画最紧那个额度的数字，悬停提示里列出全部额度
-        let visible = if id == "Claude" { snap.settings.show_claude } else { snap.settings.show_codex };
-        let _ = tray.set_visible(visible);
-        let p = snap.providers.iter().find(|p| p.name == id);
-        let w = p.and_then(|p| p.binding());
-        let v = w.map(|w| if used { w.used.min(100.0) } else { w.remaining() });
-        let _ = tray.set_icon(Some(trayicon::render(v.map(|v| v.round() as i64), v.unwrap_or(0.0))));
-        let mut tip = match p.and_then(|p| p.plan.clone()) { Some(plan) => format!("{id} {plan}"), None => id.clone() };
-        if let Some(p) = p {
-            if p.error.is_some() {
-                tip.push_str(&format!("\n{}", i18n::t(lang, "error")));
-            }
-            for w in &p.windows {
-                tip.push_str(&format!("\n{}  {}", i18n::window_label(lang, w), i18n::value_text(lang, w, used)));
-            }
-        }
-        let _ = tray.set_tooltip(Some(&tip));
+        let text = tray_text(&snap.settings, &snap.providers);
+        let _ = tray.set_tooltip(Some(&text));
+        // Linux（AppIndicator）会在图标旁边显示这段文字；Windows 托盘只有图标，用量看悬停提示或点开小面板
+        let _ = tray.set_title(Some(&text));
     }
 }
 
@@ -280,14 +255,6 @@ fn show_main(app: &AppHandle) {
 }
 
 fn main() {
-    // 调试用：UsageBar --dump-icon <文件> <数字> 把托盘数字图标导出成 32×32 RGBA 原始数据
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(i) = args.iter().position(|a| a == "--dump-icon") {
-        let value = args.get(i + 2).and_then(|v| v.parse::<i64>().ok());
-        let img = trayicon::render(value, value.unwrap_or(0) as f64);
-        let _ = std::fs::write(&args[i + 1], img.rgba());
-        return;
-    }
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
@@ -296,13 +263,10 @@ fn main() {
             let handle = app.handle().clone();
             *app.state::<AppState>().settings.lock().unwrap() = load_settings(&handle);
 
-            // Codex 先建：Windows 会把后建的图标放在左边，这样从左到右是 Claude、Codex
-            let ids: &[&str] = if PER_PROVIDER_TRAY { &["Codex", "Claude"] } else { &["main"] };
             let mut trays = Vec::new();
-            for id in ids {
-                let icon = if *id == "main" { app.default_window_icon().cloned().expect("app icon") } else { trayicon::render(None, 0.0) };
-                let tray = TrayIconBuilder::with_id(*id)
-                    .icon(icon)
+            {
+                let tray = TrayIconBuilder::with_id("main")
+                    .icon(app.default_window_icon().cloned().expect("app icon"))
                     .tooltip("UsageBar")
                     .menu(&build_menu(&handle)?)
                     .show_menu_on_left_click(false)
