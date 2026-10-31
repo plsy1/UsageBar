@@ -148,6 +148,15 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "基本": ("基本", "Basics"),
+        "后台增量更新": ("バックグラウンドで差分更新", "Updates in the background"),
+        "菜单栏上显示的文字，下面是点开后的菜单": ("メニューバーに表示する文字。下はクリックしたときのメニューです", "What the menu bar shows; the menu it opens is below"),
+        "隐私": ("プライバシー", "Privacy"),
+        "所有版本": ("すべてのリリース", "All Releases"),
+        "反馈问题": ("問題を報告", "Report an Issue"),
+        "用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询": ("この Mac の Claude Code と Codex のログイン情報を使い、Anthropic と OpenAI の使用量 API に問い合わせます", "Uses this Mac's Claude Code and Codex logins to ask Anthropic's and OpenAI's usage endpoints"),
+        "只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次": ("この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）だけを読み、コストは models.dev の API 価格で推定します。価格は 1 日 1 回更新します", "Reads only this Mac's session logs (~/.claude/projects and ~/.codex/sessions); cost is estimated from models.dev API prices, refreshed daily"),
+        "所有数据只在这台 Mac 和上述官方服务之间传输，不经过其他服务器": ("データはこの Mac と上記の公式サービスの間だけでやり取りされ、他のサーバーは経由しません", "Data only travels between this Mac and the official services above, never through other servers"),
         "卡片": ("カード", "Cards"),
         "额度卡片": ("上限カード", "Limits Card"),
         "用量卡片": ("使用量カード", "Usage Card"),
@@ -575,15 +584,15 @@ enum Pref {
 }
 
 /// 设置里每一行右侧的滑块 + 百分比
-struct PercentSlider: View {
-    let title: String
+/// 百分比滑块（放在设置行右边）
+struct PercentControl: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
     var body: some View {
-        LabeledContent(title) {
+        HStack(spacing: 8) {
             Slider(value: $value, in: range, step: step) { EmptyView() }
-                .frame(width: 160)
+                .frame(width: 150)
             Text("\(Int((value * 100).rounded()))%").monospacedDigit().foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
         }
@@ -598,54 +607,100 @@ enum LoginItem {
     }
 }
 
-/// 设置页的版式：顶部标题栏，下面左边是设置项，右边是预览或状态
-struct SettingsPage<Main: View, Side: View>: View {
+// MARK: - 设置页的版式：顶部标题，下面是自己画的分组卡片，宽度跟着窗口走，可以排成网格
+
+/// 设置页：顶部标题，下面的内容铺满宽度，太高时上下滚动
+struct SettingsScroll<Content: View>: View {
     let tab: MainTab
     let subtitle: String
-    let main: Main
-    let side: Side
-
-    init(_ tab: MainTab, _ subtitle: String, @ViewBuilder main: () -> Main, @ViewBuilder side: () -> Side) {
-        self.tab = tab; self.subtitle = subtitle; self.main = main(); self.side = side()
+    let content: Content
+    init(_ tab: MainTab, _ subtitle: String, @ViewBuilder content: () -> Content) {
+        self.tab = tab; self.subtitle = subtitle; self.content = content()
     }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 14) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 20, weight: .regular))
-                    .frame(width: 42, height: 42)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.07)))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tab.title).font(.title2.weight(.semibold))
-                    Text(subtitle).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 30).padding(.top, 28)
-            HStack(alignment: .top, spacing: 0) {
-                main.frame(width: 470)
-                side.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            PageHeader(tab: tab, subtitle: subtitle)
+            ScrollView {
+                content
+                    .padding(.horizontal, 30).padding(.top, 16).padding(.bottom, 28)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
-/// 右栏的小标题 + 圆角面板
-struct SidePanel<Content: View>: View {
-    let title: String
-    let content: Content
-    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+/// 页面顶部：图标、标题、一句说明
+struct PageHeader: View {
+    let tab: MainTab
+    let subtitle: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.callout.weight(.medium)).foregroundStyle(.secondary)
-            content
+        HStack(spacing: 14) {
+            Image(systemName: tab.symbol)
+                .font(.system(size: 20, weight: .regular))
+                .frame(width: 42, height: 42)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.07)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tab.title).font(.title2.weight(.semibold))
+                Text(subtitle).foregroundStyle(.secondary)
+            }
         }
-        .padding(.top, 20).padding(.trailing, 30)
+        .padding(.horizontal, 30).padding(.top, 28)
     }
 }
 
-/// 「通用」：左栏开机启动、外观和额度怎么显示（菜单栏和两张卡片共用），右栏用量统计和数据来源
+/// 一组设置：小标题、圆角面板（里面一行一项，行之间自己放 Divider）、底下的说明
+struct SettingsGroup<Content: View>: View {
+    let title: String?
+    let footer: String?
+    let content: Content
+    init(_ title: String? = nil, footer: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title; self.footer = footer; self.content = content()
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title { Text(title).font(.headline) }
+            VStack(spacing: 0) { content }
+                .padding(.horizontal, 14).padding(.vertical, 4)
+                .modifier(Panel())
+            if let footer {
+                Text(footer).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+/// 一行设置：左边名称（可带一行小字），右边控件
+struct SettingsRow<Control: View>: View {
+    let title: String
+    let detail: String?
+    let control: Control
+    init(_ title: String, detail: String? = nil, @ViewBuilder control: () -> Control) {
+        self.title = title; self.detail = detail; self.control = control()
+    }
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer(minLength: 12)
+            control
+        }
+        .frame(minHeight: 40)
+        .padding(.vertical, 3)
+    }
+}
+
+/// 设置行里的开关：和系统设置一样的小号开关
+struct SwitchControl: View {
+    @Binding var isOn: Bool
+    var body: some View { Toggle("", isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small) }
+}
+
+/// 「通用」：四宫格——基本、额度（菜单栏和两张卡片共用），用量统计、数据来源
 struct GeneralSettings: View {
     let updater: Updater
     @ObservedObject var model: UsageModel
@@ -662,117 +717,125 @@ struct GeneralSettings: View {
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
-        SettingsPage(.general, L("开机启动、外观、额度显示和数据来源")) {
-            Form {
-                Section {
-                    Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
-                        LoginItem.set(on)
-                        launchAtLogin = LoginItem.status == .enabled
-                        needsApproval = LoginItem.status == .requiresApproval
-                    }))
-                    if needsApproval {
-                        Text(L("需要在 系统设置 → 通用 → 登录项 中允许 UsageBar"))
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    Picker(L("语言"), selection: $language) {
-                        Text(L("跟随系统")).tag("auto")
-                        Divider()
-                        Text("中文").tag("zh")
-                        Text("日本語").tag("ja")
-                        Text("English").tag("en")
-                    }
-                    Picker(L("外观"), selection: $appearance) {
-                        Text(L("自动")).tag("auto")
-                        Text(L("浅色")).tag("light")
-                        Text(L("深色")).tag("dark")
-                    }
-                    .pickerStyle(.segmented)
-                    // 主题色：统计图、开关、侧边栏和主窗口里的选中标记都用它
-                    LabeledContent(L("主题色")) {
-                        HStack(spacing: 9) {
-                            ForEach(ChartColor.all, id: \.key) { c in
-                                Button { chartColor = c.key } label: {
-                                    ChartColor.swatch(c.key).frame(width: 16, height: 16)
-                                        .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.7 : 0), lineWidth: 1.5).padding(-3))
-                                        .padding(3)
-                                }
-                                .buttonStyle(.plain)
-                                .help(L(c.name))
-                            }
-                        }
-                    }
-                }
-                Section {
-                    Picker(L("显示数值"), selection: $displayMode) {
-                        Text(L("剩余")).tag("remaining")
-                        Text(L("已使用")).tag("used")
-                    }
-                    .pickerStyle(.segmented)
-                    Toggle("Claude", isOn: $showClaude)
-                    Toggle("Codex", isOn: $showCodex)
-                    Picker(L("刷新间隔"), selection: $refreshMinutes) {
-                        ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                    }
-                } header: {
-                    Text(L("额度"))
-                } footer: {
-                    Text(L("菜单栏和两张卡片都按这里显示")).font(.callout).foregroundStyle(.secondary)
-                }
+        SettingsScroll(.general, L("开机启动、外观、额度显示和数据来源")) {
+            Grid(alignment: .topLeading, horizontalSpacing: 24, verticalSpacing: 26) {
+                GridRow(alignment: .top) { basic; limits }
+                GridRow(alignment: .top) { usage; sources }
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-        } side: {
-            // 右栏：用量统计和数据来源（「关于」单独一页）
-            Form {
-                Section(L("用量统计")) {
-                    LabeledContent(L("价格表")) {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取"))
-                                if Pricing.downloadFailed && !stats.loading {
-                                    Text(L("更新失败，继续使用旧价格")).font(.caption)
-                                }
-                            }
-                            .foregroundStyle(.secondary)
-                            if stats.loading {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Button(L("立即更新")) { stats.reload(forcePrices: true) }
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
-                    LabeledContent(L("本机会话记录")) {
-                        Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
-                            .foregroundStyle(.secondary)
-                    }
-                    Picker(L("刷新间隔（后台增量更新）"), selection: $statsRefreshMinutes) {
-                        ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                    }
-                }
-                Section {
-                    provider("Claude", source: L("Claude Code 登录（钥匙串）"))
-                    provider("Codex", source: "~/.codex/auth.json")
-                } header: {
-                    Text(L("数据来源"))
-                } footer: {
-                    Text(L("数据从哪里来，见「关于」")).font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            .padding(.trailing, 10)
         }
     }
 
-    /// 一家一行：名字，右边是连接状态和读取的地方
-    func provider(_ name: String, source: String) -> some View {
-        LabeledContent(name) {
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(status(model.results.first { $0.name == name })).multilineTextAlignment(.trailing)
-                Text(source).font(.caption)
+    var basic: some View {
+        SettingsGroup(L("基本"), footer: needsApproval ? L("需要在 系统设置 → 通用 → 登录项 中允许 UsageBar") : nil) {
+            SettingsRow(L("开机启动")) {
+                SwitchControl(isOn: Binding(get: { launchAtLogin }, set: { on in
+                    LoginItem.set(on)
+                    launchAtLogin = LoginItem.status == .enabled
+                    needsApproval = LoginItem.status == .requiresApproval
+                }))
             }
-            .foregroundStyle(.secondary)
+            Divider()
+            SettingsRow(L("语言")) {
+                Picker("", selection: $language) {
+                    Text(L("跟随系统")).tag("auto")
+                    Divider()
+                    Text("中文").tag("zh")
+                    Text("日本語").tag("ja")
+                    Text("English").tag("en")
+                }
+                .labelsHidden().fixedSize()
+            }
+            Divider()
+            SettingsRow(L("外观")) {
+                Picker("", selection: $appearance) {
+                    Text(L("自动")).tag("auto")
+                    Text(L("浅色")).tag("light")
+                    Text(L("深色")).tag("dark")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            Divider()
+            // 主题色：统计图、开关、侧边栏和主窗口里的选中标记都用它
+            SettingsRow(L("主题色")) {
+                HStack(spacing: 7) {
+                    ForEach(ChartColor.all, id: \.key) { c in
+                        Button { chartColor = c.key } label: {
+                            ChartColor.swatch(c.key).frame(width: 16, height: 16)
+                                .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.7 : 0), lineWidth: 1.5).padding(-3))
+                                .padding(3)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L(c.name))
+                    }
+                }
+            }
+        }
+    }
+
+    var limits: some View {
+        SettingsGroup(L("额度"), footer: L("菜单栏和两张卡片都按这里显示")) {
+            SettingsRow(L("显示数值")) {
+                Picker("", selection: $displayMode) {
+                    Text(L("剩余")).tag("remaining")
+                    Text(L("已使用")).tag("used")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            Divider()
+            SettingsRow("Claude") { SwitchControl(isOn: $showClaude) }
+            Divider()
+            SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }
+            Divider()
+            SettingsRow(L("刷新间隔")) {
+                Picker("", selection: $refreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+        }
+    }
+
+    var usage: some View {
+        SettingsGroup(L("用量统计")) {
+            SettingsRow(L("价格表"), detail: Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取")) {
+                if stats.loading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button(L("立即更新")) { stats.reload(forcePrices: true) }.controlSize(.small)
+                }
+            }
+            if Pricing.downloadFailed && !stats.loading {
+                Text(L("更新失败，继续使用旧价格")).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 6)
+            }
+            Divider()
+            SettingsRow(L("本机会话记录")) {
+                Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
+            SettingsRow(L("刷新间隔"), detail: L("后台增量更新")) {
+                Picker("", selection: $statsRefreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+        }
+    }
+
+    var sources: some View {
+        SettingsGroup(L("数据来源"), footer: L("数据从哪里来，见「关于」")) {
+            provider("Claude", source: L("Claude Code 登录（钥匙串）"))
+            Divider()
+            provider("Codex", source: "~/.codex/auth.json")
+        }
+    }
+
+    /// 一家一行：名字和读取的地方，右边是连接状态
+    func provider(_ name: String, source: String) -> some View {
+        SettingsRow(name, detail: source) {
+            Text(status(model.results.first { $0.name == name }))
+                .multilineTextAlignment(.trailing).foregroundStyle(.secondary)
         }
     }
 
@@ -790,7 +853,7 @@ struct GeneralSettings: View {
     }
 }
 
-/// 「菜单栏」：菜单栏上的文字，右边预览菜单栏和点开后的菜单
+/// 「菜单栏」：上面是设置，下面是铺满宽度的预览（菜单栏和点开后的菜单）
 struct MenuBarSettings: View {
     @ObservedObject var model: UsageModel
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
@@ -813,25 +876,21 @@ struct MenuBarSettings: View {
     }
 
     var body: some View {
-        SettingsPage(.menuBar, L("菜单栏上显示的文字，右边是点开后的菜单")) {
-            Form {
-                Section {
-                    Picker(L("名称"), selection: $menuLabel) {
-                        Text(L("简写（Cc / Cx）")).tag("short")
-                        Text(L("全名（Claude / Codex）")).tag("full")
+        SettingsScroll(.menuBar, L("菜单栏上显示的文字，下面是点开后的菜单")) {
+            VStack(alignment: .leading, spacing: 26) {
+                SettingsGroup(footer: L("每家显示最紧的那个额度；显示剩余还是已用、显示哪几家在「通用」里设置")) {
+                    SettingsRow(L("名称")) {
+                        Picker("", selection: $menuLabel) {
+                            Text(L("简写（Cc / Cx）")).tag("short")
+                            Text(L("全名（Claude / Codex）")).tag("full")
+                        }
+                        .pickerStyle(.radioGroup).horizontalRadioGroupLayout().labelsHidden().fixedSize()
                     }
-                    .pickerStyle(.radioGroup)
-                } footer: {
-                    Text(L("每家显示最紧的那个额度；显示剩余还是已用、显示哪几家在「通用」里设置"))
-                        .font(.callout).foregroundStyle(.secondary)
                 }
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-        } side: {
-            SidePanel(L("预览")) {
-                VStack(alignment: .trailing, spacing: 6) {
-                    // 模拟一段菜单栏
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L("预览")).font(.headline)
+                    VStack(alignment: .trailing, spacing: 6) {
+                // 模拟一段菜单栏
                     HStack(spacing: 14) {
                         Spacer()
                         Text(title).font(.system(size: 13, weight: .medium).monospacedDigit())
@@ -870,13 +929,17 @@ struct MenuBarSettings: View {
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
                     .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                     .padding(.trailing, 40)
+                    }
+                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity)
+                    .modifier(Panel())
                 }
             }
         }
     }
 }
 
-/// 「卡片」：额度卡片和用量卡片，上面切换，各自的显示内容、布局和外观分开设置
+/// 「卡片」：额度卡片和用量卡片，上面切换；左边是这张卡片的设置，右边预览
 struct CardSettings: View {
     @ObservedObject var model: UsageModel
     @ObservedObject var stats: StatsStore
@@ -884,23 +947,26 @@ struct CardSettings: View {
 
     var body: some View {
         let keys = which == "stats" ? CardKeys.stats : CardKeys.limits
-        SettingsPage(.card, L("额度卡片和用量卡片分开设置，改动会实时显示在右边的预览里")) {
-            VStack(spacing: 0) {
+        SettingsScroll(.card, L("额度卡片和用量卡片分开设置，改动会实时显示在右边的预览里")) {
+            VStack(alignment: .leading, spacing: 18) {
                 Picker("", selection: $which) {
                     Text(L("额度卡片")).tag("limits")
                     Text(L("用量卡片")).tag("stats")
                 }
-                .pickerStyle(.segmented).labelsHidden()
-                .padding(.horizontal, 20).padding(.top, 18)
-                // 换一张卡片时重建，@AppStorage 才会换成那张卡片的键
-                CardForm(keys: keys).id(which)
-            }
-        } side: {
-            SidePanel(L("预览")) {
-                CardPreview(keys: keys, model: model, stats: stats).id(which)
-                    .frame(height: 420)
-                Text(L("拖动桌面上的卡片可以移动位置，右键有更多操作"))
-                    .font(.caption).foregroundStyle(.secondary)
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                HStack(alignment: .top, spacing: 24) {
+                    // 换一张卡片时重建，@AppStorage 才会换成那张卡片的键
+                    CardForm(keys: keys).id(which)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L("预览")).font(.headline)
+                        CardPreview(keys: keys, model: model, stats: stats).id(which)
+                            .frame(height: 440)
+                        Text(L("拖动桌面上的卡片可以移动位置，右键有更多操作"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
             }
         }
     }
@@ -941,60 +1007,71 @@ struct CardForm: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(keys.stats ? L("显示用量卡片") : L("显示额度卡片"), isOn: $show)
+        VStack(alignment: .leading, spacing: 22) {
+            SettingsGroup(footer: keys.stats ? L("用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率")
+                                             : L("额度卡片显示各家额度的剩余（或已用）和重置时间")) {
+                SettingsRow(keys.stats ? L("显示用量卡片") : L("显示额度卡片")) { SwitchControl(isOn: $show) }
+                Divider()
                 if keys.stats {
-                    Picker(L("统计范围"), selection: $statsRange) {
-                        Text(L("今天")).tag("today")
-                        Text(L("重置以来")).tag("cycle")
-                        Text(L("近 7 天")).tag("7d")
+                    SettingsRow(L("统计范围")) {
+                        Picker("", selection: $statsRange) {
+                            Text(L("今天")).tag("today")
+                            Text(L("重置以来")).tag("cycle")
+                            Text(L("近 7 天")).tag("7d")
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
                     }
-                    .pickerStyle(.segmented)
                     .disabled(!show)
                 } else {
-                    Picker(L("重置时间"), selection: $resetStyle) {
-                        Text(L("不显示")).tag("hidden")
-                        Text(L("剩余时间")).tag("relative")
-                        Text(L("具体时间")).tag("absolute")
+                    SettingsRow(L("重置时间")) {
+                        Picker("", selection: $resetStyle) {
+                            Text(L("不显示")).tag("hidden")
+                            Text(L("剩余时间")).tag("relative")
+                            Text(L("具体时间")).tag("absolute")
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
                     }
-                    .pickerStyle(.segmented)
                     .disabled(!show)
                 }
-            } footer: {
-                Text(keys.stats ? L("用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率")
-                                : L("额度卡片显示各家额度的剩余（或已用）和重置时间"))
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            Section(L("布局")) {
-                Picker(L("布局"), selection: $layout) {
-                    Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
-                    Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
-                    Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+            SettingsGroup(L("布局")) {
+                SettingsRow(L("布局")) {
+                    Picker("", selection: $layout) {
+                        Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                        Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                        Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                .pickerStyle(.segmented)
-                PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
+                Divider()
+                SettingsRow(L("大小")) { PercentControl(value: $scale, range: 0.8...1.6, step: 0.1) }
             }
             .disabled(!show)
-            Section(L("外观")) {
-                Picker(L("背景"), selection: $background) {
-                    Text(L("无")).tag("none")
-                    Text(L("深色毛玻璃")).tag("dark")
-                    Text(L("浅色毛玻璃")).tag("light")
+            SettingsGroup(L("外观")) {
+                SettingsRow(L("背景")) {
+                    Picker("", selection: $background) {
+                        Text(L("无")).tag("none")
+                        Text(L("深色毛玻璃")).tag("dark")
+                        Text(L("浅色毛玻璃")).tag("light")
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                PercentSlider(title: L("毛玻璃浓度"), value: $bgOpacity, range: 0.1...1.0, step: 0.05)
+                Divider()
+                SettingsRow(L("毛玻璃浓度")) { PercentControl(value: $bgOpacity, range: 0.1...1.0, step: 0.05) }
                     .disabled(background == "none")
-                Picker(L("文字颜色"), selection: $textColor) {
-                    Text(L("白色")).tag("white")
-                    Text(L("黑色")).tag("black")
+                Divider()
+                SettingsRow(L("文字颜色")) {
+                    Picker("", selection: $textColor) {
+                        Text(L("白色")).tag("white")
+                        Text(L("黑色")).tag("black")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                .pickerStyle(.segmented)
-                PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
+                Divider()
+                SettingsRow(L("整体不透明度")) { PercentControl(value: $opacity, range: 0.3...1.0, step: 0.05) }
             }
             .disabled(!show)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
     }
 }
 
@@ -1057,84 +1134,118 @@ struct CardPreview: View {
     }
 }
 
-/// 「关于」：版本和更新，右边说明数据从哪里来
+/// 「关于」：一整列——版本和更新、数据说明、链接
 struct AboutSettings: View {
     let updater: Updater
 
     var body: some View {
-        SettingsPage(.about, L("版本、更新和数据说明")) {
-            AboutCard(updater: updater)
-                .padding(.horizontal, 20).padding(.top, 20)
-        } side: {
-            SidePanel(L("数据说明")) {
-                Text(L("额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。"))
-                    .font(.callout).foregroundStyle(.secondary)
-                    // 宽度可以收缩但有下限，否则会按最窄宽度算出极高的最小高度
+        SettingsScroll(.about, L("版本、更新和数据说明")) {
+                VStack(alignment: .leading, spacing: 24) {
+                    AboutCard(updater: updater)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L("数据说明")).font(.headline)
+                        VStack(spacing: 0) {
+                            infoRow("gauge.with.dots.needle.50percent", L("额度"),
+                                    L("用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询"))
+                            Divider().padding(.leading, 54)
+                            infoRow("chart.bar.xaxis", L("用量统计"),
+                                    L("只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次"))
+                            Divider().padding(.leading, 54)
+                            infoRow("lock.shield", L("隐私"), L("所有数据只在这台 Mac 和上述官方服务之间传输，不经过其他服务器"))
+                        }
+                        .modifier(Panel())
+                    }
+                    HStack(spacing: 22) {
+                        link("chevron.left.forwardslash.chevron.right", "GitHub", "")
+                        link("shippingbox", L("所有版本"), "/releases")
+                        link("exclamationmark.bubble", L("反馈问题"), "/issues")
+                    }
+                    .font(.callout)
+                }
+        }
+    }
+
+    /// 数据说明的一行：图标、标题、说明
+    func infoRow(_ symbol: String, _ title: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(.tint)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).fontWeight(.medium)
+                Text(text).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(minWidth: 300, maxWidth: 460, alignment: .leading)
-                    .padding(16)
-                    .modifier(Panel())
             }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    func link(_ symbol: String, _ title: String, _ path: String) -> some View {
+        Link(destination: URL(string: "https://github.com/\(Updater.repo)\(path)")!) {
+            Label(title, systemImage: symbol)
         }
     }
 }
 
-/// 「关于」页的版本和更新
+/// 「关于」页顶部：图标、名称、版本，右边是检查更新；有新版或出错时下面展开说明
 struct AboutCard: View {
     @ObservedObject var updater: Updater
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "gauge.with.dots.needle.67percent")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("UsageBar").font(.title2.weight(.semibold))
-            Text(L("版本 %@", updater.currentVersion))
-                .font(.callout).foregroundStyle(.secondary)
-            Text(L("在菜单栏和桌面显示 Claude 与 Codex 的剩余用量"))
-                .font(.callout).multilineTextAlignment(.center)
-            Link("github.com/plsy1/UsageBar", destination: URL(string: "https://github.com/plsy1/UsageBar")!)
-                .font(.callout)
-            Divider().padding(.vertical, 6)
-            updateSection
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 16) {
+                // 直接读包里的图标：NSApp.applicationIconImage 在这里拿到的是系统占位图
+                Image(nsImage: Bundle.main.image(forResource: "AppIcon") ?? NSApp.applicationIconImage)
+                    .resizable().frame(width: 64, height: 64)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("UsageBar").font(.title2.weight(.semibold))
+                    Text(L("版本 %@", updater.currentVersion)).foregroundStyle(.secondary)
+                    Text(L("在菜单栏和桌面显示 Claude 与 Codex 的剩余用量")).font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 16)
+                updateControl
+            }
+            switch updater.state {
+            case .available:
+                if let notes = updater.release?.notes {
+                    Divider()
+                    Text(Self.summary(notes)).font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(8).frame(maxWidth: .infinity, alignment: .leading)
+                    if let page = updater.release?.page { Link(L("查看详情"), destination: page).font(.callout) }
+                }
+            case .failed(let msg):
+                Divider()
+                HStack {
+                    Text(L("更新失败：%@", msg)).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Link(L("前往下载页"), destination: Updater.releasesPage).font(.callout)
+                }
+            default:
+                EmptyView()
+            }
         }
-        .padding(28)
-        .frame(maxWidth: 460)
+        .padding(20)
         .modifier(Panel())
     }
 
-    /// 检查更新 / 有新版 / 下载中 / 失败
-    @ViewBuilder var updateSection: some View {
+    /// 右边：检查更新 / 正在检查 / 有新版 / 下载中
+    @ViewBuilder var updateControl: some View {
         switch updater.state {
         case .checking:
             HStack(spacing: 8) { ProgressView().controlSize(.small); Text(L("正在检查…")).foregroundStyle(.secondary) }
         case .downloading:
             HStack(spacing: 8) { ProgressView().controlSize(.small); Text(L("正在下载并安装…")).foregroundStyle(.secondary) }
         case .available(let v):
-            VStack(spacing: 10) {
+            VStack(alignment: .trailing, spacing: 6) {
                 Text(L("发现新版本 %@", v)).font(.callout.weight(.semibold))
-                if let notes = updater.release?.notes {
-                    Text(Self.summary(notes)).font(.caption).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading).lineLimit(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                HStack {
-                    Button(L("更新并重启")) { updater.install() }.buttonStyle(.borderedProminent)
-                    if let page = updater.release?.page { Link(L("查看详情"), destination: page).font(.callout) }
-                }
+                Button(L("更新并重启")) { updater.install() }.buttonStyle(.borderedProminent)
             }
-        case .failed(let msg):
-            VStack(spacing: 8) {
-                Text(L("更新失败：%@", msg)).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                HStack {
-                    Button(L("重试")) { updater.check() }
-                    Link(L("前往下载页"), destination: Updater.releasesPage).font(.callout)
-                }
-            }
+        case .failed:
+            Button(L("重试")) { updater.check() }
         case .upToDate:
-            VStack(spacing: 8) {
-                Text(L("已是最新版本")).font(.callout).foregroundStyle(.secondary)
-                Button(L("检查更新")) { updater.check() }
+            VStack(alignment: .trailing, spacing: 6) {
+                Label(L("已是最新版本"), systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+                Button(L("检查更新")) { updater.check() }.controlSize(.small)
             }
         case .idle:
             Button(L("检查更新")) { updater.check() }
