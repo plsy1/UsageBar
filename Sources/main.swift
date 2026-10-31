@@ -1659,13 +1659,33 @@ struct MenuUsageBlock: View {
     }
 }
 
-/// 贴在桌面层的卡片窗口：在所有桌面空间显示，可拖动，位置自动记住。额度卡片和用量卡片都用它
+extension NSScreen {
+    /// 显示器的唯一 ID（重启、换接口都不变），按它分别记卡片位置
+    var uuid: String? {
+        guard let n = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let id = CGDisplayCreateUUIDFromDisplayID(n.uint32Value)?.takeRetainedValue() else { return nil }
+        return CFUUIDCreateString(nil, id) as String
+    }
+}
+
+/// 贴在桌面层的卡片窗口：在所有桌面空间显示，可拖动。额度卡片和用量卡片都用它
+///
+/// 位置按显示器分别记：每块屏记卡片左上角相对这块屏左上角的偏移，另记最后放在哪块屏。
+/// 启动时、显示器插拔或改排列时重新摆：那块屏还在就放回去；不在就放到主屏（不动那块屏的记录，接回来时自动回去）。
+/// 无论怎么摆都限制在屏幕可见范围内——无边框窗口系统不会帮忙挪，跑到屏幕外就再也找不回来
 final class CardWindow: NSWindow {
     /// 尺寸变了（额度卡片拿来给设置页预览）
     var onResize: (CGSize) -> Void = { _ in }
+    /// 偏好里记位置的键：「每块屏的偏移」和「最后在哪块屏」
+    let placementKey: String
+    var lastScreenKey: String { placementKey + ".screen" }
+    /// 卡片摆在哪块屏（摆放或用户拖动时定下来）。卡片变大后按它挪回屏内——
+    /// 不能现算重叠最多的那块：卡片往下长出屏幕后，重叠最多的可能变成旁边的屏
+    weak var home: NSScreen?
 
     /// name：记住位置用的名字；near：第一次显示时挨着这个窗口放（用量卡片挨着额度卡片）
     init<V: View>(_ view: V, name: String, near: NSWindow? = nil) {
+        placementKey = "cardPlacement." + name
         super.init(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         let host = NSHostingController(rootView: view)
         host.sizingOptions = .preferredContentSize
@@ -1677,21 +1697,29 @@ final class CardWindow: NSWindow {
         isMovableByWindowBackground = true
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
-        if !setFrameUsingName(name) {
-            // 先按内容定好大小再摆位置，不然窗口之后从 0 长高时会往上长
-            setContentSize(host.view.fittingSize)
-            if let near, let s = near.screen?.visibleFrame {
+        // 先按内容定好大小再摆位置，不然窗口之后从 0 长高时会往上长
+        setContentSize(host.view.fittingSize)
+        if !place() {
+            // 第一次：旧版存的位置（「x y 宽 高 屏幕…」，全局坐标）直接拿来用。
+            // 不用 setFrameUsingName：屏幕可用区域差 1pt 它就当成别的屏，按比例把卡片挪到主屏上
+            let old = UserDefaults.standard.string(forKey: "NSWindow Frame " + name)?
+                .split(separator: " ").compactMap { Double($0) } ?? []
+            if old.count >= 4 {
+                setFrameTopLeftPoint(NSPoint(x: old[0], y: old[1] + old[3]))
+                UserDefaults.standard.removeObject(forKey: "NSWindow Frame " + name)
+            } else if let near, let s = near.screen?.visibleFrame {
                 // 放在它下面；下面放不下就放右边
                 let h = frame.height
                 setFrameTopLeftPoint(near.frame.minY - 12 - h > s.minY
                     ? NSPoint(x: near.frame.minX, y: near.frame.minY - 12)
                     : NSPoint(x: near.frame.maxX + 12, y: near.frame.maxY))
-            } else if let s = NSScreen.screens.first?.visibleFrame {
-                // 默认放到主屏右上角
+            } else if let s = NSScreen.main?.visibleFrame {
                 setFrameTopLeftPoint(NSPoint(x: s.maxX - CardWindow.defaultWidth - 24, y: s.maxY - 16))
             }
+            clampToScreen()
+            savePlacement()
         }
-        setFrameAutosaveName(name)
+        NotificationCenter.default.addObserver(self, selector: #selector(moved), name: NSWindow.didMoveNotification, object: self)
     }
     /// 每家一栏的宽度；两栏并排时卡片约 500 宽
     static let column: CGFloat = 210
@@ -1699,16 +1727,69 @@ final class CardWindow: NSWindow {
     static let defaultWidth: CGFloat = column * 2 + 24 + 32
     override var canBecomeKey: Bool { false }
 
+    /// 只记用户拖动（按着鼠标）的结果；系统因为显示器变化挪窗口、程序自己摆放都不算
+    @objc func moved() {
+        if NSEvent.pressedMouseButtons & 1 != 0 { savePlacement() }
+    }
+
+    /// 卡片在哪块屏：重叠面积最大的那块（还没显示时 NSWindow.screen 不可靠）
+    var bestScreen: NSScreen? {
+        NSScreen.screens.max { a, b in
+            let x = a.frame.intersection(frame), y = b.frame.intersection(frame)
+            return x.width * x.height < y.width * y.height
+        }
+    }
+
+    func savePlacement() {
+        guard let screen = bestScreen ?? NSScreen.main, let id = screen.uuid else { return }
+        home = screen
+        let d = UserDefaults.standard
+        var map = d.dictionary(forKey: placementKey) as? [String: [Double]] ?? [:]
+        map[id] = [frame.minX - screen.frame.minX, screen.frame.maxY - frame.maxY]
+        d.set(map, forKey: placementKey)
+        d.set(id, forKey: lastScreenKey)
+    }
+
+    /// 摆到该在的地方；还没记过位置就返回 false
+    @discardableResult
+    func place() -> Bool {
+        let d = UserDefaults.standard
+        guard let map = d.dictionary(forKey: placementKey) as? [String: [Double]], !map.isEmpty else { return false }
+        let last = d.string(forKey: lastScreenKey) ?? ""
+        let screens = NSScreen.screens
+        // 上次那块屏还在就用它；不在就用主屏（主屏自己有记录就用主屏的，否则沿用上次的相对位置）
+        guard let target = screens.first(where: { $0.uuid == last }) ?? NSScreen.main ?? screens.first,
+              let offset = map[target.uuid ?? ""] ?? map[last] ?? map.values.first, offset.count == 2 else { return false }
+        let f = target.frame
+        home = target
+        setFrameOrigin(NSPoint(x: f.minX + offset[0], y: f.maxY - offset[1] - frame.height))
+        clampToScreen()
+        return true
+    }
+
+    /// 整张卡片挪进屏幕可见范围（不算菜单栏和程序坞）
+    func clampToScreen(_ target: NSScreen? = nil) {
+        guard let s = (target ?? home ?? bestScreen ?? NSScreen.main)?.visibleFrame else { return }
+        var o = frame.origin
+        o.x = min(max(o.x, s.minX), max(s.minX, s.maxX - frame.width))
+        o.y = min(max(o.y, s.minY), max(s.minY, s.maxY - frame.height))
+        if o != frame.origin { setFrameOrigin(o) }
+    }
+
     /// 内容变高/变矮时保持左上角不动（AppKit 默认保持左下角）
     override func setFrame(_ r: NSRect, display: Bool) {
         var r = r
+        let resized = frame.height > 0 && r.size != frame.size
         if frame.height > 0, r.origin == frame.origin, r.height != frame.height {
             r.origin.y = frame.maxY - r.height
         }
         super.setFrame(r, display: display)
-        // 尺寸变了就告诉设置页预览；放到下一轮，免得在布局途中改发布的值
+        // 尺寸变了就告诉设置页预览；变大后可能超出屏幕，挪回来。放到下一轮，免得在布局途中改
         let size = frame.size
-        DispatchQueue.main.async { [weak self] in self?.onResize(size) }
+        DispatchQueue.main.async { [weak self] in
+            self?.onResize(size)
+            if resized { self?.clampToScreen() }
+        }
     }
 }
 
@@ -1740,7 +1821,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(newValue, forKey: Pref.showStatsCard) }
     }
 
+    /// 显示器插拔、改分辨率或排列：两张卡片重新摆
+    @objc func screensChanged() {
+        card?.place()
+        statsCard?.place()
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
+        NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
+                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
         Pref.register()
         Pref.applyAppearance()
         // install.sh 从旧版（LaunchAgent 自启）升级时会带上这个参数
