@@ -559,7 +559,7 @@ struct StatsView: View {
             ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                 Text(c.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     .frame(width: c.width, alignment: .leading)
-                    .frame(maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
+                    .frame(minWidth: c.width == nil ? 170 : nil, maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
             }
         }
         .padding(.horizontal, 20).frame(height: 38)
@@ -573,7 +573,7 @@ struct StatsView: View {
                     .font(mono.contains(i) ? .system(.body, design: .monospaced) : .body.monospacedDigit())
                     .lineLimit(1)
                     .frame(width: c.width, alignment: .leading)
-                    .frame(maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
+                    .frame(minWidth: c.width == nil ? 170 : nil, maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
             }
         }
         .padding(.horizontal, 20).frame(height: 42)
@@ -585,8 +585,8 @@ struct StatsView: View {
     }
 
     func modelTable(_ models: [ModelRow]) -> some View {
-        let cols: [Column] = [(L("模型"), nil), (L("应用"), 90), (L("请求数"), 90), (L("新增输入"), 100),
-                              (L("输出"), 100), (L("缓存读取"), 110), (L("缓存写入"), 110), (L("成本"), 110)]
+        let cols: [Column] = [(L("模型"), nil), (L("应用"), 76), (L("请求数"), 76), (L("新增输入"), 90),
+                              (L("输出"), 84), (L("缓存读取"), 96), (L("缓存写入"), 96), (L("成本"), 96)]
         return VStack(spacing: 0) {
             headerRow(cols)
             if models.isEmpty { emptyRow() }
@@ -604,8 +604,8 @@ struct StatsView: View {
         let current = min(page, pages - 1)  // 数据变少时别停在不存在的页
         let f = DateFormatter()
         f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
-        let cols: [Column] = [(L("时间"), range == .today ? 110 : 150), (L("应用"), 90), (L("模型"), nil), (L("成本"), 110),
-                              (L("新增输入"), 100), (L("输出"), 100), (L("缓存读取"), 110), (L("缓存写入"), 110)]
+        let cols: [Column] = [(L("时间"), range == .today ? 96 : 140), (L("应用"), 76), (L("模型"), nil), (L("成本"), 96),
+                              (L("新增输入"), 90), (L("输出"), 84), (L("缓存读取"), 96), (L("缓存写入"), 96)]
         return LazyVStack(spacing: 0) {
             headerRow(cols)
             if rows.isEmpty { emptyRow() }

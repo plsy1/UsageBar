@@ -663,7 +663,7 @@ struct LimitsSettings: View {
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .windowBackgroundColor)))
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
                     .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                    .padding(.trailing, 150)
+                    .padding(.trailing, 40)
                 }
             }
         }
@@ -714,7 +714,9 @@ struct DataSettings: View {
             SidePanel(L("说明")) {
                 Text(L("额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。"))
                     .font(.callout).foregroundStyle(.secondary)
-                    .frame(width: 420, alignment: .leading)  // 固定宽度，否则会按最窄宽度算出极高的最小高度
+                    // 宽度可以收缩但有下限，否则会按最窄宽度算出极高的最小高度
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minWidth: 300, maxWidth: 420, alignment: .leading)
                     .padding(16)
                     .modifier(Panel())
             }
@@ -917,7 +919,7 @@ struct MainView: View {
             .navigationTitle(nav.tab.title)
         }
         // 主题色：主窗口里的开关、分段按钮、选中标记都用它（桌面卡片和菜单栏保持单色）
-        .frame(minWidth: 1040, minHeight: 650)
+        .frame(minWidth: 1120, minHeight: 700)  // 16:10，所有页面在这个尺寸下都能完整显示
         // 选「跟随系统」时不覆盖，控件用系统的主题颜色
         .tint(themeColor == "system" ? nil : ChartColor.color(themeColor))
         .accentColor(themeColor == "system" ? nil : ChartColor.color(themeColor))
