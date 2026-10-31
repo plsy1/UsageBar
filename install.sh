@@ -17,4 +17,4 @@ pkill -x UsageBar 2>/dev/null && sleep 1 || true
 
 ./build.sh "$APP"
 open "$APP" $ARGS
-echo "已安装并启动：$APP（开机启动在 设置 → 通用 里开关）"
+echo "已安装并启动：$APP（开机启动在「打开 UsageBar…」→ 通用 里开关）"
