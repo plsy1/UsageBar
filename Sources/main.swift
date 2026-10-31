@@ -403,7 +403,9 @@ func bar(_ percent: Double, width: Int = 12) -> String {
 }
 
 func resetText(_ d: Date?) -> String {
-    guard let d else { return "" }
+    guard var d else { return "" }
+    // 接口给的重置时间常是 05:59:59.x：差几秒到整分钟就进位，和统计页的「重置以来」一致
+    d = Date(timeIntervalSince1970: ((d.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60)
     let s = max(0, d.timeIntervalSinceNow)
     let days = Int(s) / 86400, hours = Int(s) % 86400 / 3600, mins = Int(s) % 3600 / 60
     let rel = days > 0 ? L("%d天%d小时", days, hours) : hours > 0 ? L("%d小时%d分", hours, mins) : L("%d分钟", mins)
@@ -760,25 +762,15 @@ struct MenuBarSettings: View {
                     // 点开后的菜单
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(shown, id: \.name) { u in
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                Text(u.name).font(.system(size: 13, weight: .bold))
-                                if let p = u.plan { Text(p).font(.system(size: 11)).foregroundStyle(.secondary) }
-                            }
-                            ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                                Text("  " + w.label.padding(toLength: 10, withPad: " ", startingAt: 0) + bar(w.shown(used)) + " " + w.shownText(used))
-                                    .font(.system(size: 12, design: .monospaced))
-                                if w.resetsAt != nil {
-                                    Text("    " + resetText(w.resetsAt)).font(.system(size: 11)).foregroundStyle(.secondary)
-                                }
-                            }
+                            MenuUsageBlock(u: u, used: used).padding(.horizontal, -2)
                             Divider().padding(.vertical, 3)
                         }
                         ForEach([L("立即刷新"), L("显示桌面卡片"), L("用量统计…"), L("设置…"), L("退出")], id: \.self) {
-                            Text($0).font(.system(size: 13)).padding(.vertical, 1)
+                            Text($0).font(.system(size: 13)).padding(.vertical, 1).padding(.leading, 12)
                         }
                     }
-                    .padding(12)
-                    .frame(width: 330, alignment: .leading)
+                    .padding(.vertical, 10)
+                    .frame(width: 310, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .windowBackgroundColor)))
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
                     .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
@@ -1029,6 +1021,31 @@ extension CardView {
     }
 }
 
+/// 菜单里每家的用量区块：名称、套餐，各额度一行加圆角进度条
+struct MenuUsageBlock: View {
+    let u: ProviderUsage
+    let used: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(u.name).font(.system(size: 13, weight: .semibold))
+                if let p = u.plan { Text(p).font(.system(size: 11)).foregroundStyle(.secondary) }
+            }
+            if let e = u.error {
+                Text(e).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
+                UsageRow(w: w, s: 1.08, showReset: true, used: used)
+            }
+            if let n = u.note {
+                Text(n).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .frame(width: 290, alignment: .leading)
+    }
+}
+
 /// 贴在桌面层的卡片窗口：在所有桌面空间显示，可拖动，位置自动记住
 final class CardWindow: NSWindow {
     init(model: UsageModel) {
@@ -1105,7 +1122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 设置窗口里改了什么，这里同步到卡片显隐、刷新间隔和菜单栏
         NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.syncPrefs()
+            self?.scheduleSync()
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1163,6 +1180,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(max(1, statsTimerMinutes) * 60), repeats: true) { [weak self] _ in
             self?.stats.reload()
+        }
+    }
+
+    /// 偏好变化可能发生在 SwiftUI 布局途中（比如窗口位置自动保存），
+    /// 这时同步重建菜单会嵌套触发文字排版而崩溃，所以推到下一轮主循环，并把连续的变化合并成一次
+    var syncScheduled = false
+    func scheduleSync() {
+        guard !syncScheduled else { return }
+        syncScheduled = true
+        DispatchQueue.main.async {
+            self.syncScheduled = false
+            self.syncPrefs()
         }
     }
 
@@ -1229,7 +1258,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func rebuildMenu() {
         let menu = NSMenu()
-        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let small = NSFont.systemFont(ofSize: 11)
 
         // 纯展示的行：用自定义视图，否则 macOS 会把不可点的菜单项画成灰色
@@ -1249,31 +1277,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(mi)
         }
 
+        // 每家一块，和桌面卡片同样的样式（圆角进度条，不再用字符画）
         for u in results where Pref.visible(u.name) {
-            let head = NSMutableAttributedString(string: u.name, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
-            if let p = u.plan {
-                head.append(NSAttributedString(string: "  \(p)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
-            }
-            info(head)
-            if let e = u.error {
-                info(NSAttributedString(string: "  \(e)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
-            }
-            for w in u.windows {
-                let line = NSMutableAttributedString(string: "  " + w.label.padding(toLength: 10, withPad: " ", startingAt: 0),
-                                                     attributes: [.font: mono])
-                line.append(NSAttributedString(string: bar(w.shown()),
-                                               attributes: [.font: mono]))
-                line.append(NSAttributedString(string: " " + w.shownText(),
-                                               attributes: [.font: mono]))
-                info(line)
-                if w.resetsAt != nil {
-                    info(NSAttributedString(string: "    " + resetText(w.resetsAt),
-                                            attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
-                }
-            }
-            if let n = u.note {
-                info(NSAttributedString(string: "  \(n)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
-            }
+            let host = NSHostingView(rootView: MenuUsageBlock(u: u, used: Pref.showUsed))
+            host.frame.size = host.fittingSize
+            let mi = NSMenuItem()
+            mi.view = host
+            menu.addItem(mi)
             menu.addItem(.separator())
         }
 
