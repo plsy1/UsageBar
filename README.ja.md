@@ -12,6 +12,7 @@
 - **アプリ内アップデート**：GitHub Releases を毎日確認し、ワンクリックで新しいバージョンをダウンロード・SHA-256 を検証・置き換えて再起動
 - **言語**：English / 简体中文 / 日本語（既定ではシステムに合わせます）
 - macOS 13 以降、Apple シリコンと Intel に対応
+- **Windows / Linux**：トレイ、上限、設定を備えた[プレビュー版](https://github.com/plsy1/UsageBar/releases/tag/tauri-v0.1.0)があります（ソースは `tauri/`）
 
 ## インストール
 
