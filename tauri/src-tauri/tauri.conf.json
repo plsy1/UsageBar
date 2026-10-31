@@ -60,6 +60,20 @@
         "skipTaskbar": true,
         "alwaysOnTop": true,
         "focus": false
+      },
+      {
+        "label": "stats_card",
+        "title": "UsageBar",
+        "url": "index.html#stats_card",
+        "width": 120,
+        "height": 40,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": false,
+        "skipTaskbar": true,
+        "focus": false
       }
     ],
     "security": {

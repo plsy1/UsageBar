@@ -11,7 +11,7 @@ const T = {
   card_sub: ['布局、外观和大小，改动会马上显示在卡片上', 'レイアウト、外観、サイズ。変更はすぐカードに反映されます', 'Layout, look and size. Changes show on the card right away'],
   g_card: ['卡片', 'カード', 'Card'],
   g_look: ['外观', '外観', 'Appearance'],
-  show_card: ['显示桌面卡片', 'デスクトップカードを表示', 'Show Desktop Card'],
+  show_card: ['显示额度卡片', '上限カードを表示', 'Show Limits Card'],
   on_top: ['保持在最前', '常に手前に表示', 'Keep on Top'],
   on_top_hint: ['关掉时卡片在桌面层，会被其他窗口盖住', 'オフのときはデスクトップ層に置かれ、他のウインドウに隠れます', 'When off, the card sits on the desktop behind other windows'],
   layout: ['布局', 'レイアウト', 'Layout'],
@@ -35,6 +35,19 @@ const T = {
   card_hint: ['在卡片上按住拖动可以换位置，右键有更多选项', 'カードをドラッグして移動、右クリックでその他の操作', 'Drag the card to move it; right-click for more options'],
   resets_at: ['%s 重置', '%s にリセット', 'resets %s'],
   reset_one: ['可用重置 1 次', 'リセット 1 回分', '1 reset available'],
+  limits_card: ['额度卡片', '上限カード', 'Limits Card'],
+  usage_card: ['用量卡片', '使用量カード', 'Usage Card'],
+  show_usage_card: ['显示用量卡片', '使用量カードを表示', 'Show Usage Card'],
+  limits_card_desc: ['额度卡片显示各家额度的剩余（或已用）和重置时间', '上限カードには各上限の残り（または使用済み）とリセット時刻を表示します', 'The limits card shows how much of each limit is left (or used) and when it resets'],
+  usage_card_desc: ['用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率（来自本机会话记录）', '使用量カードには各サービスの推定コスト、リクエスト数、Tokens、キャッシュヒット率を表示します（この PC のセッション記録から）', "The usage card shows each service's estimated cost, requests, tokens and cache hit rate (from this computer's session logs)"],
+  stats_range: ['统计范围', '集計期間', 'Period'],
+  today: ['今天', '今日', 'Today'],
+  since_reset: ['重置以来', 'リセット以降', 'Since Reset'],
+  last_7d: ['近 7 天', '過去 7 日間', 'Last 7 Days'],
+  requests: ['请求数', 'リクエスト数', 'Requests'],
+  hit_rate: ['缓存命中率', 'キャッシュヒット率', 'Cache Hit Rate'],
+  reading_logs: ['正在读取本机会话记录…', 'ローカルのセッション記録を読み込み中…', 'Reading local session logs…'],
+  stats_refresh: ['统计刷新间隔', '統計の更新間隔', 'Statistics Refresh'],
   reset_count: ['可用重置 %s 次', 'リセット %s 回分', '%s resets available'],
   expires: ['%s 到期', '%s まで', 'expires %s'],
   earliest: ['最早 %s 到期', '最も早いもの %s まで', 'earliest expires %s'],
@@ -83,9 +96,15 @@ const T = {
 
 let state = null;
 let page = 'usage';
+// 卡片设置页正在看哪张：limits / stats
+let cardTab = 'limits';
+// 两张卡片形状一样时对齐到的内容区大小（Rust 发来的）
+let synced = null;
 // 托盘点开的小面板（Windows）和桌面卡片：同一个页面，地址带 #flyout / #card
 const FLYOUT = location.hash === '#flyout';
 const CARD = location.hash === '#card';
+const STATS_CARD = location.hash === '#stats_card';  // 用量卡片
+const ANY_CARD = CARD || STATS_CARD;
 // 拖卡片时画对齐线的透明窗口
 const GUIDES = location.hash === '#guides';
 let autostart = false;
@@ -227,6 +246,66 @@ function cardCompactRow(p, cols) {
 }
 const compactCells = (p) => 1 + (p.error && p.windows.length === 0 ? 1 : p.windows.length) + (p.resets ? 1 : 0);
 
+const money = (v) => '$' + (v || 0).toFixed(2);
+function abbrev(n) {
+  for (const [v, u] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']]) if (n >= v) return (n / v).toFixed(n >= v * 100 ? 0 : 1).replace(/\.0$/, '') + u;
+  return String(n);
+}
+const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
+
+// 卡片外框：中间内容区按对齐后的大小撑开（多出来的空在右边和下面），下面是更新时间
+function cardFrame(prefix, body, footer) {
+  const s = state.settings;
+  const style = `--s:${s[prefix + 'scale']};--bgop:${s[prefix + 'bg_opacity']};opacity:${s[prefix + 'opacity']}`;
+  const min = synced ? `min-width:${synced[0]}px;min-height:${synced[1]}px` : '';
+  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" style="${style}">
+    <div class="c-area" style="${min}"><div class="c-content">${body}</div></div>
+    ${footer}
+  </div>`;
+}
+
+// 报给 Rust 内容区的自然大小和形状（布局|大小|几家），两张一样时它会让两边对齐
+function reportCardContent(shape) {
+  const el = document.querySelector('.c-content');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  invoke('card_content', { content: { width: Math.ceil(r.width), height: Math.ceil(r.height), shape } });
+}
+
+// MARK: 用量卡片
+
+const usageShown = () => ['Claude', 'Codex'].filter((n) => state.settings[n === 'Claude' ? 'stats_card_show_claude' : 'stats_card_show_codex']);
+const planOf = (name) => state.providers.find((p) => p.name === name)?.plan;
+const usageOf = (name) => state.usage[name.toLowerCase()];
+const rangeTitle = () => t({ today: 'today', cycle: 'since_reset', '7d': 'last_7d' }[state.settings.stats_card_range] || 'today');
+
+function statsColumn(name) {
+  const u = usageOf(name), plan = planOf(name);
+  const kv = (k, v) => `<div class="c-kv"><span>${k}</span><span class="c-val">${v}</span></div>`;
+  return `<div class="c-col">
+    <div class="c-name">${esc(name)}${plan ? `<span class="c-plan">${esc(plan)}</span>` : ''}</div>
+    <div class="c-cost">${money(u.cost)}</div>
+    ${kv(t('requests'), u.requests.toLocaleString())}${kv('Tokens', abbrev(u.tokens))}${kv(t('hit_rate'), pct(u.hit_rate))}
+  </div>`;
+}
+
+function statsCompactRow(name) {
+  const u = usageOf(name);
+  const pair = (k, v) => `<span class="c-pair"><span class="c-lab">${k}</span><span class="c-num">${v}</span></span>`;
+  return `<span class="c-name">${esc(name)}</span><span class="c-num">${money(u.cost)}</span>${pair(t('requests'), u.requests.toLocaleString())}${pair('Tokens', abbrev(u.tokens))}`;
+}
+
+function statsCardPage() {
+  const s = state.settings, shown = usageShown();
+  const body = state.usage.updated == null && !state.usage.claude.requests && !state.usage.codex.requests
+    ? `<div class="c-reset">${t('reading_logs')}</div>`
+    : s.stats_card_layout === 'compact'
+      ? `<div class="c-lines" style="grid-template-columns: repeat(4, max-content)">${shown.map(statsCompactRow).join('')}</div>`
+      : `<div class="c-cols ${s.stats_card_layout === 'vertical' ? 'vertical' : ''}">${shown.map(statsColumn).join('')}</div>`;
+  const footer = state.usage.updated ? `<div class="c-updated">${rangeTitle()} · ${t('updated', clock(state.usage.updated))}</div>` : '';
+  return cardFrame('stats_card_', body, footer);
+}
+
 function cardPage() {
   const s = state.settings;
   const shown = shownProviders();
@@ -236,11 +315,7 @@ function cardPage() {
       return `<div class="c-lines" style="grid-template-columns: repeat(${cols}, max-content)">${shown.map((p) => cardCompactRow(p, cols)).join('')}</div>`;
     })()
     : `<div class="c-cols ${s.card_layout === 'vertical' ? 'vertical' : ''}">${shown.map(cardColumn).join('')}</div>`;
-  const style = `--s:${s.card_scale};--bgop:${s.card_bg_opacity};opacity:${s.card_opacity}`;
-  return `<div class="card-box bg-${esc(s.card_background)} text-${esc(s.card_text)}" style="${style}">
-    ${body}
-    ${state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : ''}
-  </div>`;
+  return cardFrame('card_', body, state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : '');
 }
 
 // 卡片窗口的大小跟着内容走
@@ -258,22 +333,34 @@ const toggle = (id, on) => `<label class="switch"><input type="checkbox" id="${i
 const slider = (key, min, max, step) => `<span class="slider"><input type="range" data-num="${key}" min="${min}" max="${max}" step="${step}" value="${state.settings[key]}"><span class="pct">${Math.round(state.settings[key] * 100)}%</span></span>`;
 
 function cardSettingsPage() {
-  const s = state.settings;
+  const s = state.settings, stats = cardTab === 'stats', k = stats ? 'stats_card_' : 'card_';
+  const tabs = `<div class="seg card-tabs">${[['limits', t('limits_card')], ['stats', t('usage_card')]].map(([v, l]) =>
+    `<button data-cardtab="${v}" class="${cardTab === v ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>`;
+  const own = stats
+    ? `<div class="field"><span>${t('stats_range')}</span>${seg('stats_card_range', [['today', t('today')], ['cycle', t('since_reset')], ['7d', t('last_7d')]])}</div>
+       <div class="field"><span>Claude</span>${toggle('stats_card_show_claude', s.stats_card_show_claude)}</div>
+       <div class="field"><span>Codex</span>${toggle('stats_card_show_codex', s.stats_card_show_codex)}</div>`
+    : `<div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>`;
   return `<div class="header"><div><h1>${t('nav_card')}</h1><div class="sub">${t('card_sub')}</div></div></div>
-    <div class="group-title">${t('g_card')}</div>
+    ${tabs}
+    <div class="group-title">${t(stats ? 'usage_card' : 'limits_card')}</div>
     <div class="panel group">
-      <div class="field"><span>${t('show_card')}</span>${toggle('card_show', s.card_show)}</div>
-      <div class="field"><span>${t('on_top')}<div class="hint">${t('on_top_hint')}</div></span>${toggle('card_on_top', s.card_on_top)}</div>
-      <div class="field"><span>${t('layout')}</span>${seg('card_layout', [['horizontal', t('l_horizontal')], ['vertical', t('l_vertical')], ['compact', t('l_compact')]])}</div>
-      <div class="field"><span>${t('size')}</span>${slider('card_scale', 0.8, 2.5, 0.1)}</div>
-      <div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>
+      <div class="field"><span>${t(stats ? 'show_usage_card' : 'show_card')}</span>${toggle(k + 'show', s[k + 'show'])}</div>
+      <div class="field"><span>${t('on_top')}<div class="hint">${t('on_top_hint')}</div></span>${toggle(k + 'on_top', s[k + 'on_top'])}</div>
+      ${own}
+    </div>
+    <div class="footnote">${t(stats ? 'usage_card_desc' : 'limits_card_desc')}</div>
+    <div class="group-title">${t('layout')}</div>
+    <div class="panel group">
+      <div class="field"><span>${t('layout')}</span>${seg(k + 'layout', [['horizontal', t('l_horizontal')], ['vertical', t('l_vertical')], ['compact', t('l_compact')]])}</div>
+      <div class="field"><span>${t('size')}</span>${slider(k + 'scale', 0.8, 2.5, 0.1)}</div>
     </div>
     <div class="group-title">${t('g_look')}</div>
     <div class="panel group">
-      <div class="field"><span>${t('background')}</span>${seg('card_background', [['none', t('bg_none')], ['dark', t('bg_dark')], ['light', t('bg_light')]])}</div>
-      ${s.card_background !== 'none' ? `<div class="field"><span>${t('bg_opacity')}</span>${slider('card_bg_opacity', 0.1, 1, 0.05)}</div>` : ''}
-      <div class="field"><span>${t('text_color')}</span>${seg('card_text', [['white', t('white')], ['black', t('black')]])}</div>
-      <div class="field"><span>${t('opacity')}</span>${slider('card_opacity', 0.3, 1, 0.05)}</div>
+      <div class="field"><span>${t('background')}</span>${seg(k + 'background', [['none', t('bg_none')], ['dark', t('bg_dark')], ['light', t('bg_light')]])}</div>
+      ${s[k + 'background'] !== 'none' ? `<div class="field"><span>${t('bg_opacity')}</span>${slider(k + 'bg_opacity', 0.1, 1, 0.05)}</div>` : ''}
+      <div class="field"><span>${t('text_color')}</span>${seg(k + 'text', [['white', t('white')], ['black', t('black')]])}</div>
+      <div class="field"><span>${t('opacity')}</span>${slider(k + 'opacity', 0.3, 1, 0.05)}</div>
     </div>
     <div class="footnote">${t('card_hint')}</div>`;
 }
@@ -309,9 +396,13 @@ function render() {
     fitFlyout();
     return;
   }
-  if (CARD) {
-    document.getElementById('content').innerHTML = cardPage();
+  if (ANY_CARD) {
+    document.getElementById('content').innerHTML = STATS_CARD ? statsCardPage() : cardPage();
     fitCard();
+    const s = state.settings, k = STATS_CARD ? 'stats_card_' : 'card_';
+    const count = STATS_CARD ? usageShown().length : shownProviders().length;
+    const ready = STATS_CARD ? state.usage.updated != null : state.providers.length > 0;
+    reportCardContent(s[k + 'show'] && ready && count ? `${s[k + 'layout']}|${s[k + 'scale']}|${count}` : '');
     return;
   }
   const pages = { usage: usagePage, card: cardSettingsPage, settings: settingsPage };
@@ -329,6 +420,8 @@ document.addEventListener('click', (e) => {
   if (nav) { page = nav.dataset.page; render(); return; }
   if (e.target.id === 'refresh') { invoke('refresh_now'); return; }
   if (e.target.id === 'open-main') { invoke('open_main'); return; }
+  const tab = e.target.closest('[data-cardtab]');
+  if (tab) { cardTab = tab.dataset.cardtab; render(); return; }
   const b = e.target.closest('[data-set]');
   if (b) save({ [b.dataset.set]: b.dataset.val });
 });
@@ -336,7 +429,8 @@ document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'language') save({ language: el.value });
   else if (el.id === 'refresh_minutes') save({ refresh_minutes: Number(el.value) });
-  else if (['show_claude', 'show_codex', 'card_show', 'card_on_top'].includes(el.id)) save({ [el.id]: el.checked });
+  else if (['show_claude', 'show_codex', 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
+            'stats_card_show_claude', 'stats_card_show_codex'].includes(el.id)) save({ [el.id]: el.checked });
   else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
   else if (el.id === 'autostart') {
     await invoke(el.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable').catch(() => {});
@@ -351,7 +445,7 @@ document.addEventListener('input', (e) => {
 });
 
 // 桌面卡片：按住拖动（位置由 Rust 按光标算，好做吸附对齐），右键弹出菜单
-if (CARD) {
+if (ANY_CARD) {
   let dragging = false, busy = false;
   const end = () => {
     if (!dragging) return;
@@ -391,14 +485,21 @@ function drawGuides([x, y]) {
     return;
   }
   if (FLYOUT) document.body.classList.add('flyout');
-  if (CARD) { document.documentElement.classList.add('card'); document.body.classList.add('card'); }
+  if (ANY_CARD) { document.documentElement.classList.add('card'); document.body.classList.add('card'); }
   document.getElementById('version').textContent = await window.__TAURI__.app.getVersion().catch(() => '');
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
   state = await invoke('get_state');
   render();
   await listen('state', (e) => { state = e.payload; render(); });
   // 卡片右键「卡片设置…」：主窗口切到卡片页
-  await listen('navigate', (e) => { page = e.payload; render(); });
+  // 卡片右键「卡片设置…」：主窗口切到卡片页，并切到那张卡片
+  await listen('navigate', (e) => {
+    const [p, which] = Array.isArray(e.payload) ? e.payload : [e.payload];
+    page = p;
+    if (which) cardTab = which;
+    render();
+  });
+  if (ANY_CARD) await listen('card_sync', (e) => { synced = e.payload; render(); });
   // 重置倒计时每分钟走一次
-  setInterval(() => { if (FLYOUT || CARD || page === 'usage') render(); }, 60000);
+  setInterval(() => { if (FLYOUT || ANY_CARD || page === 'usage') render(); }, 60000);
 })();

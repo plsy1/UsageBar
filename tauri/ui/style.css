@@ -200,3 +200,10 @@ html.guides, body.guides { background: transparent; margin: 0; overflow: hidden;
 .guide.v { top: 0; bottom: 0; width: 1px; }
 .guide.h { left: 0; right: 0; height: 1px; }
 .note.indent { margin-top: 2px; padding-left: 14px; }
+
+/* 用量卡片 */
+.c-cost { font-size: calc(22 * var(--u)); font-weight: 600; font-variant-numeric: tabular-nums; }
+.c-kv { display: flex; justify-content: space-between; font-size: calc(12 * var(--u)); }
+.c-kv > span:first-child { color: var(--c2); }
+/* 卡片设置页顶上切换两张卡片 */
+.card-tabs { margin-bottom: 4px; }

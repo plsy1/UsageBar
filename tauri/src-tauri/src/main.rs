@@ -7,11 +7,12 @@
 
 mod cards;
 mod i18n;
+mod stats;
 mod usage;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -36,6 +37,19 @@ struct Settings {
     card_opacity: f64,
     card_bg_opacity: f64,
     card_reset: String,      // hidden / relative（多久后）/ absolute（几点）
+    // 用量卡片（成本、请求数、Tokens），布局和外观自己一套（第一次沿用额度卡片的）
+    stats_card_show: bool,
+    stats_card_on_top: bool,
+    stats_card_range: String,  // today / cycle / 7d
+    stats_card_show_claude: bool,
+    stats_card_show_codex: bool,
+    stats_card_layout: String,
+    stats_card_background: String,
+    stats_card_text: String,
+    stats_card_scale: f64,
+    stats_card_opacity: f64,
+    stats_card_bg_opacity: f64,
+    stats_refresh_minutes: u64, // 用量统计的刷新间隔（只读新写入的日志）
     /// 各张卡片按显示器记的位置（界面不改，只由拖动来改）
     card_places: HashMap<String, cards::Placement>,
     card_x: Option<i32>,     // 旧版存的位置（物理像素），启动时迁移到 card_places
@@ -60,6 +74,18 @@ impl Default for Settings {
             card_opacity: 1.0,
             card_bg_opacity: 1.0,
             card_reset: "relative".into(),
+            stats_card_show: false,
+            stats_card_on_top: false,
+            stats_card_range: "today".into(),
+            stats_card_show_claude: true,
+            stats_card_show_codex: true,
+            stats_card_layout: "horizontal".into(),
+            stats_card_background: "none".into(),
+            stats_card_text: "white".into(),
+            stats_card_scale: 1.0,
+            stats_card_opacity: 1.0,
+            stats_card_bg_opacity: 1.0,
+            stats_refresh_minutes: 5,
             card_places: HashMap::new(),
             card_x: None,
             card_y: None,
@@ -78,6 +104,27 @@ struct AppState {
     flyout_hidden_at: Mutex<Option<Instant>>,
     /// 正在拖的卡片
     drag: Mutex<Option<cards::Drag>>,
+    /// 用量统计：读日志的（带增量缓存）、全部记录（已算好成本，新的在前）、上次读完的时间
+    reader: Mutex<Option<Arc<Mutex<stats::LogReader>>>>,
+    records: Mutex<Vec<stats::UsageRecord>>,
+    stats_updated: Mutex<Option<i64>>,
+    /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
+    card_content: Mutex<HashMap<String, CardContent>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct CardContent {
+    width: f64,
+    height: f64,
+    shape: String,
+}
+
+/// 用量卡片要的：每家在所选范围内的汇总
+#[derive(Serialize, Clone)]
+struct UsageCard {
+    claude: stats::Summary,
+    codex: stats::Summary,
+    updated: Option<i64>,
 }
 
 /// 给界面的完整状态
@@ -88,6 +135,7 @@ struct Snapshot {
     updated: Option<i64>,
     loading: bool,
     lang: &'static str,
+    usage: UsageCard,
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
@@ -97,7 +145,25 @@ fn snapshot(app: &AppHandle) -> Snapshot {
     let updated = *st.updated.lock().unwrap();
     let loading = *st.loading.lock().unwrap();
     let lang = i18n::resolve(&settings.language);
-    Snapshot { settings, providers, updated, loading, lang }
+    let usage = usage_card(&st, &settings, &providers);
+    Snapshot { settings, providers, updated, loading, lang, usage }
+}
+
+/// 用量卡片的汇总。「重置以来」每家按自己的每周额度重置时间算
+fn usage_card(st: &AppState, s: &Settings, providers: &[usage::Provider]) -> UsageCard {
+    let records = st.records.lock().unwrap();
+    let start = |name: &str| {
+        let reset = providers.iter().find(|p| p.name == name)
+            .and_then(|p| p.windows.iter().find(|w| w.kind == "weekly"))
+            .and_then(|w| w.resets_at)
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0));
+        stats::card_start(&s.stats_card_range, reset.map(stats::cycle_start))
+    };
+    UsageCard {
+        claude: stats::summarize(&records, Some(stats::Source::Claude), start("Claude")),
+        codex: stats::summarize(&records, Some(stats::Source::Codex), start("Codex")),
+        updated: *st.stats_updated.lock().unwrap(),
+    }
 }
 
 fn settings_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -105,10 +171,19 @@ fn settings_path(app: &AppHandle) -> Option<std::path::PathBuf> {
 }
 
 fn load_settings(app: &AppHandle) -> Settings {
-    settings_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    let text = settings_path(app).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let mut s: Settings = serde_json::from_str(&text).unwrap_or_default();
+    // 旧版没有用量卡片：它的外观先沿用额度卡片的
+    let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    if raw.get("stats_card_layout").is_none() {
+        s.stats_card_layout = s.card_layout.clone();
+        s.stats_card_background = s.card_background.clone();
+        s.stats_card_text = s.card_text.clone();
+        s.stats_card_scale = s.card_scale;
+        s.stats_card_opacity = s.card_opacity;
+        s.stats_card_bg_opacity = s.card_bg_opacity;
+    }
+    s
 }
 
 fn save_settings(app: &AppHandle, s: &Settings) {
@@ -174,6 +249,23 @@ fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
     cards::keep_on_screen(app, &window, &place);
 }
 
+/// 卡片报来内容区的自然大小；两张形状一样时都撑到较大的那个（发 card_sync 给两张卡片）
+#[tauri::command]
+fn card_content(app: AppHandle, window: tauri::WebviewWindow, content: CardContent) {
+    let st = app.state::<AppState>();
+    let mut all = st.card_content.lock().unwrap();
+    if all.get(window.label()) == Some(&content) {
+        return;
+    }
+    all.insert(window.label().to_string(), content);
+    let (a, b) = (all.get("card"), all.get("stats_card"));
+    let synced = match (a, b) {
+        (Some(a), Some(b)) if !a.shape.is_empty() && a.shape == b.shape => Some((a.width.max(b.width), a.height.max(b.height))),
+        _ => None,
+    };
+    let _ = app.emit("card_sync", synced);
+}
+
 /// 卡片的拖动：按下、拖动中、松开（每一步由这边按光标位置算，好做吸附）
 #[tauri::command]
 fn card_drag_start(app: AppHandle, window: tauri::WebviewWindow) {
@@ -202,17 +294,22 @@ fn card_drag_end(app: AppHandle, window: tauri::WebviewWindow) {
     save_settings(&app, &s);
 }
 
-/// 卡片上右键：弹出原生菜单
+/// 卡片上右键：弹出原生菜单（两张卡片各自的）
 #[tauri::command]
 fn card_menu(app: AppHandle, window: tauri::Window) {
-    let lang = snapshot(&app).lang;
+    let snap = snapshot(&app);
+    let lang = snap.lang;
+    let usage = window.label() == "stats_card";
+    let on_top = if usage { snap.settings.stats_card_on_top } else { snap.settings.card_on_top };
     let build = || -> tauri::Result<Menu<tauri::Wry>> {
         let menu = Menu::new(&app)?;
-        menu.append(&MenuItem::with_id(&app, "c-refresh", i18n::t(lang, "refresh"), true, None::<&str>)?)?;
+        let (refresh, hide) = if usage { ("s-refresh", "s-hide") } else { ("c-refresh", "c-hide") };
+        menu.append(&MenuItem::with_id(&app, refresh, i18n::t(lang, "refresh"), true, None::<&str>)?)?;
         menu.append(&MenuItem::with_id(&app, "c-open", i18n::t(lang, "open"), true, None::<&str>)?)?;
-        menu.append(&MenuItem::with_id(&app, "c-settings", i18n::t(lang, "card_settings"), true, None::<&str>)?)?;
+        menu.append(&MenuItem::with_id(&app, if usage { "s-settings" } else { "c-settings" }, i18n::t(lang, "card_settings"), true, None::<&str>)?)?;
         menu.append(&PredefinedMenuItem::separator(&app)?)?;
-        menu.append(&MenuItem::with_id(&app, "c-hide", i18n::t(lang, "hide_card"), true, None::<&str>)?)?;
+        menu.append(&CheckMenuItem::with_id(&app, if usage { "s-top" } else { "c-top" }, i18n::t(lang, "keep_on_top"), true, on_top, None::<&str>)?)?;
+        menu.append(&MenuItem::with_id(&app, hide, i18n::t(lang, if usage { "hide_usage_card" } else { "hide_card" }), true, None::<&str>)?)?;
         Ok(menu)
     };
     if let Ok(menu) = build() {
@@ -242,6 +339,39 @@ async fn refresh(app: AppHandle) {
     }
     update_tray(&app);
     let _ = app.emit("state", snapshot(&app));
+}
+
+/// 读用量统计：第一次先拿磁盘缓存马上出数，再读改动过的日志；读日志放到后台线程
+async fn refresh_stats(app: AppHandle, force_prices: bool) {
+    let Ok(dir) = app.path().app_cache_dir() else { return };
+    let st = app.state::<AppState>();
+    let first = st.reader.lock().unwrap().is_none();
+    let reader = st.reader.lock().unwrap().get_or_insert_with(|| Arc::new(Mutex::new(stats::LogReader::new(&dir)))).clone();
+    if first {
+        let pricing = stats::Pricing::load_cached(&dir);
+        let r = reader.clone();
+        if let Ok(mut recs) = tauri::async_runtime::spawn_blocking(move || r.lock().unwrap().cached()).await {
+            pricing.apply(&mut recs);
+            *st.records.lock().unwrap() = recs;
+            let _ = app.emit("state", snapshot(&app));
+        }
+    }
+    let pricing = stats::load_pricing(&reqwest::Client::new(), &dir, force_prices).await;
+    let r = reader.clone();
+    if let Ok(mut recs) = tauri::async_runtime::spawn_blocking(move || r.lock().unwrap().read(chrono::DateTime::<chrono::Utc>::MIN_UTC)).await {
+        pricing.apply(&mut recs);
+        *st.records.lock().unwrap() = recs;
+        *st.stats_updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
+        let _ = app.emit("state", snapshot(&app));
+    }
+}
+
+async fn stats_loop(app: AppHandle) {
+    loop {
+        refresh_stats(app.clone(), false).await;
+        let minutes = app.state::<AppState>().settings.lock().unwrap().stats_refresh_minutes.max(1);
+        tokio::time::sleep(std::time::Duration::from_secs(minutes * 60)).await;
+    }
 }
 
 /// 按设置的间隔一直刷新
@@ -293,6 +423,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&MenuItem::with_id(app, "refresh", i18n::t(lang, "refresh"), true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "open", i18n::t(lang, "open"), true, None::<&str>)?)?;
     menu.append(&CheckMenuItem::with_id(app, "card", i18n::t(lang, "show_card"), true, snap.settings.card_show, None::<&str>)?)?;
+    menu.append(&CheckMenuItem::with_id(app, "stats_card", i18n::t(lang, "show_usage_card"), true, snap.settings.stats_card_show, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(app, "quit", i18n::t(lang, "quit"), true, None::<&str>)?)?;
     Ok(menu)
@@ -346,36 +477,42 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
 
 // MARK: - 桌面卡片
 
-/// 按设置显示 / 隐藏卡片，切换「保持在最前」和「贴在桌面层」
+/// 按设置显示 / 隐藏两张卡片，切换「保持在最前」和「贴在桌面层」
 fn apply_card(app: &AppHandle) {
-    let Some(w) = app.get_webview_window("card") else { return };
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
-    if !s.card_show {
-        let _ = w.hide();
-        return;
-    }
-    // 先撤掉旧的、再设新的：Windows 上反过来的话，撤「贴底」那一下会把刚设的「最前」也冲掉
-    if s.card_on_top {
-        let _ = w.set_always_on_bottom(false);
-        let _ = w.set_always_on_top(true);
-    } else {
-        let _ = w.set_always_on_top(false);
-        // Linux 不贴底：GNOME 的桌面图标是一层铺满全屏的透明窗口，贴底的卡片会被它盖住，点不到也拖不动
-        #[cfg(not(target_os = "linux"))]
-        let _ = w.set_always_on_bottom(true);
-    }
-    if !w.is_visible().unwrap_or(false) {
-        // GNOME 会给刚显示的普通窗口自动安排位置（覆盖掉我们设的），等它摆完再挪回去；
-        // 要去的位置得在显示前取好，它摆放时触发的 Moved 会改掉保存的位置
-        #[cfg(target_os = "linux")]
-        let target = s.card_places.get(w.label()).and_then(|p| cards::target(app, &w, p));
-        let _ = w.show();
-        #[cfg(target_os = "linux")]
-        if let Some(p) = target {
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                let _ = w.set_position(p);
-            });
+    for (label, show, on_top) in [("card", s.card_show, s.card_on_top), ("stats_card", s.stats_card_show, s.stats_card_on_top)] {
+        let Some(w) = app.get_webview_window(label) else { continue };
+        if !show {
+            let _ = w.hide();
+            continue;
+        }
+        // 先撤掉旧的、再设新的：Windows 上反过来的话，撤「贴底」那一下会把刚设的「最前」也冲掉
+        if on_top {
+            let _ = w.set_always_on_bottom(false);
+            let _ = w.set_always_on_top(true);
+        } else {
+            let _ = w.set_always_on_top(false);
+            // Linux 不贴底：GNOME 的桌面图标是一层铺满全屏的透明窗口，贴底的卡片会被它盖住，点不到也拖不动
+            #[cfg(not(target_os = "linux"))]
+            let _ = w.set_always_on_bottom(true);
+        }
+        if !w.is_visible().unwrap_or(false) {
+            // 第一次显示：还没位置记录就先摆好（挨着另一张卡片）
+            if !s.card_places.contains_key(label) {
+                place_card(app, label);
+            }
+            // GNOME 会给刚显示的普通窗口自动安排位置（覆盖掉我们设的），等它摆完再挪回去
+            #[cfg(target_os = "linux")]
+            let target = app.state::<AppState>().settings.lock().unwrap().card_places.get(label).and_then(|p| cards::target(app, &w, p));
+            let _ = w.show();
+            #[cfg(target_os = "linux")]
+            if let Some(p) = target {
+                let w = w.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    let _ = w.set_position(p);
+                });
+            }
         }
     }
 }
@@ -423,16 +560,17 @@ async fn watch_monitors(app: AppHandle) {
     }
 }
 
-fn set_card_show(app: &AppHandle, show: bool) {
+/// 改一项设置（托盘和卡片右键菜单用）
+fn update_settings(app: &AppHandle, f: impl FnOnce(&mut Settings)) {
     let mut s = app.state::<AppState>().settings.lock().unwrap().clone();
-    s.card_show = show;
+    f(&mut s);
     set_settings(app.clone(), s);
 }
 
-/// 打开主窗口并切到「桌面卡片」页
-fn open_card_settings(app: &AppHandle) {
+/// 打开主窗口并切到「桌面卡片」页（which：limits / stats，切到那张卡片的设置）
+fn open_card_settings(app: &AppHandle, which: &str) {
     show_main(app);
-    let _ = app.emit_to("main", "navigate", "card");
+    let _ = app.emit_to("main", "navigate", ("card", which));
 }
 
 fn show_main(app: &AppHandle) {
@@ -455,15 +593,22 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
-                                                 card_drag_start, card_drag_move, card_drag_end])
+                                                 card_drag_start, card_drag_move, card_drag_end, card_content])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
                 tauri::async_runtime::spawn(refresh(app.clone()));
             }
+            "s-refresh" => {
+                tauri::async_runtime::spawn(refresh_stats(app.clone(), false));
+            }
             "c-open" => show_main(app),
-            "c-settings" => open_card_settings(app),
-            "c-hide" => set_card_show(app, false),
+            "c-settings" => open_card_settings(app, "limits"),
+            "s-settings" => open_card_settings(app, "stats"),
+            "c-hide" => update_settings(app, |s| s.card_show = false),
+            "s-hide" => update_settings(app, |s| s.stats_card_show = false),
+            "c-top" => update_settings(app, |s| s.card_on_top = !s.card_on_top),
+            "s-top" => update_settings(app, |s| s.stats_card_on_top = !s.stats_card_on_top),
             _ => {}
         })
         .setup(|app| {
@@ -482,10 +627,8 @@ fn main() {
                             tauri::async_runtime::spawn(refresh(app.clone()));
                         }
                         "open" => show_main(app),
-                        "card" => {
-                            let show = !app.state::<AppState>().settings.lock().unwrap().card_show;
-                            set_card_show(app, show);
-                        }
+                        "card" => update_settings(app, |s| s.card_show = !s.card_show),
+                        "stats_card" => update_settings(app, |s| s.stats_card_show = !s.stats_card_show),
                         "quit" => app.exit(0),
                         _ => {}
                     })
@@ -502,6 +645,7 @@ fn main() {
             place_card(&handle, "card");
             apply_card(&handle);
             tauri::async_runtime::spawn(watch_monitors(handle.clone()));
+            tauri::async_runtime::spawn(stats_loop(handle.clone()));
 
             // 带 --show 启动时直接打开窗口（从应用列表启动、或调试时用）
             if std::env::args().any(|a| a == "--show") {
