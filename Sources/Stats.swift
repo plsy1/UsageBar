@@ -316,6 +316,9 @@ struct StatsView: View {
     @AppStorage("statsCustomEndNow") var customEndNow = true
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsTab") var tab = "models"
+    /// 请求明细的当前页（从 0 开始）；换时间范围或来源时回到第一页
+    @State var page = 0
+    static let pageSize = 50
     @State var showRange = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
 
@@ -407,11 +410,12 @@ struct StatsView: View {
                 }
             }
             .popover(isPresented: $showRange, arrowEdge: .bottom) {
-                RangePopover(rangeRaw: $rangeRaw, customStart: $customStart, customEnd: $customEnd,
+                RangePopover(rangeRaw: Binding(get: { rangeRaw }, set: { rangeRaw = $0; page = 0 }),
+                             customStart: $customStart, customEnd: $customEnd,
                              customEndNow: $customEndNow, isPresented: $showRange)
                     .environment(\.locale, locale)
             }
-            Picker("", selection: $source) {
+            Picker("", selection: Binding(get: { source }, set: { source = $0; page = 0 })) {
                 Text(L("全部")).tag("all")
                 Text("Claude").tag("Claude")
                 Text("Codex").tag("Codex")
@@ -593,7 +597,9 @@ struct StatsView: View {
     }
 
     func logTable(_ rows: [UsageRecord]) -> some View {
-        let limit = 1000
+        let size = Self.pageSize
+        let pages = max(1, (rows.count + size - 1) / size)
+        let current = min(page, pages - 1)  // 数据变少时别停在不存在的页
         let f = DateFormatter()
         f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
         let cols: [Column] = [(L("时间"), range == .today ? 110 : 150), (L("应用"), 90), (L("模型"), nil), (L("成本"), 110),
@@ -601,14 +607,23 @@ struct StatsView: View {
         return LazyVStack(spacing: 0) {
             headerRow(cols)
             if rows.isEmpty { emptyRow() }
-            ForEach(rows.prefix(limit)) { r in
+            ForEach(rows[min(rows.count, current * size)..<min(rows.count, (current + 1) * size)]) { r in
                 Divider()
                 dataRow(cols, [f.string(from: r.time), r.source.rawValue, r.model, money(r.cost, digits: 4),
                                r.input.formatted(), r.output.formatted(), abbrev(r.cacheRead), abbrev(r.cacheWrite)], mono: [2])
             }
-            if rows.count > limit {
+            if !rows.isEmpty {
                 Divider()
-                Text(L("仅显示最近 %d 条", limit)).font(.callout).foregroundStyle(.secondary).padding(.vertical, 12)
+                HStack(spacing: 12) {
+                    Text(L("第 %d / %d 页 · 共 %d 条", current + 1, pages, rows.count))
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { page = current - 1 } label: { Image(systemName: "chevron.left") }
+                        .help(L("上一页")).disabled(current == 0)
+                    Button { page = current + 1 } label: { Image(systemName: "chevron.right") }
+                        .help(L("下一页")).disabled(current >= pages - 1)
+                }
+                .padding(.horizontal, 20).frame(height: 44)
             }
         }
     }
