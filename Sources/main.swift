@@ -88,6 +88,10 @@ enum I18n {
         "已连接": ("接続済み", "Connected"),
         "价格表": ("価格表", "Prices"),
         "未获取": ("未取得", "Not loaded"),
+        "立即更新": ("今すぐ更新", "Update Now"),
+        "曲线图": ("折れ線グラフ", "Line Chart"),
+        "柱状图": ("棒グラフ", "Bar Chart"),
+        "更新失败，继续使用旧价格": ("更新に失敗しました。以前の価格を使用中", "Update failed, using cached prices"),
         "本机会话记录": ("ローカルのセッション記録", "Local Session Logs"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
@@ -125,7 +129,7 @@ enum I18n {
         "应用": ("アプリ", "App"),
         "时间": ("時刻", "Time"),
         "成本": ("コスト", "Cost"),
-        "输入": ("入力", "Input"),
+        "新增输入": ("新規入力", "New Input"),
         "输出": ("出力", "Output"),
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
@@ -562,8 +566,21 @@ struct GeneralSettings: View {
                         LabeledContent(u.name) { Text(status(u)).multilineTextAlignment(.trailing).foregroundStyle(.secondary) }
                     }
                     LabeledContent(L("价格表")) {
-                        Text(Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取"))
+                        HStack(spacing: 10) {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取"))
+                                if Pricing.downloadFailed && !stats.loading {
+                                    Text(L("更新失败，继续使用旧价格")).font(.caption)
+                                }
+                            }
                             .foregroundStyle(.secondary)
+                            if stats.loading {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button(L("立即更新")) { stats.reload(forcePrices: true) }
+                                    .controlSize(.small)
+                            }
+                        }
                     }
                     LabeledContent(L("本机会话记录")) {
                         Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))

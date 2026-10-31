@@ -45,14 +45,21 @@ enum Pricing {
     private static var table: [String: [String: Price]] = [:]
     /// 本地价格表缓存的更新时间（设置里显示）
     static var updatedAt: Date?
+    /// 最近一次下载是否失败（失败时继续用旧缓存）
+    static var downloadFailed = false
 
-    /// 读缓存；没有缓存或超过一天就重新下载
-    static func load() async {
+    /// 读缓存；没有缓存、超过一天或 force 时重新下载
+    static func load(force: Bool = false) async {
         let fm = FileManager.default
         let mtime = (try? fm.attributesOfItem(atPath: cacheURL.path))?[.modificationDate] as? Date
-        if mtime.map({ Date().timeIntervalSince($0) > 86400 }) ?? true, let fresh = await download() {
-            try? fm.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? fresh.write(to: cacheURL)
+        if force || mtime.map({ Date().timeIntervalSince($0) > 86400 }) ?? true {
+            if let fresh = await download() {
+                try? fm.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fresh.write(to: cacheURL)
+                downloadFailed = false
+            } else {
+                downloadFailed = true
+            }
         }
         guard let d = try? Data(contentsOf: cacheURL),
               let json = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return }
@@ -263,11 +270,12 @@ final class StatsStore: ObservableObject {
     /// 各家周额度当前周期的起点，由额度刷新时填入
     @Published var cycleStarts: [Source: Date] = [:]
 
-    func reload() {
+    /// forcePrices：顺便从 models.dev 重新下载价格（设置里的「立即更新」）
+    func reload(forcePrices: Bool = false) {
         guard !loading else { return }
         loading = true
         Task.detached(priority: .userInitiated) {
-            await Pricing.load()
+            await Pricing.load(force: forcePrices)
             var recs = LogReader.read(since: .distantPast)  // 全部历史，「全部时间」和自定义范围都要用
             for i in recs.indices { recs[i].cost = Pricing.cost(recs[i]) }
             recs.sort { $0.time > $1.time }
@@ -307,8 +315,9 @@ struct StatsView: View {
     @AppStorage("statsCustomEnd") var customEnd = 0.0
     @AppStorage("statsCustomEndNow") var customEndNow = true
     @AppStorage(Pref.language) var language = "auto"
-    @State var tab = "models"
+    @AppStorage("statsTab") var tab = "models"
     @State var showRange = false
+    @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -350,11 +359,16 @@ struct StatsView: View {
         let _ = language  // 切换语言时重绘
         let rows = rows
         let sum = Summary(rows)
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 10) {
             toolbar
             if range == .cycle {
-                Text(cycleCaption).font(.callout).foregroundStyle(.secondary).padding(.top, -6)
+                Text(cycleCaption).font(.callout).foregroundStyle(.secondary)
             }
+        }
+        .padding([.horizontal, .top], 20).padding(.bottom, 12)
+        ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 0) {
                 tile(L("估算成本"), money(sum.cost))
                 Divider().padding(.vertical, 4)
@@ -368,16 +382,13 @@ struct StatsView: View {
             .padding(.vertical, 14)
             .modifier(Panel())
             chart(rows)
-            Picker("", selection: $tab) {
-                Text(L("按模型")).tag("models")
-                Text(L("请求明细")).tag("log")
-            }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
-            if tab == "models" { modelTable(rows) } else { logTable(rows) }
+            tables(rows)
             Text(L("成本按 models.dev 的 API 价格估算，仅统计本机会话记录"))
                 .font(.caption).foregroundStyle(.tertiary)
         }
-        .padding(20)
+        .padding([.horizontal, .bottom], 20)
+        }
+        }
         .frame(minWidth: 820, minHeight: 600)
         .environment(\.locale, locale)  // 图表坐标的日期跟着界面语言
     }
@@ -452,19 +463,33 @@ struct StatsView: View {
     func chart(_ rows: [UsageRecord]) -> some View {
         let unit: Calendar.Component = hourly ? .hour : .day
         return VStack(alignment: .leading, spacing: 10) {
-            Text(hourly ? L("Tokens · 按小时") : L("Tokens · 按天"))
-                .font(.callout.weight(.medium)).foregroundStyle(.secondary)
+            HStack {
+                Text(hourly ? L("Tokens · 按小时") : L("Tokens · 按天"))
+                    .font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+                Picker("", selection: $chartStyle) {
+                    Image(systemName: "chart.xyaxis.line").help(L("曲线图")).tag("line")
+                    Image(systemName: "chart.bar").help(L("柱状图")).tag("bar")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
             if store.loading && store.all.isEmpty {
                 Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 170)
             } else {
                 Chart(buckets(rows)) { b in
-                    AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                        .foregroundStyle(Color.primary.opacity(0.08))
-                        .interpolationMethod(.monotone)
-                    LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                        .foregroundStyle(Color.primary.opacity(0.75))
-                        .interpolationMethod(.monotone)
+                    if chartStyle == "bar" {
+                        BarMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                            .foregroundStyle(Color.primary.opacity(0.55))
+                            .cornerRadius(2)
+                    } else {
+                        AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                            .foregroundStyle(Color.primary.opacity(0.08))
+                            .interpolationMethod(.monotone)
+                        LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                            .foregroundStyle(Color.primary.opacity(0.75))
+                            .interpolationMethod(.monotone)
+                    }
                 }
                 .chartYAxis {
                     AxisMarks { v in
@@ -479,44 +504,111 @@ struct StatsView: View {
         .modifier(Panel())
     }
 
-    func modelTable(_ rows: [UsageRecord]) -> some View {
-        let groups = Dictionary(grouping: rows) { "\($0.source.rawValue)|\($0.model)" }
-        let models = groups.map { key, rs in
-            ModelRow(id: key, source: rs[0].source, model: rs[0].model, s: Summary(rs), priced: rs[0].cost != nil)
+    func modelRows(_ rows: [UsageRecord]) -> [ModelRow] {
+        Dictionary(grouping: rows) { "\($0.source.rawValue)|\($0.model)" }
+            .map { key, rs in ModelRow(id: key, source: rs[0].source, model: rs[0].model, s: Summary(rs), priced: rs[0].cost != nil) }
+            .sorted { $0.s.cost != $1.s.cost ? $0.s.cost > $1.s.cost : $0.s.tokens > $1.s.tokens }
+    }
+
+    /// 下方的明细面板：顶部是带数量的下划线标签，下面是表格
+    func tables(_ rows: [UsageRecord]) -> some View {
+        let models = modelRows(rows)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 26) {
+                tabButton(L("按模型"), count: models.count, tag: "models")
+                tabButton(L("请求明细"), count: rows.count, tag: "log")
+                Spacer()
+            }
+            .padding(.horizontal, 20).padding(.top, 12)
+            Divider()
+            if tab == "models" { modelTable(models) } else { logTable(rows) }
         }
-        .sorted { $0.s.cost != $1.s.cost ? $0.s.cost > $1.s.cost : $0.s.tokens > $1.s.tokens }
-        return Table(models) {
-            TableColumn(L("模型")) { Text($0.model).font(.system(.body, design: .monospaced)) }.width(min: 150, ideal: 200)
-            TableColumn(L("应用")) { Text($0.source.rawValue) }.width(60)
-            TableColumn(L("请求数")) { Text($0.s.requests.formatted()).monospacedDigit() }.width(70)
-            TableColumn(L("输入")) { Text(abbrev($0.s.input)).monospacedDigit() }.width(70)
-            TableColumn(L("输出")) { Text(abbrev($0.s.output)).monospacedDigit() }.width(70)
-            TableColumn(L("缓存读取")) { Text(abbrev($0.s.cacheRead)).monospacedDigit() }.width(100)
-            TableColumn(L("缓存写入")) { Text(abbrev($0.s.cacheWrite)).monospacedDigit() }.width(100)
-            TableColumn(L("成本")) { Text($0.priced ? money($0.s.cost) : "—").monospacedDigit() }.width(min: 90, ideal: 100)
+        .modifier(Panel())
+    }
+
+    func tabButton(_ title: String, count: Int, tag: String) -> some View {
+        let selected = tab == tag
+        return Button { tab = tag } label: {
+            VStack(spacing: 10) {
+                HStack(spacing: 7) {
+                    Text(title).fontWeight(selected ? .semibold : .regular)
+                        .foregroundStyle(selected ? .primary : .secondary)
+                    Text(count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
+                }
+                Rectangle().fill(selected ? Color.primary : .clear).frame(height: 2)
+            }
+            .fixedSize()
+            .contentShape(Rectangle())
         }
-        .overlay { if models.isEmpty && !store.loading { Text(L("该时间段内没有记录")).foregroundStyle(.secondary) } }
+        .buttonStyle(.plain)
+    }
+
+    /// 表格的一列：标题、宽度（nil 表示占满剩余宽度）
+    typealias Column = (title: String, width: CGFloat?)
+
+    func headerRow(_ cols: [Column]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
+                Text(c.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(width: c.width, alignment: .leading)
+                    .frame(maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 20).frame(height: 38)
+        .background(Color.primary.opacity(0.035))
+    }
+
+    func dataRow(_ cols: [Column], _ cells: [String], mono: Set<Int> = []) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(cols.enumerated()), id: \.offset) { i, c in
+                Text(cells[i])
+                    .font(mono.contains(i) ? .system(.body, design: .monospaced) : .body.monospacedDigit())
+                    .lineLimit(1)
+                    .frame(width: c.width, alignment: .leading)
+                    .frame(maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 20).frame(height: 42)
+    }
+
+    func emptyRow() -> some View {
+        Text(store.loading ? L("正在读取本机会话记录…") : L("该时间段内没有记录"))
+            .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 36)
+    }
+
+    func modelTable(_ models: [ModelRow]) -> some View {
+        let cols: [Column] = [(L("模型"), nil), (L("应用"), 90), (L("请求数"), 90), (L("新增输入"), 100),
+                              (L("输出"), 100), (L("缓存读取"), 110), (L("缓存写入"), 110), (L("成本"), 110)]
+        return VStack(spacing: 0) {
+            headerRow(cols)
+            if models.isEmpty { emptyRow() }
+            ForEach(models) { m in
+                Divider()
+                dataRow(cols, [m.model, m.source.rawValue, m.s.requests.formatted(), abbrev(m.s.input), abbrev(m.s.output),
+                               abbrev(m.s.cacheRead), abbrev(m.s.cacheWrite), m.priced ? money(m.s.cost) : "—"], mono: [0])
+            }
+        }
     }
 
     func logTable(_ rows: [UsageRecord]) -> some View {
         let limit = 1000
-        let shown = Array(rows.prefix(limit))
         let f = DateFormatter()
         f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
-        return VStack(alignment: .leading, spacing: 6) {
-            Table(shown) {
-                TableColumn(L("时间")) { Text(f.string(from: $0.time)).monospacedDigit() }.width(min: 70, ideal: 100)
-                TableColumn(L("应用")) { Text($0.source.rawValue) }.width(60)
-                TableColumn(L("模型")) { Text($0.model).font(.system(.body, design: .monospaced)) }.width(min: 140, ideal: 170)
-                TableColumn(L("成本")) { Text(money($0.cost, digits: 4)).monospacedDigit() }.width(75)
-                TableColumn(L("输入")) { Text($0.input.formatted()).monospacedDigit() }.width(70)
-                TableColumn(L("输出")) { Text($0.output.formatted()).monospacedDigit() }.width(70)
-                TableColumn(L("缓存读取")) { Text(abbrev($0.cacheRead)).monospacedDigit() }.width(100)
-                TableColumn(L("缓存写入")) { Text(abbrev($0.cacheWrite)).monospacedDigit() }.width(100)
+        let cols: [Column] = [(L("时间"), range == .today ? 110 : 150), (L("应用"), 90), (L("模型"), nil), (L("成本"), 110),
+                              (L("新增输入"), 100), (L("输出"), 100), (L("缓存读取"), 110), (L("缓存写入"), 110)]
+        return LazyVStack(spacing: 0) {
+            headerRow(cols)
+            if rows.isEmpty { emptyRow() }
+            ForEach(rows.prefix(limit)) { r in
+                Divider()
+                dataRow(cols, [f.string(from: r.time), r.source.rawValue, r.model, money(r.cost, digits: 4),
+                               r.input.formatted(), r.output.formatted(), abbrev(r.cacheRead), abbrev(r.cacheWrite)], mono: [2])
             }
-            .overlay { if shown.isEmpty && !store.loading { Text(L("该时间段内没有记录")).foregroundStyle(.secondary) } }
             if rows.count > limit {
-                Text(L("仅显示最近 %d 条", limit)).font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Text(L("仅显示最近 %d 条", limit)).font(.callout).foregroundStyle(.secondary).padding(.vertical, 12)
             }
         }
     }
