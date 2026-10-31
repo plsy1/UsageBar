@@ -195,9 +195,34 @@ enum LogReader {
 
 // MARK: - 汇总
 
-enum StatsRange: String { case today, week = "7d", month = "30d"
-    var days: Int { self == .today ? 1 : self == .week ? 7 : 30 }
-    var since: Date { Calendar.current.date(byAdding: .day, value: 1 - days, to: Calendar.current.startOfDay(for: Date()))! }
+/// 统计的时间范围。cycle：周额度上次重置以来（每家按自己的重置时间算）；custom：自选起止
+enum StatsRange: String, CaseIterable {
+    case today, cycle, day = "24h", week = "7d", fortnight = "14d", month = "30d", all, custom
+
+    var title: String {
+        switch self {
+        case .today: return L("今天")
+        case .cycle: return L("重置以来")
+        case .day: return L("近 24 小时")
+        case .week: return L("近 7 天")
+        case .fortnight: return L("近 14 天")
+        case .month: return L("近 30 天")
+        case .all: return L("全部时间")
+        case .custom: return L("自定义")
+        }
+    }
+
+    /// 固定的起点；cycle / all / custom 的起点由统计窗口另算
+    var presetStart: Date {
+        let cal = Calendar.current, today = cal.startOfDay(for: Date())
+        switch self {
+        case .day: return Date().addingTimeInterval(-86400)
+        case .week: return cal.date(byAdding: .day, value: -6, to: today)!
+        case .fortnight: return cal.date(byAdding: .day, value: -13, to: today)!
+        case .month: return cal.date(byAdding: .day, value: -29, to: today)!
+        default: return today
+        }
+    }
 }
 
 struct Summary {
@@ -232,13 +257,15 @@ final class StatsStore: ObservableObject {
     @Published var all: [UsageRecord] = []
     @Published var loading = false
     @Published var updated: Date?
+    /// 各家周额度当前周期的起点，由额度刷新时填入
+    @Published var cycleStarts: [Source: Date] = [:]
 
     func reload() {
         guard !loading else { return }
         loading = true
         Task.detached(priority: .userInitiated) {
             await Pricing.load()
-            var recs = LogReader.read(since: StatsRange.month.since)
+            var recs = LogReader.read(since: .distantPast)  // 全部历史，「全部时间」和自定义范围都要用
             for i in recs.indices { recs[i].cost = Pricing.cost(recs[i]) }
             recs.sort { $0.time > $1.time }
             let result = recs
@@ -273,13 +300,47 @@ struct StatsView: View {
     @ObservedObject var store: StatsStore
     @AppStorage("statsRange") var rangeRaw = StatsRange.today.rawValue
     @AppStorage("statsSource") var source = "all"
+    @AppStorage("statsCustomStart") var customStart = 0.0
+    @AppStorage("statsCustomEnd") var customEnd = 0.0
+    @AppStorage("statsCustomEndNow") var customEndNow = true
     @AppStorage(Pref.language) var language = "auto"
     @State var tab = "models"
+    @State var showRange = false
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
+    var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
+    /// 「重置以来」时每家起点不同，其他范围两家一样
+    func since(_ src: Source) -> Date {
+        switch range {
+        case .cycle: return store.cycleStarts[src] ?? StatsRange.week.presetStart
+        case .all: return store.all.last?.time ?? StatsRange.month.presetStart  // all 按时间倒序，最后一条最早
+        case .custom: return customStart > 0 ? Date(timeIntervalSince1970: customStart) : StatsRange.today.presetStart
+        default: return range.presetStart
+        }
+    }
+    var end: Date { range == .custom && !customEndNow && customEnd > 0 ? Date(timeIntervalSince1970: customEnd) : Date() }
+    /// 两天以内按小时画，更长按天画
+    var hourly: Bool { end.timeIntervalSince(sources.map(since).min() ?? end) <= 2 * 86400 }
     var rows: [UsageRecord] {
-        let since = range.since
-        return store.all.filter { $0.time >= since && (source == "all" || $0.source.rawValue == source) }
+        let starts = Dictionary(uniqueKeysWithValues: sources.map { ($0, since($0)) })
+        let end = end
+        return store.all.filter { r in r.time <= end && (starts[r.source].map { r.time >= $0 } ?? false) }
+    }
+    var rangeLabel: String {
+        guard range == .custom else { return range.title }
+        let f = DateFormatter()
+        f.dateFormat = "M/d HH:mm"
+        let start = f.string(from: since(.claude))
+        return "\(start) – " + (customEndNow ? L("现在") : f.string(from: end))
+    }
+    /// 「重置以来」时说明每家从什么时候算起
+    var cycleCaption: String {
+        let f = DateFormatter()
+        f.dateFormat = "M/d HH:mm"
+        return sources.map { src in
+            store.cycleStarts[src].map { L("%@ 自 %@ 起", src.rawValue, f.string(from: $0)) }
+                ?? L("%@ 周期未知，按最近 7 天", src.rawValue)
+        }.joined(separator: " · ")
     }
 
     var body: some View {
@@ -288,6 +349,9 @@ struct StatsView: View {
         let sum = Summary(rows)
         VStack(alignment: .leading, spacing: 16) {
             toolbar
+            if range == .cycle {
+                Text(cycleCaption).font(.callout).foregroundStyle(.secondary).padding(.top, -6)
+            }
             HStack(spacing: 0) {
                 tile(L("估算成本"), money(sum.cost))
                 Divider().padding(.vertical, 4)
@@ -311,7 +375,7 @@ struct StatsView: View {
                 .font(.caption).foregroundStyle(.tertiary)
         }
         .padding(20)
-        .frame(minWidth: 820, minHeight: 680)
+        .frame(minWidth: 960, minHeight: 600)
         .environment(\.locale, locale)  // 图表坐标的日期跟着界面语言
     }
 
@@ -321,12 +385,18 @@ struct StatsView: View {
 
     var toolbar: some View {
         HStack(spacing: 12) {
-            Picker("", selection: $rangeRaw) {
-                Text(L("今天")).tag(StatsRange.today.rawValue)
-                Text(L("7 天")).tag(StatsRange.week.rawValue)
-                Text(L("30 天")).tag(StatsRange.month.rawValue)
+            Button { showRange.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                    Text(rangeLabel).monospacedDigit()
+                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                }
             }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            .popover(isPresented: $showRange, arrowEdge: .bottom) {
+                RangePopover(rangeRaw: $rangeRaw, customStart: $customStart, customEnd: $customEnd,
+                             customEndNow: $customEndNow, isPresented: $showRange)
+                    .environment(\.locale, locale)
+            }
             Picker("", selection: $source) {
                 Text(L("全部")).tag("all")
                 Text("Claude").tag("Claude")
@@ -357,7 +427,7 @@ struct StatsView: View {
 
     func buckets(_ rows: [UsageRecord]) -> [Bucket] {
         let cal = Calendar.current
-        let hourly = range == .today
+        let hourly = hourly
         var sums: [Date: Int] = [:]
         for r in rows {
             let key = hourly ? cal.dateInterval(of: .hour, for: r.time)!.start : cal.startOfDay(for: r.time)
@@ -365,8 +435,10 @@ struct StatsView: View {
         }
         // 补齐没有用量的时段，曲线才连续
         var out: [Bucket] = []
-        var t = range.since
-        let end = Date()
+        let end = end
+        // 起点最多往前两年，防止没有数据时从很久以前开始补齐
+        let first = max(sources.map(since).min() ?? end, end.addingTimeInterval(-730 * 86400))
+        var t = hourly ? cal.dateInterval(of: .hour, for: first)!.start : cal.startOfDay(for: first)
         while t <= end {
             out.append(Bucket(date: t, tokens: sums[t] ?? 0))
             t = cal.date(byAdding: hourly ? .hour : .day, value: 1, to: t)!
@@ -375,9 +447,9 @@ struct StatsView: View {
     }
 
     func chart(_ rows: [UsageRecord]) -> some View {
-        let unit: Calendar.Component = range == .today ? .hour : .day
+        let unit: Calendar.Component = hourly ? .hour : .day
         return VStack(alignment: .leading, spacing: 10) {
-            Text(range == .today ? L("Tokens · 按小时") : L("Tokens · 按天"))
+            Text(hourly ? L("Tokens · 按小时") : L("Tokens · 按天"))
                 .font(.callout.weight(.medium)).foregroundStyle(.secondary)
             if store.loading && store.all.isEmpty {
                 Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
@@ -411,14 +483,14 @@ struct StatsView: View {
         }
         .sorted { $0.s.cost != $1.s.cost ? $0.s.cost > $1.s.cost : $0.s.tokens > $1.s.tokens }
         return Table(models) {
-            TableColumn(L("模型")) { Text($0.model).font(.system(.body, design: .monospaced)) }.width(min: 150, ideal: 190)
+            TableColumn(L("模型")) { Text($0.model).font(.system(.body, design: .monospaced)) }.width(min: 150, ideal: 200)
             TableColumn(L("应用")) { Text($0.source.rawValue) }.width(60)
             TableColumn(L("请求数")) { Text($0.s.requests.formatted()).monospacedDigit() }.width(70)
             TableColumn(L("输入")) { Text(abbrev($0.s.input)).monospacedDigit() }.width(70)
             TableColumn(L("输出")) { Text(abbrev($0.s.output)).monospacedDigit() }.width(70)
             TableColumn(L("缓存读取")) { Text(abbrev($0.s.cacheRead)).monospacedDigit() }.width(100)
             TableColumn(L("缓存写入")) { Text(abbrev($0.s.cacheWrite)).monospacedDigit() }.width(100)
-            TableColumn(L("成本")) { Text($0.priced ? money($0.s.cost) : "—").monospacedDigit() }.width(100)
+            TableColumn(L("成本")) { Text($0.priced ? money($0.s.cost) : "—").monospacedDigit() }.width(min: 90, ideal: 100)
         }
         .overlay { if models.isEmpty && !store.loading { Text(L("该时间段内没有记录")).foregroundStyle(.secondary) } }
     }
@@ -427,7 +499,7 @@ struct StatsView: View {
         let limit = 1000
         let shown = Array(rows.prefix(limit))
         let f = DateFormatter()
-        f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"
+        f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
         return VStack(alignment: .leading, spacing: 6) {
             Table(shown) {
                 TableColumn(L("时间")) { Text(f.string(from: $0.time)).monospacedDigit() }.width(min: 70, ideal: 100)
@@ -447,6 +519,97 @@ struct StatsView: View {
     }
 }
 
+/// 时间范围面板：上面一排预设，下面自选起止时间
+struct RangePopover: View {
+    @Binding var rangeRaw: String
+    @Binding var customStart: Double
+    @Binding var customEnd: Double
+    @Binding var customEndNow: Bool
+    @Binding var isPresented: Bool
+    @State var start: Date
+    @State var end: Date
+    @State var endNow: Bool
+    @State var editingEnd = false
+
+    init(rangeRaw: Binding<String>, customStart: Binding<Double>, customEnd: Binding<Double>,
+         customEndNow: Binding<Bool>, isPresented: Binding<Bool>) {
+        _rangeRaw = rangeRaw; _customStart = customStart; _customEnd = customEnd
+        _customEndNow = customEndNow; _isPresented = isPresented
+        let today = Calendar.current.startOfDay(for: Date())
+        _start = State(initialValue: customStart.wrappedValue > 0 ? Date(timeIntervalSince1970: customStart.wrappedValue) : today)
+        _end = State(initialValue: customEnd.wrappedValue > 0 && !customEndNow.wrappedValue
+                     ? Date(timeIntervalSince1970: customEnd.wrappedValue) : Date())
+        _endNow = State(initialValue: customEndNow.wrappedValue)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                ForEach(StatsRange.allCases.filter { $0 != .custom }, id: \.self) { r in
+                    let selected = rangeRaw == r.rawValue
+                    Button { rangeRaw = r.rawValue; isPresented = false } label: {
+                        Text(r.title)
+                            .fontWeight(selected ? .semibold : .regular)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(selected ? 0.12 : 0)))
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Divider()
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(L("自定义")).font(.callout).foregroundStyle(.secondary)
+                    field(L("开始时间"), $start, active: !editingEnd) { editingEnd = false }
+                    field(L("结束时间"), $end, active: editingEnd && !endNow) { if !endNow { editingEnd = true } }
+                        .disabled(endNow).opacity(endNow ? 0.5 : 1)
+                    Toggle(L("结束时间跟随当前时刻"), isOn: Binding(get: { endNow }, set: { on in
+                        endNow = on
+                        if on { editingEnd = false; end = Date() }
+                    }))
+                    Spacer(minLength: 0)
+                    HStack {
+                        Button(L("取消")) { isPresented = false }
+                        Spacer()
+                        Button(L("确定")) { apply() }.keyboardShortcut(.defaultAction)
+                    }
+                }
+                .frame(width: 230)
+                // 日历改的是当前选中的那一个（开始或结束）
+                DatePicker("", selection: editingEnd ? $end : $start, displayedComponents: .date)
+                    .datePickerStyle(.graphical).labelsHidden()
+            }
+        }
+        .padding(16)
+    }
+
+    func field(_ title: String, _ date: Binding<Date>, active: Bool, onTap: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            DatePicker("", selection: date, displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.field).labelsHidden()
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(active ? Color.primary.opacity(0.55) : Color(nsColor: .separatorColor), lineWidth: active ? 1.5 : 1))
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded(onTap))
+    }
+
+    func apply() {
+        var s = start, e = endNow ? Date() : end
+        if e < s { swap(&s, &e) }
+        customStart = s.timeIntervalSince1970
+        customEnd = e.timeIntervalSince1970
+        customEndNow = endNow
+        rangeRaw = StatsRange.custom.rawValue
+        isPresented = false
+    }
+}
+
 /// 统计窗口里的圆角面板
 struct Panel: ViewModifier {
     func body(content: Content) -> some View {
@@ -459,15 +622,23 @@ struct Panel: ViewModifier {
 /// 命令行：UsageBar --stats，打印今天和最近 7 天的汇总（排查用）
 func printStats() async {
     await Pricing.load()
-    var recs = LogReader.read(since: StatsRange.week.since)
+    var recs = LogReader.read(since: StatsRange.week.presetStart)
     for i in recs.indices { recs[i].cost = Pricing.cost(recs[i]) }
     for range in [StatsRange.today, .week] {
         for src in [Source.claude, .codex] {
-            let s = Summary(recs.filter { $0.time >= range.since && $0.source == src })
+            let s = Summary(recs.filter { $0.time >= range.presetStart && $0.source == src })
             print("\(range.rawValue) \(src.rawValue): cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))"
                   + " (in \(abbrev(s.input)) out \(abbrev(s.output)) cacheR \(abbrev(s.cacheRead)) cacheW \(abbrev(s.cacheWrite)))"
                   + " · hit \(s.hitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")")
         }
+    }
+    // 重置以来：先查额度拿到周额度的重置时间
+    let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
+    for u in [await Claude.fetch(), await Codex.fetch()] {
+        guard let src = Source(rawValue: u.name), let reset = u.windows.first(where: \.weekly)?.resetsAt else { continue }
+        let start = Date(timeIntervalSince1970: ((reset.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60 - 7 * 86400)
+        let s = Summary(recs.filter { $0.time >= start && $0.source == src })
+        print("cycle \(src.rawValue) since \(f.string(from: start)) (resets \(f.string(from: reset))): cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
     }
     let unpriced = Set(recs.filter { $0.cost == nil }.map(\.model))
     if !unpriced.isEmpty { print("unpriced models:", unpriced.sorted().joined(separator: ", ")) }

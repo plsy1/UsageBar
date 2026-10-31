@@ -13,6 +13,8 @@ struct LimitWindow {
     let label: String
     let usedPercent: Double
     let resetsAt: Date?
+    /// 主要的周额度（Claude 的 seven_day、Codex 的 7 天窗口）；用量统计按它算「重置以来」
+    var weekly = false
     var remaining: Double { max(0, 100 - usedPercent) }
     /// 按设置显示剩余还是已使用（进度条和百分比都跟着变）
     func shown(_ used: Bool = Pref.showUsed) -> Double { used ? min(100, usedPercent) : remaining }
@@ -80,8 +82,21 @@ enum I18n {
         "用量统计…": ("使用量の統計…", "Usage Statistics…"),
         "用量统计": ("使用量の統計", "Usage Statistics"),
         "今天": ("今日", "Today"),
-        "7 天": ("7 日間", "7 Days"),
-        "30 天": ("30 日間", "30 Days"),
+        "重置以来": ("リセット以降", "Since Reset"),
+        "%@ 自 %@ 起": ("%@ %@ から", "%@ since %@"),
+        "%@ 周期未知，按最近 7 天": ("%@ は周期が不明なため直近 7 日間", "%@ cycle unknown, using last 7 days"),
+        "近 24 小时": ("過去 24 時間", "Last 24 Hours"),
+        "近 7 天": ("過去 7 日間", "Last 7 Days"),
+        "近 14 天": ("過去 14 日間", "Last 14 Days"),
+        "近 30 天": ("過去 30 日間", "Last 30 Days"),
+        "全部时间": ("全期間", "All Time"),
+        "自定义": ("カスタム", "Custom"),
+        "开始时间": ("開始", "Start"),
+        "结束时间": ("終了", "End"),
+        "结束时间跟随当前时刻": ("終了時刻を現在に合わせる", "End at the current time"),
+        "取消": ("キャンセル", "Cancel"),
+        "确定": ("適用", "Apply"),
+        "现在": ("現在", "Now"),
         "全部": ("すべて", "All"),
         "估算成本": ("推定コスト", "Est. Cost"),
         "请求数": ("リクエスト数", "Requests"),
@@ -258,7 +273,8 @@ enum Claude {
             for key in keys {
                 guard let w = json[key] as? [String: Any], let util = w["utilization"] as? Double else { continue }
                 u.windows.append(LimitWindow(label: labels[key].map { L($0) } ?? key, usedPercent: util,
-                                             resetsAt: (w["resets_at"] as? String).flatMap(parseISODate)))
+                                             resetsAt: (w["resets_at"] as? String).flatMap(parseISODate),
+                                             weekly: key == "seven_day"))
             }
             return u
         }
@@ -294,10 +310,12 @@ enum Codex {
                 u.plan = json["plan_type"] as? String
                 for key in ["primary_window", "secondary_window"] {
                     guard let w = rl[key] as? [String: Any], let used = w["used_percent"] as? Double else { continue }
+                    let seconds = w["limit_window_seconds"] as? Double ?? 0
                     u.windows.append(LimitWindow(
-                        label: windowLabel(seconds: w["limit_window_seconds"] as? Double ?? 0),
+                        label: windowLabel(seconds: seconds),
                         usedPercent: used,
-                        resetsAt: (w["reset_at"] as? Double).map { Date(timeIntervalSince1970: $0) }))
+                        resetsAt: (w["reset_at"] as? Double).map { Date(timeIntervalSince1970: $0) },
+                        weekly: seconds == 7 * 86400))
                 }
                 return u
             }
@@ -312,8 +330,10 @@ enum Codex {
                 let reset = (w["resets_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
                 // 已经过了重置时间的窗口，用量视为归零
                 let expired = reset.map { $0 < Date() } ?? false
-                u.windows.append(LimitWindow(label: windowLabel(seconds: (w["window_minutes"] as? Double ?? 0) * 60),
-                                             usedPercent: expired ? 0 : used, resetsAt: expired ? nil : reset))
+                let seconds = (w["window_minutes"] as? Double ?? 0) * 60
+                u.windows.append(LimitWindow(label: windowLabel(seconds: seconds),
+                                             usedPercent: expired ? 0 : used, resetsAt: expired ? nil : reset,
+                                             weekly: seconds == 7 * 86400))
             }
             let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
             u.note = L("%@ · 数据时间 %@", u.note ?? L("本地缓存"), f.string(from: mtime))
@@ -659,6 +679,8 @@ struct CardView: View {
             if model.results.isEmpty {
                 Text(L("正在获取用量…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             }
+            // 每家一栏左右并排，卡片是横向的长方形
+            HStack(alignment: .top, spacing: 24 * s) {
             ForEach(shown, id: \.name) { u in
                 VStack(alignment: .leading, spacing: 8 * s) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -677,6 +699,8 @@ struct CardView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .frame(width: CardWindow.column * s, alignment: .topLeading)
+            }
             }
             if let t = model.lastUpdate {
                 Text(L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
@@ -684,7 +708,7 @@ struct CardView: View {
             }
         }
         .padding(16 * s)
-        .frame(width: CardWindow.width * s, alignment: .leading)
+        .fixedSize()
         .environment(\.colorScheme, white ? .dark : .light)
         // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
         .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
@@ -721,11 +745,13 @@ final class CardWindow: NSWindow {
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
         // 默认放到主屏右上角
         if !setFrameUsingName("UsageCard"), let s = NSScreen.screens.first?.visibleFrame {
-            setFrameTopLeftPoint(NSPoint(x: s.maxX - CardWindow.width - 24, y: s.maxY - 16))
+            setFrameTopLeftPoint(NSPoint(x: s.maxX - CardWindow.defaultWidth - 24, y: s.maxY - 16))
         }
         setFrameAutosaveName("UsageCard")
     }
-    static let width: CGFloat = 250
+    /// 每家一栏的宽度；两栏并排时卡片约 500 宽
+    static let column: CGFloat = 210
+    static let defaultWidth: CGFloat = column * 2 + 24 + 32
     override var canBecomeKey: Bool { false }
 
     /// 内容变高/变矮时保持左上角不动（AppKit 默认保持左下角）
@@ -800,6 +826,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.loading = false
                 self.model.results = r
                 self.model.lastUpdate = self.lastUpdate
+                // 周额度的重置时间往前推 7 天，就是当前周期的起点
+                for u in r {
+                    guard let src = Source(rawValue: u.name),
+                          let reset = u.windows.first(where: \.weekly)?.resetsAt else { continue }
+                    // 接口给的重置时间常是 05:59:59.x 这种：差几秒到整分钟就进位，否则舍去秒数
+                    let resetMinute = Date(timeIntervalSince1970: ((reset.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60)
+                    self.stats.cycleStarts[src] = resetMinute.addingTimeInterval(-7 * 86400)
+                }
                 self.updateTitle()
                 self.rebuildMenu()
             }
@@ -871,13 +905,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openStats() {
         if statsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: StatsView(store: stats)))
+            let host = NSHostingController(rootView: StatsView(store: stats))
+            host.sizingOptions = .minSize
+            let w = NSWindow(contentViewController: host)
             w.title = L("用量统计")
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             w.isReleasedWhenClosed = false
-            w.setContentSize(NSSize(width: 880, height: 720))
+            // 固定 16:10 的宽屏比例，拖动缩放时保持形状
+            w.contentAspectRatio = NSSize(width: 16, height: 10)
+            w.setContentSize(NSSize(width: 1120, height: 700))
             w.center()
-            w.setFrameAutosaveName("StatsWindow")
+            w.setFrameAutosaveName("StatsWindowWide")
             statsWindow = w
         }
         stats.reload()
