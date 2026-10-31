@@ -165,6 +165,8 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "保持在最前": ("常に手前に表示", "Keep on Top"),
+        "关掉时贴在桌面上，会被其他窗口盖住": ("オフのときはデスクトップに置かれ、他のウインドウに隠れます", "When off, the card sits on the desktop behind other windows"),
         "开机启动、外观、刷新频率和数据来源": ("ログイン時の起動、外観、更新頻度、データソース", "Launch at login, appearance, refresh and data sources"),
         "用量统计只读取新写入的日志，刷新很快": ("使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります", "Usage statistics only read newly written logs, so refreshing is quick"),
         "向 Anthropic 和 OpenAI 查询剩余额度": ("Anthropic と OpenAI に残りの上限を問い合わせます", "Asks Anthropic and OpenAI for remaining limits"),
@@ -576,6 +578,8 @@ enum Pref {
     static let cardDisplayMode = "cardDisplayMode"
     static let statsCardShowClaude = "statsCardShowClaude"
     static let statsCardShowCodex = "statsCardShowCodex"
+    static let cardOnTop = "cardOnTop"             // 保持在最前；关掉时贴在桌面层
+    static let statsCardOnTop = "statsCardOnTop"
     static let showStatsCard = "showStatsCard" // 用量卡片（成本、请求数、Tokens）
     static let statsCardRange = "statsCardRange"  // today / cycle / 7d
     // 用量卡片自己的布局和外观（和额度卡片分开设置）
@@ -600,7 +604,7 @@ enum Pref {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
             showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative", appearance: "auto",
-            showStatsCard: false, statsCardRange: "today",
+            showStatsCard: false, statsCardRange: "today", cardOnTop: false, statsCardOnTop: false,
         ])
         // 用量卡片的外观一开始跟额度卡片现在的一样，之后各改各的
         let u = UserDefaults.standard
@@ -1048,11 +1052,11 @@ struct CardSettings: View {
 /// 一张卡片的各项设置存在哪些键下
 struct CardKeys {
     let stats: Bool  // 用量卡片；否则是额度卡片
-    let show, claude, codex, layout, scale, background, text, opacity, bgOpacity: String
-    static let limits = CardKeys(stats: false, show: Pref.showCard, claude: Pref.cardShowClaude, codex: Pref.cardShowCodex,
+    let show, onTop, claude, codex, layout, scale, background, text, opacity, bgOpacity: String
+    static let limits = CardKeys(stats: false, show: Pref.showCard, onTop: Pref.cardOnTop, claude: Pref.cardShowClaude, codex: Pref.cardShowCodex,
                                  layout: Pref.cardLayout, scale: Pref.scale, background: Pref.background, text: Pref.textColor,
                                  opacity: Pref.opacity, bgOpacity: Pref.bgOpacity)
-    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, claude: Pref.statsCardShowClaude, codex: Pref.statsCardShowCodex,
+    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, onTop: Pref.statsCardOnTop, claude: Pref.statsCardShowClaude, codex: Pref.statsCardShowCodex,
                                 layout: Pref.statsCardLayout, scale: Pref.statsCardScale, background: Pref.statsCardBackground,
                                 text: Pref.statsCardText, opacity: Pref.statsCardOpacity, bgOpacity: Pref.statsCardBgOpacity)
 }
@@ -1060,6 +1064,7 @@ struct CardKeys {
 struct CardForm: View {
     let keys: CardKeys
     @AppStorage var show: Bool
+    @AppStorage var onTop: Bool
     @AppStorage var showClaude: Bool
     @AppStorage var showCodex: Bool
     @AppStorage var layout: String
@@ -1075,6 +1080,7 @@ struct CardForm: View {
     init(keys: CardKeys) {
         self.keys = keys
         _show = AppStorage(wrappedValue: !keys.stats, keys.show)
+        _onTop = AppStorage(wrappedValue: false, keys.onTop)
         _showClaude = AppStorage(wrappedValue: true, keys.claude)
         _showCodex = AppStorage(wrappedValue: true, keys.codex)
         _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
@@ -1090,6 +1096,9 @@ struct CardForm: View {
             SettingsGroup(footer: keys.stats ? L("用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率")
                                              : L("额度卡片显示各家额度的剩余（或已用）和重置时间")) {
                 SettingsRow(keys.stats ? L("显示用量卡片") : L("显示额度卡片")) { SwitchControl(isOn: $show) }
+                Divider()
+                SettingsRow(L("保持在最前"), detail: L("关掉时贴在桌面上，会被其他窗口盖住")) { SwitchControl(isOn: $onTop) }
+                    .disabled(!show)
                 Divider()
                 if keys.stats {
                     SettingsRow(L("统计范围")) {
@@ -1589,6 +1598,7 @@ struct CardView: View {
     @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.cardLayout) var layout = "horizontal"
     @AppStorage(Pref.showCard) var visible = true
+    @AppStorage(Pref.cardOnTop) var onTop = false
     var report = true  // 设置页的预览传 false
 
     var s: CGFloat { CGFloat(scale) }
@@ -1638,6 +1648,7 @@ struct CardView: View {
             Button { model.onOpen() } label: { Label(L("打开 UsageBar…"), systemImage: "macwindow") }
             Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
             Divider()
+            Toggle(L("保持在最前"), isOn: $onTop)
             Button { model.onHide() } label: { Label(L("隐藏额度卡片"), systemImage: "eye.slash") }
         }
     }
@@ -1736,9 +1747,13 @@ final class CardWindow: NSWindow {
     /// 不能现算重叠最多的那块：卡片往下长出屏幕后，重叠最多的可能变成旁边的屏
     weak var home: NSScreen?
 
-    /// name：记住位置用的名字；near：第一次显示时挨着这个窗口放（用量卡片挨着额度卡片）
-    init<V: View>(_ view: V, name: String, near: NSWindow? = nil) {
+    /// 「保持在最前」存在哪个键
+    let onTopKey: String
+
+    /// name：记住位置用的名字；onTopKey：「保持在最前」的偏好键；near：第一次显示时挨着这个窗口放（用量卡片挨着额度卡片）
+    init<V: View>(_ view: V, name: String, onTopKey: String, near: NSWindow? = nil) {
         placementKey = "cardPlacement." + name
+        self.onTopKey = onTopKey
         super.init(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         let host = NSHostingController(rootView: view)
         host.sizingOptions = .preferredContentSize
@@ -1748,8 +1763,8 @@ final class CardWindow: NSWindow {
         hasShadow = false
         ignoresMouseEvents = false  // 透明区域也能拖动
         isMovableByWindowBackground = true
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
+        applyLevel()
         // 先按内容定好大小再摆位置，不然窗口之后从 0 长高时会往上长
         setContentSize(host.view.fittingSize)
         if !place() {
@@ -1779,6 +1794,13 @@ final class CardWindow: NSWindow {
     static let wideColumn: CGFloat = 260
     static let defaultWidth: CGFloat = column * 2 + 24 + 32
     override var canBecomeKey: Bool { false }
+
+    /// 保持在最前：浮在所有窗口上面；否则贴在桌面层（桌面图标上面一层，其他窗口会盖住它）
+    func applyLevel() {
+        let onTop = UserDefaults.standard.bool(forKey: onTopKey)
+        let want: NSWindow.Level = onTop ? .floating : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        if level != want { level = want }
+    }
 
     /// 只记用户拖动（按着鼠标）的结果；系统因为显示器变化挪窗口、程序自己摆放都不算
     @objc func moved() {
@@ -1953,7 +1975,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setCardVisible(_ on: Bool) {
         if on {
             if card == nil {
-                let w = CardWindow(CardView(model: model), name: "UsageCard")
+                let w = CardWindow(CardView(model: model), name: "UsageCard", onTopKey: Pref.cardOnTop)
                 w.onResize = { [weak model] size in if let model, model.cardSize != size { model.cardSize = size } }
                 card = w
             }
@@ -1966,7 +1988,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setStatsCardVisible(_ on: Bool) {
         if on {
             if statsCard == nil {
-                let w = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard",
+                let w = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard", onTopKey: Pref.statsCardOnTop,
                                    near: card?.isVisible == true ? card : nil)
                 w.onResize = { [weak model] size in if let model, model.statsCardSize != size { model.statsCardSize = size } }
                 statsCard = w
@@ -2011,6 +2033,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.integer(forKey: Pref.statsRefreshMinutes) != statsTimerMinutes { scheduleStatsTimer() }
         if (card?.isVisible ?? false) != showCard { setCardVisible(showCard) }
         if (statsCard?.isVisible ?? false) != showStatsCard { setStatsCardVisible(showStatsCard) }
+        card?.applyLevel()
+        statsCard?.applyLevel()
         if I18n.lang != lastLang {
             // 错误提示、额度名称是取数时生成的，换语言后重新取一次
             lastLang = I18n.lang

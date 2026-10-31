@@ -1370,6 +1370,7 @@ struct StatsCardView: View {
     @ObservedObject var model: UsageModel
     var report = true  // 设置页的预览传 false
     @AppStorage(Pref.showStatsCard) var visible = false
+    @AppStorage(Pref.statsCardOnTop) var onTop = false
     @AppStorage(Pref.statsCardBackground) var background = "none"
     @AppStorage(Pref.statsCardText) var textColor = "white"
     @AppStorage(Pref.statsCardScale) var scale = 1.0
@@ -1448,6 +1449,7 @@ struct StatsCardView: View {
             Button { model.onOpenStats() } label: { Label(L("打开用量统计…"), systemImage: "chart.bar") }
             Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
             Divider()
+            Toggle(L("保持在最前"), isOn: $onTop)
             Button { model.onHideStats() } label: { Label(L("隐藏用量卡片"), systemImage: "eye.slash") }
         }
     }
