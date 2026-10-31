@@ -128,7 +128,8 @@ enum I18n {
         "全名（Claude / Codex）": ("フルネーム（Claude / Codex）", "Full (Claude / Codex)"),
         "显示内容（卡片和菜单栏）": ("表示する項目（カードとメニューバー）", "Show (Card and Menu Bar)"),
         "刷新": ("更新", "Refresh"),
-        "自动刷新间隔": ("自動更新の間隔", "Auto-Refresh Interval"),
+        "额度": ("上限", "Limits"),
+        "用量统计（后台增量更新）": ("使用量の統計（バックグラウンドで差分更新）", "Usage statistics (updated in the background)"),
         "%d 分钟": ("%d 分", "%d min"),
     ]
 
@@ -373,6 +374,7 @@ enum Pref {
     static let showClaude = "showClaude"
     static let showCodex = "showCodex"
     static let refreshMinutes = "refreshMinutes"
+    static let statsRefreshMinutes = "statsRefreshMinutes"
     static let menuLabel = "menuLabel"         // short / full
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
@@ -381,7 +383,7 @@ enum Pref {
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining",
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining",
         ])
     }
     static func visible(_ name: String) -> Bool {
@@ -416,6 +418,7 @@ enum LoginItem {
 struct GeneralSettings: View {
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
+    @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @AppStorage(Pref.displayMode) var displayMode = "remaining"
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
@@ -446,8 +449,13 @@ struct GeneralSettings: View {
                     Text(L("已使用")).tag("used")
                 }
                 .pickerStyle(.segmented)
-                Picker(L("自动刷新间隔"), selection: $refreshMinutes) {
+            }
+            Section(L("刷新")) {
+                Picker(L("额度"), selection: $refreshMinutes) {
                     ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                }
+                Picker(L("用量统计（后台增量更新）"), selection: $statsRefreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                 }
             }
             Section(L("显示内容（卡片和菜单栏）")) {
@@ -739,6 +747,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var loading = false
     var timer: Timer?
     var timerMinutes = 0
+    var statsTimer: Timer?
+    var statsTimerMinutes = 0
     var settingsWindow: NSWindow?
     var statsWindow: NSWindow?
     let stats = StatsStore()
@@ -762,6 +772,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         refresh()
         scheduleTimer()
+        // 统计在后台先读好，打开窗口时不用等；之后按自己的间隔增量更新
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.stats.reload() }
+        scheduleStatsTimer()
         // 设置窗口里改了什么，这里同步到卡片显隐、刷新间隔和菜单栏
         NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -810,8 +823,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func scheduleStatsTimer() {
+        statsTimerMinutes = UserDefaults.standard.integer(forKey: Pref.statsRefreshMinutes)
+        statsTimer?.invalidate()
+        statsTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(max(1, statsTimerMinutes) * 60), repeats: true) { [weak self] _ in
+            self?.stats.reload()
+        }
+    }
+
     func syncPrefs() {
         if UserDefaults.standard.integer(forKey: Pref.refreshMinutes) != timerMinutes { scheduleTimer() }
+        if UserDefaults.standard.integer(forKey: Pref.statsRefreshMinutes) != statsTimerMinutes { scheduleStatsTimer() }
         if (card?.isVisible ?? false) != showCard { setCardVisible(showCard) }
         if I18n.lang != lastLang {
             // 错误提示、额度名称是取数时生成的，换语言后重新取一次
