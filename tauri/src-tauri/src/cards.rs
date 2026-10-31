@@ -23,6 +23,8 @@ pub struct Placement {
     pub offsets: HashMap<String, (f64, f64)>,
     /// 最后放在哪块屏
     pub screen: Option<String>,
+    /// 还没被拖过、是程序挨着另一张卡片自动摆的：另一张卡片变大变小时跟着重新摆
+    pub auto: bool,
 }
 
 /// 显示器的名字当 ID（Windows 是 \\.\DISPLAY1 这种，Linux 是接口名）；没有名字就用位置和大小
@@ -125,16 +127,25 @@ pub fn clamped(app: &AppHandle, pos: PhysicalPosition<i32>, size: PhysicalSize<u
     }
 }
 
-/// 第一次：挨着另一张卡片放（下面放不下就放右边），都没有就放到主屏右上角
+/// 挨着另一张卡片（位置、大小给定）放：下面放不下就放右边
+pub fn next_to(app: &AppHandle, w: &WebviewWindow, pos: PhysicalPosition<i32>, near: PhysicalSize<u32>) -> Option<PhysicalPosition<i32>> {
+    let size = w.outer_size().ok()?;
+    let r = Rect { x: pos.x as f64, y: pos.y as f64, w: near.width as f64, h: near.height as f64 };
+    let m = best_monitor(app, &r)?;
+    let gap = GAP * m.scale_factor();
+    let a = Rect::work(&m);
+    let below = r.y + r.h + gap;
+    let p = if below + (size.height as f64) <= a.y + a.h { (r.x, below) } else { (r.x + r.w + gap, r.y) };
+    Some(clamp(p, size, &m))
+}
+
+/// 第一次：挨着另一张卡片放，都没有就放到主屏右上角
 pub fn default_position(app: &AppHandle, w: &WebviewWindow, near: Option<&WebviewWindow>) -> Option<PhysicalPosition<i32>> {
     let size = w.outer_size().ok()?;
-    if let Some(r) = near.filter(|n| n.is_visible().unwrap_or(false)).and_then(window_rect) {
-        let m = best_monitor(app, &r)?;
-        let gap = GAP * m.scale_factor();
-        let a = Rect::work(&m);
-        let below = r.y + r.h + gap;
-        let pos = if below + (size.height as f64) <= a.y + a.h { (r.x, below) } else { (r.x + r.w + gap, r.y) };
-        return Some(clamp(pos, size, &m));
+    if let Some(n) = near.filter(|n| n.is_visible().unwrap_or(false)) {
+        if let (Ok(p), Ok(s)) = (n.outer_position(), n.outer_size()) {
+            return next_to(app, w, p, s);
+        }
     }
     let m = app.primary_monitor().ok()??;
     let a = Rect::work(&m);

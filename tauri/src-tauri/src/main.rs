@@ -245,8 +245,22 @@ fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
     // 变大后可能超出屏幕，挪回来
     let app = window.app_handle();
-    let place = app.state::<AppState>().settings.lock().unwrap().card_places.get(window.label()).cloned().unwrap_or_default();
+    let st = app.state::<AppState>();
+    let mut s = st.settings.lock().unwrap();
+    let place = s.card_places.get(window.label()).cloned().unwrap_or_default();
     cards::keep_on_screen(app, &window, &place);
+    // 另一张卡片还是自动摆的（没被拖过）：按这张的新大小重新挨着放，免得被盖住
+    let other = if window.label() == "card" { "stats_card" } else { "card" };
+    let sf = window.scale_factor().unwrap_or(1.0);
+    let size = tauri::PhysicalSize::new((width * sf).round() as u32, (height * sf).round() as u32);
+    if let (Some(o), Some(true), Ok(pos)) = (app.get_webview_window(other), s.card_places.get(other).map(|p| p.auto), window.outer_position()) {
+        if let (Some(p), Ok(osize)) = (cards::next_to(app, &o, pos, size), o.outer_size()) {
+            let _ = o.set_position(p);
+            let place = s.card_places.entry(other.to_string()).or_default();
+            cards::record_at(app, p, osize, place);
+            save_settings(app, &s);
+        }
+    }
 }
 
 /// 卡片报来内容区的自然大小；两张形状一样时都撑到较大的那个（发 card_sync 给两张卡片）
@@ -291,6 +305,7 @@ fn card_drag_end(app: AppHandle, window: tauri::WebviewWindow) {
     let mut s = st.settings.lock().unwrap();
     let place = s.card_places.entry(window.label().to_string()).or_default();
     cards::record_at(&app, d.last, size, place);
+    place.auto = false;
     save_settings(&app, &s);
 }
 
@@ -537,6 +552,8 @@ fn place_card(app: &AppHandle, label: &str) {
         let _ = w.set_position(p);
         let place = s.card_places.entry(label.to_string()).or_default();
         cards::record_at(app, p, size, place);
+        // 挨着另一张卡片自动摆的，在被拖之前跟着它走；旧版迁移过来的位置是用户拖过的
+        place.auto = old.is_none() && label == "stats_card";
         s.card_x = None;
         s.card_y = None;
         save_settings(app, &s);
