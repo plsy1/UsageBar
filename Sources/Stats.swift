@@ -43,6 +43,8 @@ enum Pricing {
             .appendingPathComponent("local.usagebar/models-dev.json")
     }
     private static var table: [String: [String: Price]] = [:]
+    /// 本地价格表缓存的更新时间（设置里显示）
+    static var updatedAt: Date?
 
     /// 读缓存；没有缓存或超过一天就重新下载
     static func load() async {
@@ -60,6 +62,7 @@ enum Pricing {
             t[provider] = models.compactMapValues { ($0 as? [String: Any]).flatMap(price) }
         }
         table = t
+        updatedAt = (try? fm.attributesOfItem(atPath: cacheURL.path))?[.modificationDate] as? Date
     }
 
     /// 只留两家的 cost 字段，缓存从 6MB 缩到几十 KB

@@ -79,6 +79,17 @@ enum I18n {
         // 设置窗口
         "通用": ("一般", "General"),
         "设置": ("設定", "Settings"),
+        "语言、显示方式和刷新频率": ("言語、表示方法、更新頻度", "Language, display and refresh frequency"),
+        "布局、外观和大小，改动会实时显示在右边的预览里": ("レイアウト、外観、サイズ。変更は右のプレビューにすぐ反映されます", "Layout, look and size. Changes show up in the preview on the right"),
+        "菜单栏上显示的内容，以及点开后的菜单": ("メニューバーの表示と、クリックしたときのメニュー", "What the menu bar shows, and the menu that opens from it"),
+        "每家显示最紧的那个额度；显示剩余还是已使用、显示哪几家在「通用」里设置": ("各サービスで最も残りが少ない上限を表示します。残り / 使用済みや表示するサービスは「一般」で設定します", "Each shows its tightest limit. Remaining vs. used and which services to show are set in General"),
+        "拖动桌面上的卡片可以移动位置，右键有更多操作": ("デスクトップのカードはドラッグで移動、右クリックでその他の操作", "Drag the card on the desktop to move it; right-click for more"),
+        "状态": ("状態", "Status"),
+        "已连接": ("接続済み", "Connected"),
+        "价格表": ("価格表", "Prices"),
+        "未获取": ("未取得", "Not loaded"),
+        "本机会话记录": ("ローカルのセッション記録", "Local Session Logs"),
+        "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
         "左右": ("横並び", "Side by Side"),
         "上下": ("縦並び", "Stacked"),
@@ -441,7 +452,56 @@ enum LoginItem {
     }
 }
 
+/// 设置页的版式：顶部标题栏，下面左边是设置项，右边是预览或状态
+struct SettingsPage<Main: View, Side: View>: View {
+    let tab: MainTab
+    let subtitle: String
+    let main: Main
+    let side: Side
+
+    init(_ tab: MainTab, _ subtitle: String, @ViewBuilder main: () -> Main, @ViewBuilder side: () -> Side) {
+        self.tab = tab; self.subtitle = subtitle; self.main = main(); self.side = side()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 14) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 20, weight: .regular))
+                    .frame(width: 42, height: 42)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.07)))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tab.title).font(.title2.weight(.semibold))
+                    Text(subtitle).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 30).padding(.top, 26)
+            HStack(alignment: .top, spacing: 0) {
+                main.frame(width: 470)
+                side.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// 右栏的小标题 + 圆角面板
+struct SidePanel<Content: View>: View {
+    let title: String
+    let content: Content
+    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.callout.weight(.medium)).foregroundStyle(.secondary)
+            content
+        }
+        .padding(.top, 20).padding(.trailing, 30)
+    }
+}
+
 struct GeneralSettings: View {
+    @ObservedObject var model: UsageModel
+    @ObservedObject var stats: StatsStore
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
@@ -452,50 +512,85 @@ struct GeneralSettings: View {
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
-                    LoginItem.set(on)
-                    launchAtLogin = LoginItem.status == .enabled
-                    needsApproval = LoginItem.status == .requiresApproval
-                }))
-                if needsApproval {
-                    Text(L("需要在 系统设置 → 通用 → 登录项 中允许 UsageBar"))
-                        .font(.callout).foregroundStyle(.secondary)
+        SettingsPage(.general, L("语言、显示方式和刷新频率")) {
+            Form {
+                Section {
+                    Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
+                        LoginItem.set(on)
+                        launchAtLogin = LoginItem.status == .enabled
+                        needsApproval = LoginItem.status == .requiresApproval
+                    }))
+                    if needsApproval {
+                        Text(L("需要在 系统设置 → 通用 → 登录项 中允许 UsageBar"))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Picker(L("语言"), selection: $language) {
+                        Text(L("跟随系统")).tag("auto")
+                        Divider()
+                        Text("中文").tag("zh")
+                        Text("日本語").tag("ja")
+                        Text("English").tag("en")
+                    }
+                    Picker(L("显示数值"), selection: $displayMode) {
+                        Text(L("剩余")).tag("remaining")
+                        Text(L("已使用")).tag("used")
+                    }
+                    .pickerStyle(.segmented)
                 }
-                Picker(L("语言"), selection: $language) {
-                    Text(L("跟随系统")).tag("auto")
-                    Divider()
-                    Text("中文").tag("zh")
-                    Text("日本語").tag("ja")
-                    Text("English").tag("en")
+                Section(L("刷新")) {
+                    Picker(L("额度"), selection: $refreshMinutes) {
+                        ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                    }
+                    Picker(L("用量统计（后台增量更新）"), selection: $statsRefreshMinutes) {
+                        ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                    }
                 }
-                Picker(L("显示数值"), selection: $displayMode) {
-                    Text(L("剩余")).tag("remaining")
-                    Text(L("已使用")).tag("used")
+                Section(L("显示内容（卡片和菜单栏）")) {
+                    Toggle("Claude", isOn: $showClaude)
+                    Toggle("Codex", isOn: $showCodex)
                 }
-                .pickerStyle(.segmented)
             }
-            Section(L("刷新")) {
-                Picker(L("额度"), selection: $refreshMinutes) {
-                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                }
-                Picker(L("用量统计（后台增量更新）"), selection: $statsRefreshMinutes) {
-                    ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+        } side: {
+            Form {
+                Section(L("状态")) {
+                    if model.results.isEmpty {
+                        Text(L("正在获取用量…")).foregroundStyle(.secondary)
+                    }
+                    ForEach(model.results, id: \.name) { u in
+                        LabeledContent(u.name) { Text(status(u)).multilineTextAlignment(.trailing).foregroundStyle(.secondary) }
+                    }
+                    LabeledContent(L("价格表")) {
+                        Text(Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取"))
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent(L("本机会话记录")) {
+                        Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            Section(L("显示内容（卡片和菜单栏）")) {
-                Toggle("Claude", isOn: $showClaude)
-                Toggle("Codex", isOn: $showCodex)
-            }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)  // 去掉表单滚动区的底色和两侧边线
-        .frame(maxWidth: 560)
+    }
+
+    func status(_ u: ProviderUsage) -> String {
+        if let e = u.error { return e }
+        var parts = [L("已连接")]
+        if let p = u.plan { parts.append(p) }
+        if u.note != nil { parts.append(L("本地缓存")) }
+        return parts.joined(separator: " · ")
+    }
+
+    func shortDate(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
     }
 }
 
 struct CardSettings: View {
+    @ObservedObject var model: UsageModel
     @AppStorage(Pref.showCard) var showCard = true
     @AppStorage(Pref.background) var background = "none"
     @AppStorage(Pref.textColor) var textColor = "white"
@@ -506,72 +601,149 @@ struct CardSettings: View {
     @AppStorage(Pref.cardLayout) var layout = "horizontal"
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(L("显示桌面卡片"), isOn: $showCard)
-            }
-            Section {
-                Picker(L("布局"), selection: $layout) {
-                    Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
-                    Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
-                    Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+        SettingsPage(.card, L("布局、外观和大小，改动会实时显示在右边的预览里")) {
+            Form {
+                Section {
+                    Toggle(L("显示桌面卡片"), isOn: $showCard)
                 }
-                .pickerStyle(.segmented)
-                PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
-            }
-            .disabled(!showCard)
-            Section {
-                Picker(L("背景"), selection: $background) {
-                    Text(L("无")).tag("none")
-                    Text(L("深色毛玻璃")).tag("dark")
-                    Text(L("浅色毛玻璃")).tag("light")
+                Section {
+                    Picker(L("布局"), selection: $layout) {
+                        Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                        Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                        Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                    }
+                    .pickerStyle(.segmented)
+                    PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
                 }
-                PercentSlider(title: L("毛玻璃浓度"), value: $bgOpacity, range: 0.1...1.0, step: 0.05)
-                    .disabled(background == "none")
-                Picker(L("文字颜色"), selection: $textColor) {
-                    Text(L("白色")).tag("white")
-                    Text(L("黑色")).tag("black")
+                .disabled(!showCard)
+                Section {
+                    Picker(L("背景"), selection: $background) {
+                        Text(L("无")).tag("none")
+                        Text(L("深色毛玻璃")).tag("dark")
+                        Text(L("浅色毛玻璃")).tag("light")
+                    }
+                    PercentSlider(title: L("毛玻璃浓度"), value: $bgOpacity, range: 0.1...1.0, step: 0.05)
+                        .disabled(background == "none")
+                    Picker(L("文字颜色"), selection: $textColor) {
+                        Text(L("白色")).tag("white")
+                        Text(L("黑色")).tag("black")
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
+                .disabled(!showCard)
+                Section {
+                    PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
+                    Toggle(L("显示重置时间"), isOn: $showReset)
+                }
+                .disabled(!showCard)
             }
-            .disabled(!showCard)
-            Section {
-                PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
-                Toggle(L("显示重置时间"), isOn: $showReset)
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+        } side: {
+            SidePanel(L("预览")) {
+                GeometryReader { g in
+                    // 预览底色模拟壁纸：白字配深色，黑字配浅色
+                    let dark = textColor == "white"
+                    let natural: CGFloat = (layout == "horizontal" ? 476 : layout == "vertical" ? 332 : 273) * scale
+                    let fit = min(1, (g.size.width - 48) / natural)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(LinearGradient(colors: dark ? [Color(white: 0.32), Color(white: 0.14)] : [Color(white: 0.92), Color(white: 0.78)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                        CardView(model: model)
+                            .allowsHitTesting(false)
+                            .scaleEffect(fit)
+                    }
+                    .opacity(showCard ? 1 : 0.4)
+                }
+                .frame(height: 380)
+                Text(L("拖动桌面上的卡片可以移动位置，右键有更多操作"))
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            .disabled(!showCard)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)  // 去掉表单滚动区的底色和两侧边线
-        .frame(maxWidth: 560)
     }
 }
 
 struct MenuBarSettings: View {
+    @ObservedObject var model: UsageModel
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
     @AppStorage(Pref.displayMode) var displayMode = "remaining"
+    @AppStorage(Pref.showClaude) var showClaude = true
+    @AppStorage(Pref.showCodex) var showCodex = true
+
+    var shown: [ProviderUsage] { model.results.filter { $0.name == "Claude" ? showClaude : showCodex } }
+    var used: Bool { displayMode == "used" }
+
+    /// 和菜单栏上一样的文字
+    var title: String {
+        let parts = shown.map { u -> String in
+            let name = menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx"
+            return "\(name) " + (u.binding.map { "\(Int($0.shown(used).rounded()))%" } ?? "–")
+        }
+        return parts.isEmpty ? "UsageBar" : parts.joined(separator: "  ")
+    }
 
     var body: some View {
-        Form {
-            Section {
-                Picker(L("名称"), selection: $menuLabel) {
-                    Text(L("简写（Cc / Cx）")).tag("short")
-                    Text(L("全名（Claude / Codex）")).tag("full")
+        SettingsPage(.menuBar, L("菜单栏上显示的内容，以及点开后的菜单")) {
+            Form {
+                Section {
+                    Picker(L("名称"), selection: $menuLabel) {
+                        Text(L("简写（Cc / Cx）")).tag("short")
+                        Text(L("全名（Claude / Codex）")).tag("full")
+                    }
+                    .pickerStyle(.radioGroup)
+                } footer: {
+                    Text(L("每家显示最紧的那个额度；显示剩余还是已使用、显示哪几家在「通用」里设置"))
+                        .font(.callout).foregroundStyle(.secondary)
                 }
-                .pickerStyle(.radioGroup)
             }
-            Section(L("预览")) {
-                let (a, b) = displayMode == "used" ? (41, 47) : (59, 53)
-                Text(menuLabel == "full" ? "Claude \(a)%  Codex \(b)%" : "Cc \(a)%  Cx \(b)%")
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                    .frame(maxWidth: .infinity)
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+        } side: {
+            SidePanel(L("预览")) {
+                VStack(alignment: .trailing, spacing: 6) {
+                    // 模拟一段菜单栏
+                    HStack(spacing: 14) {
+                        Spacer()
+                        Text(title).font(.system(size: 13, weight: .medium).monospacedDigit())
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.1)))
+                        Image(systemName: "wifi")
+                        Image(systemName: "battery.75percent")
+                        Text(Date().formatted(.dateTime.hour().minute())).monospacedDigit()
+                    }
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 12).frame(height: 30)
+                    .background(Rectangle().fill(Color.primary.opacity(0.05)))
+                    // 点开后的菜单
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(shown, id: \.name) { u in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(u.name).font(.system(size: 13, weight: .bold))
+                                if let p = u.plan { Text(p).font(.system(size: 11)).foregroundStyle(.secondary) }
+                            }
+                            ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
+                                Text("  " + w.label.padding(toLength: 10, withPad: " ", startingAt: 0) + bar(w.shown(used)) + " " + w.shownText(used))
+                                    .font(.system(size: 12, design: .monospaced))
+                                if w.resetsAt != nil {
+                                    Text("    " + resetText(w.resetsAt)).font(.system(size: 11)).foregroundStyle(.secondary)
+                                }
+                            }
+                            Divider().padding(.vertical, 3)
+                        }
+                        ForEach([L("立即刷新"), L("显示桌面卡片"), L("用量统计…"), L("设置…"), L("退出")], id: \.self) {
+                            Text($0).font(.system(size: 13)).padding(.vertical, 1)
+                        }
+                    }
+                    .padding(12)
+                    .frame(width: 330, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .windowBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
+                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                    .padding(.trailing, 150)
+                }
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)  // 去掉表单滚动区的底色和两侧边线
-        .frame(maxWidth: 560)
     }
 }
 
@@ -626,6 +798,7 @@ final class MainNav: ObservableObject {
 struct MainView: View {
     @ObservedObject var nav: MainNav
     @ObservedObject var stats: StatsStore
+    let model: UsageModel
     @AppStorage(Pref.language) var language = "auto"
 
     var body: some View {
@@ -642,9 +815,9 @@ struct MainView: View {
             Group {
                 switch nav.tab {
                 case .stats: StatsView(store: stats)
-                case .general: GeneralSettings()
-                case .card: CardSettings()
-                case .menuBar: MenuBarSettings()
+                case .general: GeneralSettings(model: model, stats: stats)
+                case .card: CardSettings(model: model)
+                case .menuBar: MenuBarSettings(model: model)
                 case .about: AboutSettings()
                 }
             }
@@ -791,7 +964,8 @@ extension CardView {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(width: CardWindow.column * s, alignment: .topLeading)
+        // 上下布局时一栏占满整行，放宽一些更好看
+        .frame(width: (layout == "vertical" ? CardWindow.wideColumn : CardWindow.column) * s, alignment: .topLeading)
     }
 
     /// 紧凑：一家一行，只有数字
@@ -835,6 +1009,7 @@ final class CardWindow: NSWindow {
     }
     /// 每家一栏的宽度；两栏并排时卡片约 500 宽
     static let column: CGFloat = 210
+    static let wideColumn: CGFloat = 300
     static let defaultWidth: CGFloat = column * 2 + 24 + 32
     override var canBecomeKey: Bool { false }
 
@@ -969,7 +1144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func openMain(_ tab: MainTab) {
         nav.tab = tab
         if mainWindow == nil {
-            let host = NSHostingController(rootView: MainView(nav: nav, stats: stats))
+            let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model))
             host.sizingOptions = .minSize
             let w = NSWindow(contentViewController: host)
             w.title = "UsageBar"
