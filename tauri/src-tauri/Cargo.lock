@@ -4429,6 +4429,7 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "memchr",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
