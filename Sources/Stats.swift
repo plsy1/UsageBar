@@ -1457,11 +1457,16 @@ struct StatsCardView: View {
         }
     }
 
-    /// 一家一栏：名称、成本（大字），下面是请求数、Tokens、命中率
+    /// 一家一栏：名称和套餐（跟额度卡片一样，套餐来自额度接口）、成本（大字），下面是请求数、Tokens、命中率
     func column(_ src: Source) -> some View {
         let sum = summary(src)
         return VStack(alignment: .leading, spacing: 8 * s) {
-            Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
+                if let p = model.results.first(where: { $0.name == src.rawValue })?.plan {
+                    Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+                }
+            }
             Text(money(sum.cost)).font(.system(size: 22 * s, weight: .semibold, design: .rounded).monospacedDigit())
             VStack(spacing: 4 * s) {
                 row(L("请求数"), sum.requests.formatted())
