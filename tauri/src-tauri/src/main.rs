@@ -367,6 +367,8 @@ fn main() {
         std::env::set_var("GDK_BACKEND", "x11,wayland");
     }
     tauri::Builder::default()
+        // 只跑一份：再启动一次（比如从开始菜单再点）就把已经在跑的那个窗口调出来
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu])
