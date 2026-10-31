@@ -96,6 +96,22 @@ enum I18n {
         "紧凑": ("コンパクト", "Compact"),
         // 用量统计
         "打开 UsageBar…": ("UsageBar を開く…", "Open UsageBar…"),
+        "检查更新": ("アップデートを確認", "Check for Updates"),
+        "正在检查…": ("確認中…", "Checking…"),
+        "已是最新版本": ("最新バージョンです", "You're up to date"),
+        "发现新版本 %@": ("新しいバージョン %@ があります", "Version %@ is available"),
+        "更新并重启": ("アップデートして再起動", "Update and Restart"),
+        "查看详情": ("詳細", "Details"),
+        "正在下载并安装…": ("ダウンロードしてインストール中…", "Downloading and installing…"),
+        "更新失败：%@": ("アップデートに失敗しました：%@", "Update failed: %@"),
+        "重试": ("再試行", "Retry"),
+        "前往下载页": ("ダウンロードページを開く", "Open Download Page"),
+        "有新版本 %@…": ("新しいバージョン %@ があります…", "Update Available: %@…"),
+        "网络错误": ("ネットワークエラー", "Network error"),
+        "缺少校验值": ("チェックサムがありません", "Missing checksum"),
+        "校验失败": ("チェックサムが一致しません", "Checksum mismatch"),
+        "安装包不完整": ("インストーラーが不完全です", "Incomplete package"),
+        "没有写入权限": ("書き込み権限がありません", "No permission to replace the app"),
         "卡片设置…": ("カードの設定…", "Card Settings…"),
         "用量统计": ("使用量の統計", "Usage Statistics"),
         "今天": ("今日", "Today"),
@@ -531,6 +547,7 @@ struct SidePanel<Content: View>: View {
 }
 
 struct GeneralSettings: View {
+    let updater: Updater
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsChartColor") var chartColor = "pink"
     @State var launchAtLogin = LoginItem.status == .enabled
@@ -575,7 +592,7 @@ struct GeneralSettings: View {
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
         } side: {
-            SidePanel(L("关于")) { AboutCard() }
+            SidePanel(L("关于")) { AboutCard(updater: updater) }
         }
     }
 }
@@ -833,22 +850,76 @@ struct CardSettings: View {
 
 /// 通用页右栏的「关于」
 struct AboutCard: View {
+    @ObservedObject var updater: Updater
+
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "gauge.with.dots.needle.67percent")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.secondary)
             Text("UsageBar").font(.title2.weight(.semibold))
-            Text(L("版本 %@", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"))
+            Text(L("版本 %@", updater.currentVersion))
                 .font(.callout).foregroundStyle(.secondary)
             Text(L("在菜单栏和桌面显示 Claude 与 Codex 的剩余用量"))
                 .font(.callout).multilineTextAlignment(.center)
             Link("github.com/plsy1/UsageBar", destination: URL(string: "https://github.com/plsy1/UsageBar")!)
                 .font(.callout)
+            Divider().padding(.vertical, 6)
+            updateSection
         }
         .padding(28)
         .frame(maxWidth: 460)
         .modifier(Panel())
+    }
+
+    /// 检查更新 / 有新版 / 下载中 / 失败
+    @ViewBuilder var updateSection: some View {
+        switch updater.state {
+        case .checking:
+            HStack(spacing: 8) { ProgressView().controlSize(.small); Text(L("正在检查…")).foregroundStyle(.secondary) }
+        case .downloading:
+            HStack(spacing: 8) { ProgressView().controlSize(.small); Text(L("正在下载并安装…")).foregroundStyle(.secondary) }
+        case .available(let v):
+            VStack(spacing: 10) {
+                Text(L("发现新版本 %@", v)).font(.callout.weight(.semibold))
+                if let notes = updater.release?.notes {
+                    Text(Self.summary(notes)).font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading).lineLimit(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button(L("更新并重启")) { updater.install() }.buttonStyle(.borderedProminent)
+                    if let page = updater.release?.page { Link(L("查看详情"), destination: page).font(.callout) }
+                }
+            }
+        case .failed(let msg):
+            VStack(spacing: 8) {
+                Text(L("更新失败：%@", msg)).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                HStack {
+                    Button(L("重试")) { updater.check() }
+                    Link(L("前往下载页"), destination: Updater.releasesPage).font(.callout)
+                }
+            }
+        case .upToDate:
+            VStack(spacing: 8) {
+                Text(L("已是最新版本")).font(.callout).foregroundStyle(.secondary)
+                Button(L("检查更新")) { updater.check() }
+            }
+        case .idle:
+            Button(L("检查更新")) { updater.check() }
+        }
+    }
+
+    /// 更新说明只取正文几行：去掉链接行、校验值和 Markdown 符号
+    static func summary(_ notes: String) -> String {
+        // 只要「安装」之前的部分（新功能 / 修复）
+        let body = notes.components(separatedBy: "### Install").first ?? notes
+        return body.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("[") && !$0.hasPrefix("SHA-256") && !$0.hasPrefix("macOS 13") }
+            .map { $0.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+                .replacingOccurrences(of: "### ", with: "") }
+            .joined(separator: "\n")
     }
 }
 
@@ -899,6 +970,7 @@ struct MainView: View {
     @ObservedObject var nav: MainNav
     @ObservedObject var stats: StatsStore
     let model: UsageModel
+    let updater: Updater
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsChartColor") var themeColor = "pink"
 
@@ -921,7 +993,7 @@ struct MainView: View {
             Group {
                 switch nav.tab {
                 case .stats: StatsView(store: stats)
-                case .general: GeneralSettings()
+                case .general: GeneralSettings(updater: updater)
                 case .menuBar: LimitsSettings(model: model)
                 case .card: CardSettings(model: model)
                 case .data: DataSettings(model: model, stats: stats)
@@ -1202,6 +1274,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statsTimerMinutes = 0
     var mainWindow: NSWindow?
     let nav = MainNav()
+    let updater = Updater()
+    var updateTimer: Timer?
+    var updaterWatch: Any?
     let stats = StatsStore()
     var lastLang = ""
     var showCard: Bool {
@@ -1226,6 +1301,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 统计在后台先读好，打开窗口时不用等；之后按自己的间隔增量更新
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.stats.reload() }
         scheduleStatsTimer()
+        // 自动检查更新：启动 10 秒后查一次，之后每天一次；有新版时菜单里会出现提示
+        updaterWatch = updater.$state.receive(on: RunLoop.main).sink { [weak self] _ in self?.scheduleSync() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { self.updater.check(silent: true) }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if self.updater.lastCheck.map({ Date().timeIntervalSince($0) > 86400 }) ?? true { self.updater.check(silent: true) }
+        }
         // 设置窗口里改了什么，这里同步到卡片显隐、刷新间隔和菜单栏
         NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1317,12 +1399,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 统计和设置都在主窗口里，菜单只留一个入口，打开时回到上次看的页
     @objc func openApp() { openMain(nil) }
+    @objc func openUpdate() { openMain(.general) }
 
     /// 主窗口：统计和设置都在这里，左侧边栏切换
     func openMain(_ tab: MainTab?) {
         if let tab { nav.tab = tab }
         if mainWindow == nil {
-            let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model))
+            let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model, updater: updater))
             host.sizingOptions = .minSize  // 最小尺寸来自 MainView 根部的 frame(minWidth:minHeight:)
             let w = NSWindow(contentViewController: host)
             // 标题留空：SwiftUI 会把 titleVisibility 改回可见，留空才能保证标题栏上不出现文字
@@ -1414,6 +1497,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.target = self
         c.state = showCard ? .on : .off
         menu.addItem(c)
+        if case .available(let v) = updater.state {
+            let up = NSMenuItem(title: L("有新版本 %@…", v), action: #selector(openUpdate), keyEquivalent: ""); up.target = self
+            menu.addItem(up)
+        }
         let open = NSMenuItem(title: L("打开 UsageBar…"), action: #selector(openApp), keyEquivalent: "o"); open.target = self
         menu.addItem(open)
         let q = NSMenuItem(title: L("退出"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
