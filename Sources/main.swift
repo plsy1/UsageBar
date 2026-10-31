@@ -1489,15 +1489,15 @@ final class UsageModel: ObservableObject {
     /// 桌面卡片窗口的当前尺寸（设置页预览按它缩放）
     @Published var cardSize = CGSize.zero
     @Published var statsCardSize = CGSize.zero
-    /// 两张卡片中间内容的高度（按 100% 算）和「形状」（布局|大小|几家；不参与对齐时为空）
+    /// 两张卡片中间内容的大小（按 100% 算）和「形状」（布局|大小|几家；不参与对齐时为空）
     @Published var cardContent: [String: CardContent] = [:]
-    struct CardContent: Equatable { var height: CGFloat; var shape: String }
+    struct CardContent: Equatable { var size: CGSize; var shape: String }
 
-    /// 两张卡片布局、大小、显示几家都一样时，内容区对齐到较高的那张，长宽比就一致了
-    func syncedHeight(_ kind: String) -> CGFloat? {
+    /// 两张卡片布局、大小、显示几家都一样时，内容区对齐到较宽、较高的那张，两张就一样大了
+    func syncedSize(_ kind: String) -> CGSize? {
         guard let a = cardContent[kind], let b = cardContent[kind == "limits" ? "stats" : "limits"],
               !a.shape.isEmpty, a.shape == b.shape else { return nil }
-        return max(a.height, b.height)
+        return CGSize(width: max(a.size.width, b.size.width), height: max(a.size.height, b.size.height))
     }
 
     func reportCard(_ kind: String, _ c: CardContent) {
@@ -1512,32 +1512,35 @@ final class UsageModel: ObservableObject {
     var onHideStats: () -> Void = {}
 }
 
-/// 卡片中间内容：量出自然高度报给 model，再按两张卡片对齐后的高度撑开（多出来的空在下面）
+/// 卡片中间内容：量出自然大小报给 model，再按两张卡片对齐后的大小撑开（多出来的空在右边和下面）
 struct CardHeightSync: ViewModifier {
     let kind: String     // limits / stats
-    let shape: String    // 空：这张卡片不参与对齐（隐藏、紧凑布局、还没数据）
+    let shape: String    // 空：这张卡片不参与对齐（隐藏、还没数据）
     let scale: CGFloat
     @ObservedObject var model: UsageModel
     let report: Bool     // 设置页的预览只读不报
 
-    /// 量到的自然高度。先存下来，在外层和 shape 一起盯着变化——
+    /// 量到的自然大小。先存下来，在外层和 shape 一起盯着变化——
     /// 放在 GeometryReader 里的 onChange 拿到的 shape 可能还是旧的
-    @State var measured: CGFloat = 0
+    @State var measured = CGSize.zero
 
     func body(content: Content) -> some View {
-        content
+        let synced = model.syncedSize(kind)
+        return content
             .background(GeometryReader { g in
                 Color.clear
-                    .onAppear { measured = g.size.height }
-                    .onChange(of: g.size.height) { measured = $0 }
+                    .onAppear { measured = g.size }
+                    .onChange(of: g.size) { measured = $0 }
             })
-            .frame(minHeight: model.syncedHeight(kind).map { $0 * scale }, alignment: .topLeading)
+            .frame(minWidth: synced.map { $0.width * scale }, minHeight: synced.map { $0.height * scale }, alignment: .topLeading)
             .onAppear { send() }
             .onChange(of: "\(measured)|\(shape)") { _ in send() }
     }
 
     func send() {
-        if report { model.reportCard(kind, .init(height: measured / scale, shape: shape)) }
+        if report {
+            model.reportCard(kind, .init(size: CGSize(width: measured.width / scale, height: measured.height / scale), shape: shape))
+        }
     }
 }
 
@@ -1617,13 +1620,16 @@ struct CardView: View {
                 case "vertical":
                     VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.name, content: column) }
                 case "compact":
-                    VStack(alignment: .leading, spacing: 6 * s) { ForEach(shown, id: \.name, content: compactRow) }
+                    // 网格：各行的同一列上下对齐
+                    Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
+                        ForEach(shown, id: \.name, content: compactRow)
+                    }
                 default:
                     HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.name, content: column) }
                 }
             }
             .modifier(CardHeightSync(kind: "limits",
-                                     shape: visible && layout != "compact" && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
+                                     shape: visible && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
                                      scale: s, model: model, report: report))
             if let t = model.lastUpdate {
                 Text(L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
@@ -1680,12 +1686,12 @@ extension CardView {
 
     /// 紧凑：一家一行，只有数字
     func compactRow(_ u: ProviderUsage) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14 * s) {
+        GridRow(alignment: .firstTextBaseline) {
             Text(u.name).font(.system(size: 13 * s, weight: .semibold))
-                .frame(width: 54 * s, alignment: .leading)
             if let e = u.error, u.windows.isEmpty {
                 Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(1)
                     .frame(maxWidth: 260 * s, alignment: .leading)
+                    .gridCellColumns(2)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
                 HStack(alignment: .firstTextBaseline, spacing: 5 * s) {

@@ -1410,14 +1410,17 @@ struct StatsCardView: View {
                     case "vertical":
                         VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.self, content: column) }
                     case "compact":
-                        VStack(alignment: .leading, spacing: 6 * s) { ForEach(shown, id: \.self, content: compactRow) }
+                        // 网格：各行的同一列上下对齐
+                        Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
+                            ForEach(shown, id: \.self, content: compactRow)
+                        }
                     default:
                         HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.self, content: column) }
                     }
                 }
-                // 和额度卡片布局、大小、家数一样时，高度对齐到较高的那张
+                // 和额度卡片布局、大小、家数一样时，对齐到较大的那张
                 .modifier(CardHeightSync(kind: "stats",
-                                         shape: visible && layout != "compact" && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
+                                         shape: visible && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
                                          scale: s, model: model, report: report))
             }
             if let t = stats.updated {
@@ -1477,12 +1480,11 @@ struct StatsCardView: View {
         }
     }
 
-    /// 紧凑：一家一行
+    /// 紧凑：一家一行（放在 Grid 里，各列上下对齐）
     func compactRow(_ src: Source) -> some View {
         let sum = summary(src)
-        return HStack(alignment: .firstTextBaseline, spacing: 14 * s) {
+        return GridRow(alignment: .firstTextBaseline) {
             Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
-                .frame(width: 54 * s, alignment: .leading)
             Text(money(sum.cost)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
             pair(L("请求数"), sum.requests.formatted())
             pair("Tokens", abbrev(sum.tokens))
