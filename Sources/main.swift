@@ -17,8 +17,8 @@ struct LimitWindow {
     var weekly = false
     var remaining: Double { max(0, 100 - usedPercent) }
     /// 按设置显示剩余还是已使用（进度条和百分比都跟着变）
-    func shown(_ used: Bool = Pref.showUsed) -> Double { used ? min(100, usedPercent) : remaining }
-    func shownText(_ used: Bool = Pref.showUsed) -> String {
+    func shown(_ used: Bool) -> Double { used ? min(100, usedPercent) : remaining }
+    func shownText(_ used: Bool) -> String {
         let v = Int(shown(used).rounded())
         return used ? L("已用 %d%%", v) : L("剩 %d%%", v)
     }
@@ -32,6 +32,14 @@ struct ProviderUsage {
     var error: String?
     /// 各窗口里最紧的那个（剩余最少）
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
+    /// 菜单栏显示哪个：tightest 最紧的 / session 5 小时（两家都排在第一个）/ weekly 本周
+    func window(_ which: String) -> LimitWindow? {
+        switch which {
+        case "session": return windows.first { !$0.weekly } ?? binding
+        case "weekly": return windows.first(where: \.weekly) ?? binding
+        default: return binding
+        }
+    }
 }
 
 // MARK: - 多语言（中文 / 日本語 / English）
@@ -148,6 +156,17 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "开机启动、外观、刷新频率和数据来源": ("ログイン時の起動、外観、更新頻度、データソース", "Launch at login, appearance, refresh and data sources"),
+        "用量统计只读取新写入的日志，刷新很快": ("使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります", "Usage statistics only read newly written logs, so refreshing is quick"),
+        "向 Anthropic 和 OpenAI 查询剩余额度": ("Anthropic と OpenAI に残りの上限を問い合わせます", "Asks Anthropic and OpenAI for remaining limits"),
+        "读取本机的会话记录": ("この Mac のセッション記録を読みます", "Reads this Mac's session logs"),
+        "菜单栏文字": ("メニューバーの文字", "Menu Bar Text"),
+        "显示的额度": ("表示する上限", "Limit Shown"),
+        "最紧的那个": ("最も少ないもの", "Tightest"),
+        "下拉菜单": ("メニュー", "Menu"),
+        "完整": ("すべて", "Full"),
+        "只影响菜单栏，两张卡片在「卡片」里各自设置": ("メニューバーだけに適用されます。2 枚のカードは「カード」で個別に設定します", "Applies to the menu bar only; each card has its own settings under Cards"),
+        "全名": ("フルネーム", "Full Name"),
         "基本": ("基本", "Basics"),
         "后台增量更新": ("バックグラウンドで差分更新", "Updates in the background"),
         "菜单栏上显示的文字，下面是点开后的菜单": ("メニューバーに表示する文字。下はクリックしたときのメニューです", "What the menu bar shows; the menu it opens is below"),
@@ -539,6 +558,17 @@ enum Pref {
     static let cardLayout = "cardLayout"       // horizontal / vertical / compact
     static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
     static let appearance = "appearance"       // auto / light / dark
+    // 菜单栏和两张卡片各自显示哪几家、剩余还是已用（旧版是共用的 showClaude / showCodex / displayMode，只用来给它们当初始值）
+    static let menuShowClaude = "menuShowClaude"
+    static let menuShowCodex = "menuShowCodex"
+    static let menuDisplayMode = "menuDisplayMode"
+    static let menuLimit = "menuLimit"             // tightest / session / weekly：菜单栏文字显示哪个额度
+    static let menuResetStyle = "menuResetStyle"   // full / relative / absolute / hidden：下拉菜单里的重置时间
+    static let cardShowClaude = "cardShowClaude"
+    static let cardShowCodex = "cardShowCodex"
+    static let cardDisplayMode = "cardDisplayMode"
+    static let statsCardShowClaude = "statsCardShowClaude"
+    static let statsCardShowCodex = "statsCardShowCodex"
     static let showStatsCard = "showStatsCard" // 用量卡片（成本、请求数、Tokens）
     static let statsCardRange = "statsCardRange"  // today / cycle / 7d
     // 用量卡片自己的布局和外观（和额度卡片分开设置）
@@ -557,7 +587,7 @@ enum Pref {
         default: NSApp.appearance = nil  // 跟随系统
         }
     }
-    static var showUsed: Bool { UserDefaults.standard.string(forKey: displayMode) == "used" }
+    static var menuUsed: Bool { UserDefaults.standard.string(forKey: menuDisplayMode) == "used" }
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -567,6 +597,13 @@ enum Pref {
         ])
         // 用量卡片的外观一开始跟额度卡片现在的一样，之后各改各的
         let u = UserDefaults.standard
+        // 各自的显示设置一开始沿用旧版共用的那份
+        let claude = u.bool(forKey: showClaude), codex = u.bool(forKey: showCodex), mode = u.string(forKey: displayMode) ?? "remaining"
+        u.register(defaults: [
+            menuShowClaude: claude, menuShowCodex: codex, menuDisplayMode: mode, menuLimit: "tightest", menuResetStyle: "full",
+            cardShowClaude: claude, cardShowCodex: codex, cardDisplayMode: mode,
+            statsCardShowClaude: claude, statsCardShowCodex: codex,
+        ])
         u.register(defaults: [
             statsCardLayout: u.string(forKey: cardLayout) ?? "horizontal", statsCardScale: u.double(forKey: scale),
             statsCardBackground: u.string(forKey: background) ?? "none", statsCardText: u.string(forKey: textColor) ?? "white",
@@ -578,8 +615,9 @@ enum Pref {
         let saved = d.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "local.usagebar") ?? [:]
         if saved[resetStyle] == nil, saved[showReset] as? Bool == false { d.set("hidden", forKey: resetStyle) }
     }
-    static func visible(_ name: String) -> Bool {
-        UserDefaults.standard.bool(forKey: name == "Claude" ? showClaude : showCodex)
+    /// 菜单栏显示这一家吗
+    static func menuVisible(_ name: String) -> Bool {
+        UserDefaults.standard.bool(forKey: name == "Claude" ? menuShowClaude : menuShowCodex)
     }
 }
 
@@ -700,7 +738,7 @@ struct SwitchControl: View {
     var body: some View { Toggle("", isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small) }
 }
 
-/// 「通用」：四宫格——基本、额度（菜单栏和两张卡片共用），用量统计、数据来源
+/// 「通用」：四宫格——基本、刷新，用量统计、数据来源（显示哪几家、剩余还是已用在菜单栏和各张卡片里分别设）
 struct GeneralSettings: View {
     let updater: Updater
     @ObservedObject var model: UsageModel
@@ -708,18 +746,15 @@ struct GeneralSettings: View {
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsChartColor") var chartColor = "pink"
     @AppStorage(Pref.appearance) var appearance = "auto"
-    @AppStorage(Pref.displayMode) var displayMode = "remaining"
-    @AppStorage(Pref.showClaude) var showClaude = true
-    @AppStorage(Pref.showCodex) var showCodex = true
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @State var launchAtLogin = LoginItem.status == .enabled
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
-        SettingsScroll(.general, L("开机启动、外观、额度显示和数据来源")) {
+        SettingsScroll(.general, L("开机启动、外观、刷新频率和数据来源")) {
             Grid(alignment: .topLeading, horizontalSpacing: 24, verticalSpacing: 26) {
-                GridRow(alignment: .top) { basic; limits }
+                GridRow(alignment: .top) { basic; refresh }
                 GridRow(alignment: .top) { usage; sources }
             }
         }
@@ -772,23 +807,18 @@ struct GeneralSettings: View {
         }
     }
 
-    var limits: some View {
-        SettingsGroup(L("额度"), footer: L("菜单栏和两张卡片都按这里显示")) {
-            SettingsRow(L("显示数值")) {
-                Picker("", selection: $displayMode) {
-                    Text(L("剩余")).tag("remaining")
-                    Text(L("已使用")).tag("used")
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-            }
-            Divider()
-            SettingsRow("Claude") { SwitchControl(isOn: $showClaude) }
-            Divider()
-            SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }
-            Divider()
-            SettingsRow(L("刷新间隔")) {
+    var refresh: some View {
+        SettingsGroup(L("刷新"), footer: L("用量统计只读取新写入的日志，刷新很快")) {
+            SettingsRow(L("额度"), detail: L("向 Anthropic 和 OpenAI 查询剩余额度")) {
                 Picker("", selection: $refreshMinutes) {
                     ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            Divider()
+            SettingsRow(L("用量统计"), detail: L("读取本机的会话记录")) {
+                Picker("", selection: $statsRefreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                 }
                 .labelsHidden().fixedSize()
             }
@@ -812,13 +842,6 @@ struct GeneralSettings: View {
             SettingsRow(L("本机会话记录")) {
                 Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
                     .foregroundStyle(.secondary)
-            }
-            Divider()
-            SettingsRow(L("刷新间隔"), detail: L("后台增量更新")) {
-                Picker("", selection: $statsRefreshMinutes) {
-                    ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                }
-                .labelsHidden().fixedSize()
             }
         }
     }
@@ -857,9 +880,11 @@ struct GeneralSettings: View {
 struct MenuBarSettings: View {
     @ObservedObject var model: UsageModel
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
-    @AppStorage(Pref.displayMode) var displayMode = "remaining"
-    @AppStorage(Pref.showClaude) var showClaude = true
-    @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.menuDisplayMode) var displayMode = "remaining"
+    @AppStorage(Pref.menuShowClaude) var showClaude = true
+    @AppStorage(Pref.menuShowCodex) var showCodex = true
+    @AppStorage(Pref.menuLimit) var limit = "tightest"
+    @AppStorage(Pref.menuResetStyle) var resetStyle = "full"
     @AppStorage(Pref.showCard) var showCard = true
     @AppStorage(Pref.showStatsCard) var showStatsCard = false
 
@@ -870,7 +895,7 @@ struct MenuBarSettings: View {
     var title: String {
         let parts = shown.map { u -> String in
             let name = menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx"
-            return "\(name) " + (u.binding.map { "\(Int($0.shown(used).rounded()))%" } ?? "–")
+            return "\(name) " + (u.window(limit).map { "\(Int($0.shown(used).rounded()))%" } ?? "–")
         }
         return parts.isEmpty ? "UsageBar" : parts.joined(separator: "  ")
     }
@@ -878,14 +903,53 @@ struct MenuBarSettings: View {
     var body: some View {
         SettingsScroll(.menuBar, L("菜单栏上显示的文字，下面是点开后的菜单")) {
             VStack(alignment: .leading, spacing: 26) {
-                SettingsGroup(footer: L("每家显示最紧的那个额度；显示剩余还是已用、显示哪几家在「通用」里设置")) {
-                    SettingsRow(L("名称")) {
-                        Picker("", selection: $menuLabel) {
-                            Text(L("简写（Cc / Cx）")).tag("short")
-                            Text(L("全名（Claude / Codex）")).tag("full")
+                HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 26) {
+                        SettingsGroup(L("菜单栏文字")) {
+                            SettingsRow(L("名称")) {
+                                Picker("", selection: $menuLabel) {
+                                    Text(L("简写（Cc / Cx）")).tag("short")
+                                    Text(L("全名")).tag("full")
+                                }
+                                .pickerStyle(.radioGroup).horizontalRadioGroupLayout().labelsHidden().fixedSize()
+                            }
+                            Divider()
+                            SettingsRow(L("显示的额度")) {
+                                Picker("", selection: $limit) {
+                                    Text(L("最紧的那个")).tag("tightest")
+                                    Text(L("5 小时")).tag("session")
+                                    Text(L("本周")).tag("weekly")
+                                }
+                                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            }
                         }
-                        .pickerStyle(.radioGroup).horizontalRadioGroupLayout().labelsHidden().fixedSize()
+                        SettingsGroup(L("下拉菜单")) {
+                            SettingsRow(L("重置时间")) {
+                                Picker("", selection: $resetStyle) {
+                                    Text(L("完整")).tag("full")
+                                    Text(L("剩余时间")).tag("relative")
+                                    Text(L("具体时间")).tag("absolute")
+                                    Text(L("不显示")).tag("hidden")
+                                }
+                                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    SettingsGroup(L("显示内容"), footer: L("只影响菜单栏，两张卡片在「卡片」里各自设置")) {
+                        SettingsRow(L("显示数值")) {
+                            Picker("", selection: $displayMode) {
+                                Text(L("剩余")).tag("remaining")
+                                Text(L("已使用")).tag("used")
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        }
+                        Divider()
+                        SettingsRow("Claude") { SwitchControl(isOn: $showClaude) }
+                        Divider()
+                        SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L("预览")).font(.headline)
@@ -906,7 +970,7 @@ struct MenuBarSettings: View {
                     // 点开后的菜单
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(shown, id: \.name) { u in
-                            MenuUsageBlock(u: u, used: used).padding(.horizontal, -2)
+                            MenuUsageBlock(u: u, used: used, resetStyle: resetStyle).padding(.horizontal, -2)
                             Divider().padding(.vertical, 3)
                         }
                         Text(L("更新于 %@", Date().formatted(.dateTime.hour().minute())))
@@ -975,17 +1039,20 @@ struct CardSettings: View {
 /// 一张卡片的各项设置存在哪些键下
 struct CardKeys {
     let stats: Bool  // 用量卡片；否则是额度卡片
-    let show, layout, scale, background, text, opacity, bgOpacity: String
-    static let limits = CardKeys(stats: false, show: Pref.showCard, layout: Pref.cardLayout, scale: Pref.scale,
-                                 background: Pref.background, text: Pref.textColor, opacity: Pref.opacity, bgOpacity: Pref.bgOpacity)
-    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, layout: Pref.statsCardLayout, scale: Pref.statsCardScale,
-                                background: Pref.statsCardBackground, text: Pref.statsCardText, opacity: Pref.statsCardOpacity,
-                                bgOpacity: Pref.statsCardBgOpacity)
+    let show, claude, codex, layout, scale, background, text, opacity, bgOpacity: String
+    static let limits = CardKeys(stats: false, show: Pref.showCard, claude: Pref.cardShowClaude, codex: Pref.cardShowCodex,
+                                 layout: Pref.cardLayout, scale: Pref.scale, background: Pref.background, text: Pref.textColor,
+                                 opacity: Pref.opacity, bgOpacity: Pref.bgOpacity)
+    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, claude: Pref.statsCardShowClaude, codex: Pref.statsCardShowCodex,
+                                layout: Pref.statsCardLayout, scale: Pref.statsCardScale, background: Pref.statsCardBackground,
+                                text: Pref.statsCardText, opacity: Pref.statsCardOpacity, bgOpacity: Pref.statsCardBgOpacity)
 }
 
 struct CardForm: View {
     let keys: CardKeys
     @AppStorage var show: Bool
+    @AppStorage var showClaude: Bool
+    @AppStorage var showCodex: Bool
     @AppStorage var layout: String
     @AppStorage var scale: Double
     @AppStorage var background: String
@@ -993,11 +1060,14 @@ struct CardForm: View {
     @AppStorage var opacity: Double
     @AppStorage var bgOpacity: Double
     @AppStorage(Pref.resetStyle) var resetStyle = "relative"
+    @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.statsCardRange) var statsRange = "today"
 
     init(keys: CardKeys) {
         self.keys = keys
         _show = AppStorage(wrappedValue: !keys.stats, keys.show)
+        _showClaude = AppStorage(wrappedValue: true, keys.claude)
+        _showCodex = AppStorage(wrappedValue: true, keys.codex)
         _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
         _scale = AppStorage(wrappedValue: 1.0, keys.scale)
         _background = AppStorage(wrappedValue: "none", keys.background)
@@ -1023,6 +1093,15 @@ struct CardForm: View {
                     }
                     .disabled(!show)
                 } else {
+                    SettingsRow(L("显示数值")) {
+                        Picker("", selection: $displayMode) {
+                            Text(L("剩余")).tag("remaining")
+                            Text(L("已使用")).tag("used")
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    }
+                    .disabled(!show)
+                    Divider()
                     SettingsRow(L("重置时间")) {
                         Picker("", selection: $resetStyle) {
                             Text(L("不显示")).tag("hidden")
@@ -1033,6 +1112,10 @@ struct CardForm: View {
                     }
                     .disabled(!show)
                 }
+                Divider()
+                SettingsRow("Claude") { SwitchControl(isOn: $showClaude) }.disabled(!show)
+                Divider()
+                SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }.disabled(!show)
             }
             SettingsGroup(L("布局")) {
                 SettingsRow(L("布局")) {
@@ -1445,10 +1528,10 @@ struct CardView: View {
     @AppStorage(Pref.opacity) var opacity = 1.0
     @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.resetStyle) var resetStyle = "relative"
-    @AppStorage(Pref.showClaude) var showClaude = true
-    @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.cardShowClaude) var showClaude = true
+    @AppStorage(Pref.cardShowCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
-    @AppStorage(Pref.displayMode) var displayMode = "remaining"
+    @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.cardLayout) var layout = "horizontal"
 
     var s: CGFloat { CGFloat(scale) }
@@ -1545,6 +1628,7 @@ extension CardView {
 struct MenuUsageBlock: View {
     let u: ProviderUsage
     let used: Bool
+    var resetStyle = "full"
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1555,7 +1639,7 @@ struct MenuUsageBlock: View {
                 Text(e).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                UsageRow(w: w, s: 1.08, showReset: true, used: used)
+                UsageRow(w: w, s: 1.08, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle)
             }
             if let n = u.note {
                 Text(n).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
@@ -1839,12 +1923,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let s = NSMutableAttributedString()
         let full = UserDefaults.standard.string(forKey: Pref.menuLabel) == "full"
-        for (i, u) in results.filter({ Pref.visible($0.name) }).enumerated() {
+        let which = UserDefaults.standard.string(forKey: Pref.menuLimit) ?? "tightest"
+        for (i, u) in results.filter({ Pref.menuVisible($0.name) }).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
             let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
-            if let b = u.binding {
-                s.append(NSAttributedString(string: "\(Int(b.shown().rounded()))%", attributes: [.font: font]))
+            if let b = u.window(which) {
+                s.append(NSAttributedString(string: "\(Int(b.shown(Pref.menuUsed).rounded()))%", attributes: [.font: font]))
             } else {
                 s.append(NSAttributedString(string: "–", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
             }
@@ -1874,8 +1959,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // 每家一块，和桌面卡片同样的样式（圆角进度条，不再用字符画）
-        for u in results where Pref.visible(u.name) {
-            let host = NSHostingView(rootView: MenuUsageBlock(u: u, used: Pref.showUsed))
+        let resetStyle = UserDefaults.standard.string(forKey: Pref.menuResetStyle) ?? "full"
+        for u in results where Pref.menuVisible(u.name) {
+            let host = NSHostingView(rootView: MenuUsageBlock(u: u, used: Pref.menuUsed, resetStyle: resetStyle))
             host.frame.size = host.fittingSize
             let mi = NSMenuItem()
             mi.view = host
@@ -1930,7 +2016,7 @@ if CommandLine.arguments.contains("--print") {
             print("\(u.name)\(u.plan.map { " (\($0))" } ?? "")")
             if let e = u.error { print("  ⚠︎ \(e)") }
             for w in u.windows {
-                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.shown())) \(w.shownText())  \(resetText(w.resetsAt))")
+                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.shown(false))) \(w.shownText(false))  \(resetText(w.resetsAt))")
             }
             if let n = u.note { print("  ⓘ \(n)") }
         }

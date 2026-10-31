@@ -1373,8 +1373,8 @@ struct StatsCardView: View {
     @AppStorage(Pref.statsCardScale) var scale = 1.0
     @AppStorage(Pref.statsCardOpacity) var opacity = 1.0
     @AppStorage(Pref.statsCardBgOpacity) var bgOpacity = 1.0
-    @AppStorage(Pref.showClaude) var showClaude = true
-    @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.statsCardShowClaude) var showClaude = true
+    @AppStorage(Pref.statsCardShowCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.statsCardLayout) var layout = "horizontal"
     @AppStorage(Pref.statsCardRange) var range = "today"
