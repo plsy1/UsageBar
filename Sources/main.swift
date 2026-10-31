@@ -32,12 +32,21 @@ struct ProviderUsage {
     var error: String?
     /// 各窗口里最紧的那个（剩余最少）
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
-    /// 菜单栏显示哪个：tightest 最紧的 / session 5 小时（两家都排在第一个）/ weekly 本周
-    func window(_ which: String) -> LimitWindow? {
+    var session: LimitWindow? { windows.first { !$0.weekly } }  // 5 小时（两家都排在第一个）
+    var weekly: LimitWindow? { windows.first(where: \.weekly) }
+    /// 菜单栏上的百分比：session 5 小时 / weekly 本周 / both「5 小时/本周」；没有就 nil
+    func menuValue(_ which: String, used: Bool) -> String? {
+        let pct = { (w: LimitWindow) in "\(Int(w.shown(used).rounded()))%" }
         switch which {
-        case "session": return windows.first { !$0.weekly } ?? binding
-        case "weekly": return windows.first(where: \.weekly) ?? binding
-        default: return binding
+        case "session": return (session ?? weekly).map(pct)
+        case "weekly": return (weekly ?? session).map(pct)
+        default:
+            switch (session, weekly) {
+            case let (s?, w?): return "\(Int(s.shown(used).rounded()))/" + pct(w)
+            case let (s?, nil): return pct(s)
+            case let (nil, w?): return pct(w)
+            default: return nil
+            }
         }
     }
 }
@@ -162,7 +171,7 @@ enum I18n {
         "读取本机的会话记录": ("この Mac のセッション記録を読みます", "Reads this Mac's session logs"),
         "菜单栏文字": ("メニューバーの文字", "Menu Bar Text"),
         "显示的额度": ("表示する上限", "Limit Shown"),
-        "最紧的那个": ("最も少ないもの", "Tightest"),
+        "都显示": ("両方", "Both"),
         "下拉菜单": ("メニュー", "Menu"),
         "完整": ("すべて", "Full"),
         "只影响菜单栏，两张卡片在「卡片」里各自设置": ("メニューバーだけに適用されます。2 枚のカードは「カード」で個別に設定します", "Applies to the menu bar only; each card has its own settings under Cards"),
@@ -188,7 +197,6 @@ enum I18n {
         "开机启动、外观、额度显示和数据来源": ("ログイン時の起動、外観、上限の表示、データソース", "Launch at login, appearance, limits and data sources"),
         "菜单栏和两张卡片都按这里显示": ("メニューバーと 2 枚のカードはここの設定で表示します", "The menu bar and both cards follow these settings"),
         "菜单栏上显示的文字，右边是点开后的菜单": ("メニューバーに表示する文字。右はクリックしたときのメニューです", "What the menu bar shows; the menu it opens is on the right"),
-        "每家显示最紧的那个额度；显示剩余还是已用、显示哪几家在「通用」里设置": ("各サービスで最も残りが少ない上限を表示します。残り／使用済みと表示するサービスは「一般」で設定します", "Each service shows its tightest limit; remaining or used and which services to show are set in General"),
         "额度卡片和用量卡片分开设置，改动会实时显示在右边的预览里": ("上限カードと使用量カードは別々に設定します。変更は右のプレビューにすぐ反映されます", "Set up the limits card and the usage card separately; changes show in the preview on the right"),
         "用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率": ("使用量カードには各サービスの推定コスト、リクエスト数、Tokens、キャッシュヒット率を表示します", "The usage card shows each service's estimated cost, requests, tokens and cache hit rate"),
         "额度卡片显示各家额度的剩余（或已用）和重置时间": ("上限カードには各上限の残り（または使用済み）とリセット時刻を表示します", "The limits card shows how much of each limit is left (or used) and when it resets"),
@@ -264,7 +272,6 @@ enum I18n {
         "菜单栏和桌面卡片显示哪些额度、怎么显示": ("メニューバーとカードに表示する上限と表示方法", "Which limits the menu bar and card show, and how"),
         "用量从哪里读取，以及价格表和本机记录": ("使用量の取得元、価格表、ローカルの記録", "Where usage comes from, plus prices and local logs"),
         "显示内容": ("表示内容", "Content"),
-        "每家显示最紧的那个额度": ("各サービスで最も残りが少ない上限を表示します", "Each shows its tightest limit"),
         "来源": ("取得元", "Source"),
         "Claude Code 登录（钥匙串）": ("Claude Code のログイン（キーチェーン）", "Claude Code login (Keychain)"),
         "说明": ("説明", "Notes"),
@@ -562,7 +569,7 @@ enum Pref {
     static let menuShowClaude = "menuShowClaude"
     static let menuShowCodex = "menuShowCodex"
     static let menuDisplayMode = "menuDisplayMode"
-    static let menuLimit = "menuLimit"             // tightest / session / weekly：菜单栏文字显示哪个额度
+    static let menuLimit = "menuLimit"             // session / weekly / both：菜单栏文字显示哪个额度
     static let menuResetStyle = "menuResetStyle"   // full / relative / absolute / hidden：下拉菜单里的重置时间
     static let cardShowClaude = "cardShowClaude"
     static let cardShowCodex = "cardShowCodex"
@@ -600,7 +607,7 @@ enum Pref {
         // 各自的显示设置一开始沿用旧版共用的那份
         let claude = u.bool(forKey: showClaude), codex = u.bool(forKey: showCodex), mode = u.string(forKey: displayMode) ?? "remaining"
         u.register(defaults: [
-            menuShowClaude: claude, menuShowCodex: codex, menuDisplayMode: mode, menuLimit: "tightest", menuResetStyle: "full",
+            menuShowClaude: claude, menuShowCodex: codex, menuDisplayMode: mode, menuLimit: "both", menuResetStyle: "full",
             cardShowClaude: claude, cardShowCodex: codex, cardDisplayMode: mode,
             statsCardShowClaude: claude, statsCardShowCodex: codex,
         ])
@@ -614,6 +621,8 @@ enum Pref {
         let d = UserDefaults.standard
         let saved = d.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "local.usagebar") ?? [:]
         if saved[resetStyle] == nil, saved[showReset] as? Bool == false { d.set("hidden", forKey: resetStyle) }
+        // 去掉了「最紧的那个」，选过它的改成都显示
+        if d.string(forKey: menuLimit) == "tightest" { d.set("both", forKey: menuLimit) }
     }
     /// 菜单栏显示这一家吗
     static func menuVisible(_ name: String) -> Bool {
@@ -883,7 +892,7 @@ struct MenuBarSettings: View {
     @AppStorage(Pref.menuDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.menuShowClaude) var showClaude = true
     @AppStorage(Pref.menuShowCodex) var showCodex = true
-    @AppStorage(Pref.menuLimit) var limit = "tightest"
+    @AppStorage(Pref.menuLimit) var limit = "both"
     @AppStorage(Pref.menuResetStyle) var resetStyle = "full"
     @AppStorage(Pref.showCard) var showCard = true
     @AppStorage(Pref.showStatsCard) var showStatsCard = false
@@ -895,7 +904,7 @@ struct MenuBarSettings: View {
     var title: String {
         let parts = shown.map { u -> String in
             let name = menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx"
-            return "\(name) " + (u.window(limit).map { "\(Int($0.shown(used).rounded()))%" } ?? "–")
+            return "\(name) " + (u.menuValue(limit, used: used) ?? "–")
         }
         return parts.isEmpty ? "UsageBar" : parts.joined(separator: "  ")
     }
@@ -916,9 +925,9 @@ struct MenuBarSettings: View {
                             Divider()
                             SettingsRow(L("显示的额度")) {
                                 Picker("", selection: $limit) {
-                                    Text(L("最紧的那个")).tag("tightest")
                                     Text(L("5 小时")).tag("session")
                                     Text(L("本周")).tag("weekly")
+                                    Text(L("都显示")).tag("both")
                                 }
                                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                             }
@@ -1923,13 +1932,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let s = NSMutableAttributedString()
         let full = UserDefaults.standard.string(forKey: Pref.menuLabel) == "full"
-        let which = UserDefaults.standard.string(forKey: Pref.menuLimit) ?? "tightest"
+        let which = UserDefaults.standard.string(forKey: Pref.menuLimit) ?? "both"
         for (i, u) in results.filter({ Pref.menuVisible($0.name) }).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
             let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
-            if let b = u.window(which) {
-                s.append(NSAttributedString(string: "\(Int(b.shown(Pref.menuUsed).rounded()))%", attributes: [.font: font]))
+            if let v = u.menuValue(which, used: Pref.menuUsed) {
+                s.append(NSAttributedString(string: v, attributes: [.font: font]))
             } else {
                 s.append(NSAttributedString(string: "–", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
             }
