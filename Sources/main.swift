@@ -843,11 +843,15 @@ struct MainView: View {
     var body: some View {
         let _ = language  // 切换语言时重绘
         NavigationSplitView {
-            List(selection: Binding<MainTab?>(get: { nav.tab }, set: { if let t = $0 { nav.tab = t } })) {
-                row(.stats)
-                Section(L("设置")) {
+            // 侧边栏自己画：系统列表的选中高亮只认系统强调色，不跟主题色
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    row(.stats)
+                    Text(L("设置")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        .padding(.leading, 10).padding(.top, 14).padding(.bottom, 4)
                     ForEach([MainTab.general, .card, .menuBar, .about]) { row($0) }
                 }
+                .padding(.horizontal, 10).padding(.top, 6)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
@@ -869,8 +873,26 @@ struct MainView: View {
         .accentColor(themeColor == "system" ? nil : ChartColor.color(themeColor))
     }
 
+    var theme: Color { themeColor == "system" ? Color(nsColor: .controlAccentColor) : ChartColor.color(themeColor) }
+
+    /// 侧边栏一行：图标用主题色，选中时整行填主题色、文字变白
     func row(_ t: MainTab) -> some View {
-        Label(t.title, systemImage: t.symbol).tag(t)
+        let selected = nav.tab == t
+        return Button { nav.tab = t } label: {
+            HStack(spacing: 8) {
+                Image(systemName: t.symbol)
+                    .font(.system(size: 13))
+                    .frame(width: 18)
+                    .foregroundStyle(selected ? Color.white : theme)
+                Text(t.title).foregroundStyle(selected ? Color.white : Color.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(selected ? theme : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
