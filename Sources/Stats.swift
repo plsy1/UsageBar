@@ -135,18 +135,34 @@ enum Pricing {
 // MARK: - 读会话记录
 
 enum LogReader {
-    /// 每个文件的解析结果。存到磁盘上，下次启动直接用，只重新解析改动过的文件（全部重读要好几秒）
+    /// 每个文件的解析结果。存到磁盘上，下次启动直接用（全部重读要好几秒）；
+    /// 文件变了只接着解析后面新写的部分（会话日志只会往后追加）
     struct Entry: Codable {
-        var mtime: Date
-        var size: Int
-        var records: [UsageRecord]
+        var mtime = Date.distantPast
+        var size = 0
+        var records: [UsageRecord] = []
+        var offset = 0         // 已经解析到的字节位置（总在一行末尾）
+        var tail: UInt64 = 0   // offset 之前一小段内容的指纹：对不上说明文件被改写过，得从头读
+        var tailLength = 0
+        var claude = ClaudeState()
+        var codex = CodexState()
+    }
+    /// 解析读到 offset 时的状态，接着读时要用
+    struct ClaudeState: Codable {
+        var sentAt: Date?
+        var model = "—"
+    }
+    struct CodexState: Codable {
+        var model = "codex"
+        var lastTotal = -1
+        var inputAt: Date?, start: Date?, first: Date?, end: Date?
     }
     struct DiskCache: Codable {
         var version: Int
         var files: [String: Entry]
     }
     /// 解析规则改了就加一，旧缓存作废
-    static let cacheVersion = 2
+    static let cacheVersion = 3
     static var diskURL: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("local.usagebar/records.plist")
@@ -197,16 +213,55 @@ enum LogReader {
                 seen.insert(url.path)
                 guard mtime >= since else { continue }
                 if let c = cache[url.path], c.mtime == mtime, c.size == size { all += c.records; continue }
-                let recs = src == .claude ? parseClaude(url) : parseCodex(url)
-                cache[url.path] = Entry(mtime: mtime, size: size, records: recs)
+                var entry = cache[url.path].flatMap { canResume($0, url: url, size: size) ? $0 : nil } ?? Entry()
+                parse(url, src, into: &entry)
+                entry.mtime = mtime
+                entry.size = size
+                cache[url.path] = entry
                 changed = true
-                all += recs
+                all += entry.records
             }
         }
         // 删掉的日志也从缓存里去掉
         for path in cache.keys where !seen.contains(path) { cache[path] = nil; changed = true }
         if changed { saveDisk() }
         return dedupe(all, since: since)
+    }
+
+    /// 能不能接着上次的位置读：文件没变小，offset 前面那一小段也没变
+    static func canResume(_ e: Entry, url: URL, size: Int) -> Bool {
+        guard e.offset > 0, size >= e.offset, let fh = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? fh.close() }
+        guard (try? fh.seek(toOffset: UInt64(e.offset - e.tailLength))) != nil,
+              let bytes = try? fh.read(upToCount: e.tailLength) else { return false }
+        return fnv(bytes) == e.tail
+    }
+
+    /// 从 entry.offset 读到文件末尾最后一个完整行；写到一半的行留到下次
+    static func parse(_ url: URL, _ src: Source, into e: inout Entry) {
+        let data: Data
+        if e.offset == 0 {
+            guard let d = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
+            data = d
+        } else {
+            guard let fh = try? FileHandle(forReadingFrom: url) else { return }
+            defer { try? fh.close() }
+            guard (try? fh.seek(toOffset: UInt64(e.offset))) != nil, let d = try? fh.readToEnd() else { return }
+            data = d
+        }
+        guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return }
+        let chunk = data[data.startIndex...lastNewline]
+        if src == .claude { parseClaude(chunk, &e.claude, &e.records) } else { parseCodex(chunk, &e.codex, &e.records) }
+        e.offset += chunk.count
+        e.tailLength = min(64, chunk.count)
+        e.tail = fnv(chunk.suffix(e.tailLength))
+    }
+
+    /// FNV-1a：内容指纹（Swift 自带的 hashValue 每次启动都不一样，不能存盘）
+    static func fnv<D: DataProtocol>(_ bytes: D) -> UInt64 {
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in bytes { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+        return h
     }
 
     /// 同一请求可能出现在多个文件里（续接的会话会带上旧记录），按 id 去重，留输出最多的那条
@@ -252,14 +307,15 @@ enum LogReader {
         }
     }
 
-    static func parseClaude(_ url: URL) -> [UsageRecord] {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return [] }
+    /// 解析一段完整的行，接在 out 后面；state 带着上一段读完时的状态
+    static func parseClaude(_ data: Data.SubSequence, _ state: inout ClaudeState, _ out: inout [UsageRecord]) {
         let usageKey = Data("\"usage\"".utf8)
         let sentKeys = [Data("\"type\":\"user\"".utf8), Data("\"type\":\"api-request\"".utf8)]
-        var out: [UsageRecord] = []
-        var index: [String: Int] = [:]  // 一个回复分成几行写（每段内容一行），记下它在 out 里的位置
-        var sentAt: Date?               // 最近一次发出请求：用户消息、工具结果，或新版的 api-request
-        var model = "—"                 // 失败的请求没有模型名，用前面最近的那个
+        // 一个回复分成几行写（每段内容一行），记下它在 out 里的位置；接着读时后面几段可能落在新的一段里
+        var index = Dictionary(out.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var sentAt = state.sentAt    // 最近一次发出请求：用户消息、工具结果，或新版的 api-request
+        var model = state.model      // 失败的请求没有模型名，用前面最近的那个
+        defer { state.sentAt = sentAt; state.model = model }
         for line in data.split(separator: UInt8(ascii: "\n")) {
             // 大部分行是对话内容：先按字节粗筛，用户消息和工具结果只取时间戳，不解析整行
             guard line.range(of: usageKey) != nil else {
@@ -300,7 +356,6 @@ enum LogReader {
             index[id] = out.count
             out.append(r)
         }
-        return out
     }
 
     /// Codex 日志一行是 {"timestamp":…,"type":…,"payload":{"type":"…"：取出 payload 的类型，不解析整行
@@ -311,15 +366,14 @@ enum LogReader {
         return String(data: Data(rest[..<end]), encoding: .utf8)
     }
 
-    static func parseCodex(_ url: URL) -> [UsageRecord] {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return [] }
+    static func parseCodex(_ data: Data.SubSequence, _ state: inout CodexState, _ out: inout [UsageRecord]) {
         let parseKeys = [Data("\"token_count\"".utf8), Data("\"turn_context\"".utf8)]
         let outputs: Set<String> = ["reasoning", "message", "function_call", "custom_tool_call", "web_search_call", "local_shell_call"]
-        var out: [UsageRecord] = []
-        var model = "codex", lastTotal = -1
+        var model = state.model, lastTotal = state.lastTotal
         // 耗时：一次回复从「最近一次输入」（用户消息、工具结果）开始，到它最后一项内容写入为止。
         // token_count 要等工具执行完才写，不能当结束时间
-        var inputAt: Date?, start: Date?, first: Date?, end: Date?
+        var inputAt = state.inputAt, start = state.start, first = state.first, end = state.end
+        defer { state = CodexState(model: model, lastTotal: lastTotal, inputAt: inputAt, start: start, first: first, end: end) }
         for line in data.split(separator: UInt8(ascii: "\n")) {
             // turn_context 的 payload 第一个字段不是 type，取不到类型，单独认
             let kind = payloadType(in: line) ?? ""
@@ -357,7 +411,6 @@ enum LogReader {
             start = nil; first = nil; end = nil
             out.append(r)
         }
-        return out
     }
 }
 
