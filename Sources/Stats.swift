@@ -370,7 +370,7 @@ struct StatsView: View {
                 Text(cycleCaption).font(.callout).foregroundStyle(.secondary)
             }
         }
-        .padding([.horizontal, .top], 20).padding(.bottom, 12)
+        .padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 12)
         ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 0) {

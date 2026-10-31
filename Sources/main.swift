@@ -506,7 +506,7 @@ struct SettingsPage<Main: View, Side: View>: View {
                     Text(subtitle).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 30).padding(.top, 26)
+            .padding(.horizontal, 30).padding(.top, 28)
             HStack(alignment: .top, spacing: 0) {
                 main.frame(width: 470)
                 side.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -854,6 +854,17 @@ struct AboutCard: View {
 
 // MARK: - 主窗口：左侧边栏切换「用量统计」和各项设置
 
+/// 去掉 NavigationSplitView 自带的侧边栏开关按钮（macOS 14 起才有这个 API）
+struct HideSidebarToggle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.toolbar(removing: .sidebarToggle)
+        } else {
+            content
+        }
+    }
+}
+
 enum MainTab: String, CaseIterable, Identifiable {
     case stats, general, menuBar, card, data
     var id: String { rawValue }
@@ -904,6 +915,7 @@ struct MainView: View {
                 }
                 .padding(.horizontal, 10).padding(.top, 6)
             }
+            .modifier(HideSidebarToggle())
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
             Group {
@@ -916,9 +928,11 @@ struct MainView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .navigationTitle(nav.tab.title)
+            .ignoresSafeArea(.container, edges: .top)  // 内容顶到窗口最上面，不再空出标题栏那一条
         }
         // 主题色：主窗口里的开关、分段按钮、选中标记都用它（桌面卡片和菜单栏保持单色）
+        // NavigationSplitView 会自带一条显示窗口标题的工具栏，整条隐藏，只留左上角三个按钮
+        .toolbar(.hidden, for: .windowToolbar)
         .frame(minWidth: 1120, minHeight: 700)  // 16:10，所有页面在这个尺寸下都能完整显示
         // 选「跟随系统」时不覆盖，控件用系统的主题颜色
         .tint(themeColor == "system" ? nil : ChartColor.color(themeColor))
@@ -1311,8 +1325,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model))
             host.sizingOptions = .minSize  // 最小尺寸来自 MainView 根部的 frame(minWidth:minHeight:)
             let w = NSWindow(contentViewController: host)
-            w.title = "UsageBar"
+            // 标题留空：SwiftUI 会把 titleVisibility 改回可见，留空才能保证标题栏上不出现文字
+            w.title = ""
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            // 现代样式：标题栏透明、不显示标题和分隔线，只留左上角三个按钮
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.titlebarSeparatorStyle = .none
+            w.isMovableByWindowBackground = true  // 标题栏透明后，空白处也能拖动窗口
             w.isReleasedWhenClosed = false
             // 固定 16:10 的宽屏比例，拖动缩放时保持形状
             w.contentAspectRatio = NSSize(width: 16, height: 10)
