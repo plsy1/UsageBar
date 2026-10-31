@@ -14,6 +14,11 @@ struct LimitWindow {
     let usedPercent: Double
     let resetsAt: Date?
     var remaining: Double { max(0, 100 - usedPercent) }
+    /// 按设置显示剩余还是已使用（进度条和百分比都跟着变）
+    var shown: Double { Pref.showUsed ? min(100, usedPercent) : remaining }
+    var shownText: String {
+        Pref.showUsed ? L("已用 %d%%", Int(shown.rounded())) : L("剩 %d%%", Int(shown.rounded()))
+    }
 }
 
 struct ProviderUsage {
@@ -55,6 +60,10 @@ enum I18n {
         "%@后重置（%@）": ("%@後にリセット（%@）", "resets in %@ (%@)"),
         // 卡片和菜单
         "剩 %d%%": ("残り %d%%", "%d%% left"),
+        "已用 %d%%": ("使用済み %d%%", "%d%% used"),
+        "显示数值": ("表示する値", "Show"),
+        "剩余": ("残り", "Remaining"),
+        "已使用": ("使用済み", "Used"),
         "正在获取用量…": ("使用量を取得中…", "Fetching usage…"),
         "更新于 %@": ("更新 %@", "Updated %@"),
         "正在刷新…": ("更新中…", "Refreshing…"),
@@ -310,8 +319,8 @@ enum Codex {
 
 // MARK: - 菜单栏 UI
 
-func bar(_ remaining: Double, width: Int = 12) -> String {
-    let filled = Int((remaining / 100 * Double(width)).rounded())
+func bar(_ percent: Double, width: Int = 12) -> String {
+    let filled = Int((percent / 100 * Double(width)).rounded())
     return String(repeating: "█", count: filled) + String(repeating: "░", count: width - filled)
 }
 
@@ -339,11 +348,13 @@ enum Pref {
     static let refreshMinutes = "refreshMinutes"
     static let menuLabel = "menuLabel"         // short / full
     static let language = "language"           // auto / zh / ja / en
+    static let displayMode = "displayMode"     // remaining / used
+    static var showUsed: Bool { UserDefaults.standard.string(forKey: displayMode) == "used" }
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short", language: "auto",
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining",
         ])
     }
     static func visible(_ name: String) -> Bool {
@@ -378,6 +389,7 @@ enum LoginItem {
 struct GeneralSettings: View {
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
+    @AppStorage(Pref.displayMode) var displayMode = "remaining"
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
     @State var launchAtLogin = LoginItem.status == .enabled
@@ -402,6 +414,11 @@ struct GeneralSettings: View {
                     Text("日本語").tag("ja")
                     Text("English").tag("en")
                 }
+                Picker(L("显示数值"), selection: $displayMode) {
+                    Text(L("剩余")).tag("remaining")
+                    Text(L("已使用")).tag("used")
+                }
+                .pickerStyle(.segmented)
                 Picker(L("自动刷新间隔"), selection: $refreshMinutes) {
                     ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                 }
@@ -461,6 +478,7 @@ struct CardSettings: View {
 
 struct MenuBarSettings: View {
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
+    @AppStorage(Pref.displayMode) var displayMode = "remaining"
 
     var body: some View {
         Form {
@@ -472,7 +490,8 @@ struct MenuBarSettings: View {
                 .pickerStyle(.radioGroup)
             }
             Section(L("预览")) {
-                Text(menuLabel == "full" ? "Claude 59%  Codex 53%" : "Cc 59%  Cx 53%")
+                let (a, b) = displayMode == "used" ? (41, 47) : (59, 53)
+                Text(menuLabel == "full" ? "Claude \(a)%  Codex \(b)%" : "Cc \(a)%  Cx \(b)%")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
@@ -564,13 +583,13 @@ struct UsageRow: View {
             HStack {
                 Text(w.label).font(.system(size: 12 * s))
                 Spacer()
-                Text(L("剩 %d%%", Int(w.remaining.rounded())))
+                Text(w.shownText)
                     .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.25))
-                    Capsule().fill(Color.primary.opacity(0.9)).frame(width: g.size.width * w.remaining / 100)
+                    Capsule().fill(Color.primary.opacity(0.9)).frame(width: g.size.width * w.shown / 100)
                 }
             }
             .frame(height: 4 * s)
@@ -592,9 +611,10 @@ struct CardView: View {
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
+    @AppStorage(Pref.displayMode) var displayMode = "remaining"
 
     var body: some View {
-        let _ = language  // 切换语言时重绘
+        let _ = (language, displayMode)  // 切换语言或显示方式时重绘
         let s = CGFloat(scale)
         let white = textColor == "white"
         let shown = model.results.filter { $0.name == "Claude" ? showClaude : showCodex }
@@ -808,7 +828,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
             if let b = u.binding {
-                s.append(NSAttributedString(string: "\(Int(b.remaining.rounded()))%", attributes: [.font: font]))
+                s.append(NSAttributedString(string: "\(Int(b.shown.rounded()))%", attributes: [.font: font]))
             } else {
                 s.append(NSAttributedString(string: "–", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
             }
@@ -850,9 +870,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for w in u.windows {
                 let line = NSMutableAttributedString(string: "  " + w.label.padding(toLength: 10, withPad: " ", startingAt: 0),
                                                      attributes: [.font: mono])
-                line.append(NSAttributedString(string: bar(w.remaining),
+                line.append(NSAttributedString(string: bar(w.shown),
                                                attributes: [.font: mono]))
-                line.append(NSAttributedString(string: " " + L("剩 %d%%", Int(w.remaining.rounded())),
+                line.append(NSAttributedString(string: " " + w.shownText,
                                                attributes: [.font: mono]))
                 info(line)
                 if w.resetsAt != nil {
@@ -896,7 +916,7 @@ if CommandLine.arguments.contains("--print") {
             print("\(u.name)\(u.plan.map { " (\($0))" } ?? "")")
             if let e = u.error { print("  ⚠︎ \(e)") }
             for w in u.windows {
-                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.remaining)) \(L("剩 %d%%", Int(w.remaining.rounded())))  \(resetText(w.resetsAt))")
+                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.shown)) \(w.shownText)  \(resetText(w.resetsAt))")
             }
             if let n = u.note { print("  ⓘ \(n)") }
         }

@@ -6,7 +6,7 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
 
 - **Menu bar**: `Cc 61%  Cx 53%` (Claude Code / Codex), showing the tightest limit for each; click to see every limit's progress and reset time
 - **Desktop card**: sits on the desktop layer, draggable; right-click to refresh, open Settings or hide it
-- **Settings**: launch at login, language, refresh interval; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
+- **Settings**: launch at login, language, show remaining or used, refresh interval; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
 - **Languages**: English / 简体中文 / 日本語, following the system by default
 - Requires macOS 13 or later, Apple silicon and Intel
 
