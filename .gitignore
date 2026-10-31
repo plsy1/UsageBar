@@ -1,3 +1,6 @@
 build/
 dist/
 .DS_Store
+.vm/
+tauri/src-tauri/target/
+tauri/src-tauri/gen/

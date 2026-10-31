@@ -1,0 +1,136 @@
+/* 跟 macOS 版一致：灰白为主、粉色强调、跟随系统深浅色 */
+:root {
+  color-scheme: light dark;  /* 让滚动条等原生控件也跟着深浅色 */
+  --bg: #ffffff;
+  --sidebar: #f3f3f5;
+  --panel: #f7f7f8;
+  --border: rgba(0, 0, 0, 0.08);
+  --text: #1d1d1f;
+  --secondary: #6e6e73;
+  --tertiary: #a1a1a6;
+  --track: rgba(0, 0, 0, 0.1);
+  --fill: rgba(0, 0, 0, 0.75);
+  --accent: #ff2d55;
+  --accent-text: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --sidebar: #252527;
+    --panel: #2a2a2c;
+    --border: rgba(255, 255, 255, 0.09);
+    --text: #f5f5f7;
+    --secondary: #a1a1a6;
+    --tertiary: #6e6e73;
+    --track: rgba(255, 255, 255, 0.14);
+    --fill: rgba(255, 255, 255, 0.85);
+    --accent: #ff375f;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 侧边栏 */
+.sidebar {
+  width: 190px;
+  flex-shrink: 0;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  padding: 18px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brand { font-weight: 650; font-size: 15px; padding: 2px 10px 14px; }
+.nav {
+  display: flex; align-items: center; gap: 10px;
+  height: 32px; padding: 0 10px;
+  border: 0; border-radius: 8px;
+  background: transparent; color: var(--text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.nav .ico { width: 18px; text-align: center; color: var(--accent); }
+.nav.active { background: var(--accent); color: var(--accent-text); }
+.nav.active .ico { color: var(--accent-text); }
+.version { margin-top: auto; padding: 0 10px; color: var(--tertiary); font-size: 12px; }
+
+/* 内容 */
+main { flex: 1; overflow: auto; padding: 26px 30px; }
+.header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.header h1 { font-size: 22px; font-weight: 650; margin: 0; }
+.header .sub { color: var(--secondary); }
+.header .spacer { flex: 1; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* 额度 */
+.providers { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.provider { padding: 18px 20px; }
+.provider .name { font-size: 16px; font-weight: 650; }
+.provider .plan { color: var(--secondary); font-size: 12px; margin-left: 6px; font-weight: 400; }
+.row { margin-top: 14px; }
+.row .top { display: flex; justify-content: space-between; }
+.row .value { font-weight: 550; font-variant-numeric: tabular-nums; }
+.bar { height: 5px; border-radius: 3px; background: var(--track); margin: 6px 0 4px; overflow: hidden; }
+.bar > div { height: 100%; border-radius: 3px; background: var(--fill); }
+.reset { color: var(--secondary); font-size: 12px; }
+.note, .error { color: var(--secondary); font-size: 12px; margin-top: 10px; }
+.footnote { color: var(--tertiary); font-size: 12px; margin-top: 16px; }
+
+/* 设置：分组表单 */
+.group-title { color: var(--secondary); font-size: 12px; font-weight: 600; margin: 22px 4px 8px; }
+.group { padding: 0 16px; max-width: 620px; }
+.field { display: flex; align-items: center; justify-content: space-between; min-height: 48px; gap: 16px; }
+.field + .field { border-top: 1px solid var(--border); }
+.field .hint { color: var(--secondary); font-size: 12px; }
+
+/* 下拉框自己画：Linux 的 WebKitGTK 原生样式在深色下是白底白字 */
+select {
+  -webkit-appearance: none; appearance: none;
+  font: inherit; color: var(--text); background-color: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 28px 4px 10px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--secondary) 50%), linear-gradient(135deg, var(--secondary) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+select option { color: var(--text); background: var(--bg); }
+.seg { display: inline-flex; background: var(--track); border-radius: 7px; padding: 2px; }
+.seg button {
+  border: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 13px; padding: 3px 12px; border-radius: 5px; cursor: pointer;
+}
+.seg button.on { background: var(--accent); color: var(--accent-text); }
+
+.switch { position: relative; width: 38px; height: 22px; flex-shrink: 0; }
+.switch input { display: none; }
+.switch span {
+  position: absolute; inset: 0; border-radius: 11px; background: var(--track); cursor: pointer; transition: background 0.15s;
+}
+.switch span::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s;
+}
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(16px); }
+
+.btn {
+  font: inherit; font-size: 13px; color: var(--accent);
+  background: transparent; border: 1px solid var(--border); border-radius: 7px;
+  padding: 4px 12px; cursor: pointer;
+}
+.btn:disabled { color: var(--tertiary); cursor: default; }

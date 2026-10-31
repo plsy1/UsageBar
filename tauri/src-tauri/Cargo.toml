@@ -1,0 +1,24 @@
+[package]
+name = "usagebar"
+version = "0.1.0"
+description = "Remaining Claude and Codex usage in the system tray"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+dirs = "5"
+sys-locale = "0.3"
+tokio = { version = "1", features = ["time", "macros"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
