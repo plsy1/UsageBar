@@ -724,11 +724,22 @@ struct RangePopover: View {
 
 /// 主题色可选的颜色（系统色，深浅色模式下自动调整）：统计图、开关、选中标记
 enum ChartColor {
+    /// system：跟随 系统设置 → 外观 → 主题颜色（选「多色」时一般是蓝色）
     static let all: [(key: String, name: String, color: Color)] = [
+        ("system", "跟随系统", Color(nsColor: .controlAccentColor)),
         ("pink", "粉色", .pink), ("purple", "紫色", .purple), ("blue", "蓝色", .blue), ("teal", "青色", .teal),
         ("green", "绿色", .green), ("orange", "橙色", .orange), ("gray", "灰色", .gray),
     ]
     static func color(_ key: String) -> Color { all.first { $0.key == key }?.color ?? .pink }
+
+    /// 色块：「跟随系统」画成和系统设置里「多色」一样的彩虹圆
+    @ViewBuilder static func swatch(_ key: String) -> some View {
+        if key == "system" {
+            Circle().fill(AngularGradient(colors: [.red, .orange, .yellow, .green, .blue, .purple, .pink, .red], center: .center))
+        } else {
+            Circle().fill(color(key))
+        }
+    }
 }
 
 /// 统计窗口里的圆角面板

@@ -553,7 +553,7 @@ struct GeneralSettings: View {
                         HStack(spacing: 9) {
                             ForEach(ChartColor.all, id: \.key) { c in
                                 Button { chartColor = c.key } label: {
-                                    Circle().fill(c.color).frame(width: 16, height: 16)
+                                    ChartColor.swatch(c.key).frame(width: 16, height: 16)
                                         .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.7 : 0), lineWidth: 1.5).padding(-3))
                                         .padding(3)
                                 }
@@ -864,8 +864,9 @@ struct MainView: View {
             .navigationTitle(nav.tab.title)
         }
         // 主题色：主窗口里的开关、分段按钮、选中标记都用它（桌面卡片和菜单栏保持单色）
-        .tint(ChartColor.color(themeColor))
-        .accentColor(ChartColor.color(themeColor))
+        // 选「跟随系统」时不覆盖，控件用系统的主题颜色
+        .tint(themeColor == "system" ? nil : ChartColor.color(themeColor))
+        .accentColor(themeColor == "system" ? nil : ChartColor.color(themeColor))
     }
 
     func row(_ t: MainTab) -> some View {
