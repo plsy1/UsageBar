@@ -375,7 +375,7 @@ struct StatsView: View {
                 .font(.caption).foregroundStyle(.tertiary)
         }
         .padding(20)
-        .frame(minWidth: 960, minHeight: 600)
+        .frame(minWidth: 820, minHeight: 600)
         .environment(\.locale, locale)  // 图表坐标的日期跟着界面语言
     }
 

@@ -78,6 +78,11 @@ enum I18n {
         "退出": ("終了", "Quit"),
         // 设置窗口
         "通用": ("一般", "General"),
+        "设置": ("設定", "Settings"),
+        "布局": ("レイアウト", "Layout"),
+        "左右": ("横並び", "Side by Side"),
+        "上下": ("縦並び", "Stacked"),
+        "紧凑": ("コンパクト", "Compact"),
         // 用量统计
         "用量统计…": ("使用量の統計…", "Usage Statistics…"),
         "用量统计": ("使用量の統計", "Usage Statistics"),
@@ -398,12 +403,13 @@ enum Pref {
     static let menuLabel = "menuLabel"         // short / full
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
+    static let cardLayout = "cardLayout"       // horizontal / vertical / compact
     static var showUsed: Bool { UserDefaults.standard.string(forKey: displayMode) == "used" }
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining",
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal",
         ])
     }
     static func visible(_ name: String) -> Bool {
@@ -484,8 +490,8 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440)
-        .fixedSize()
+        .scrollContentBackground(.hidden)  // 去掉表单滚动区的底色和两侧边线
+        .frame(maxWidth: 560)
     }
 }
 
@@ -497,12 +503,23 @@ struct CardSettings: View {
     @AppStorage(Pref.opacity) var opacity = 1.0
     @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.showReset) var showReset = true
+    @AppStorage(Pref.cardLayout) var layout = "horizontal"
 
     var body: some View {
         Form {
             Section {
                 Toggle(L("显示桌面卡片"), isOn: $showCard)
             }
+            Section {
+                Picker(L("布局"), selection: $layout) {
+                    Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                    Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                    Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                }
+                .pickerStyle(.segmented)
+                PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
+            }
+            .disabled(!showCard)
             Section {
                 Picker(L("背景"), selection: $background) {
                     Text(L("无")).tag("none")
@@ -519,15 +536,14 @@ struct CardSettings: View {
             }
             .disabled(!showCard)
             Section {
-                PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
                 PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
                 Toggle(L("显示重置时间"), isOn: $showReset)
             }
             .disabled(!showCard)
         }
         .formStyle(.grouped)
-        .frame(width: 440)
-        .fixedSize()
+        .scrollContentBackground(.hidden)  // 去掉表单滚动区的底色和两侧边线
+        .frame(maxWidth: 560)
     }
 }
 
@@ -554,8 +570,8 @@ struct MenuBarSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440)
-        .fixedSize()
+        .scrollContentBackground(.hidden)  // 去掉表单滚动区的底色和两侧边线
+        .frame(maxWidth: 560)
     }
 }
 
@@ -574,34 +590,72 @@ struct AboutSettings: View {
                 .font(.callout)
         }
         .padding(28)
-        .frame(width: 440)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-/// 偏好设置窗口：顶部工具栏图标切换各页（系统设置那种样式）
-func makeSettingsWindow(selected: Int) -> NSWindow {
-    let tabs = NSTabViewController()
-    tabs.tabStyle = .toolbar
-    func add<V: View>(_ title: String, _ symbol: String, _ view: V) {
-        let host = NSHostingController(rootView: view)
-        host.sizingOptions = .preferredContentSize
-        host.title = title
-        let item = NSTabViewItem(viewController: host)
-        item.label = title
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-        tabs.addTabViewItem(item)
-    }
-    add(L("通用"), "gearshape", GeneralSettings())
-    add(L("桌面卡片"), "rectangle.on.rectangle", CardSettings())
-    add(L("菜单栏"), "menubar.rectangle", MenuBarSettings())
-    add(L("关于"), "info.circle", AboutSettings())
-    tabs.selectedTabViewItemIndex = selected
+// MARK: - 主窗口：左侧边栏切换「用量统计」和各项设置
 
-    let w = NSWindow(contentViewController: tabs)
-    w.styleMask = [.titled, .closable]
-    w.toolbarStyle = .preference
-    w.isReleasedWhenClosed = false
-    return w
+enum MainTab: String, CaseIterable, Identifiable {
+    case stats, general, card, menuBar, about
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .stats: return L("用量统计")
+        case .general: return L("通用")
+        case .card: return L("桌面卡片")
+        case .menuBar: return L("菜单栏")
+        case .about: return L("关于")
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .stats: return "chart.bar.xaxis"
+        case .general: return "gearshape"
+        case .card: return "rectangle.on.rectangle"
+        case .menuBar: return "menubar.rectangle"
+        case .about: return "info.circle"
+        }
+    }
+}
+
+final class MainNav: ObservableObject {
+    @Published var tab: MainTab = .stats
+}
+
+struct MainView: View {
+    @ObservedObject var nav: MainNav
+    @ObservedObject var stats: StatsStore
+    @AppStorage(Pref.language) var language = "auto"
+
+    var body: some View {
+        let _ = language  // 切换语言时重绘
+        NavigationSplitView {
+            List(selection: Binding<MainTab?>(get: { nav.tab }, set: { if let t = $0 { nav.tab = t } })) {
+                row(.stats)
+                Section(L("设置")) {
+                    ForEach([MainTab.general, .card, .menuBar, .about]) { row($0) }
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
+        } detail: {
+            Group {
+                switch nav.tab {
+                case .stats: StatsView(store: stats)
+                case .general: GeneralSettings()
+                case .card: CardSettings()
+                case .menuBar: MenuBarSettings()
+                case .about: AboutSettings()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .navigationTitle(nav.tab.title)
+        }
+    }
+
+    func row(_ t: MainTab) -> some View {
+        Label(t.title, systemImage: t.symbol).tag(t)
+    }
 }
 
 // MARK: - 桌面卡片
@@ -669,38 +723,26 @@ struct CardView: View {
     @AppStorage(Pref.showCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.displayMode) var displayMode = "remaining"
+    @AppStorage(Pref.cardLayout) var layout = "horizontal"
+
+    var s: CGFloat { CGFloat(scale) }
+    var used: Bool { displayMode == "used" }
 
     var body: some View {
         let _ = (language, displayMode)  // 切换语言或显示方式时重绘
-        let s = CGFloat(scale)
         let white = textColor == "white"
         let shown = model.results.filter { $0.name == "Claude" ? showClaude : showCodex }
-        VStack(alignment: .leading, spacing: 14 * s) {
+        VStack(alignment: .leading, spacing: (layout == "compact" ? 10 : 14) * s) {
             if model.results.isEmpty {
                 Text(L("正在获取用量…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             }
-            // 每家一栏左右并排，卡片是横向的长方形
-            HStack(alignment: .top, spacing: 24 * s) {
-            ForEach(shown, id: \.name) { u in
-                VStack(alignment: .leading, spacing: 8 * s) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(u.name).font(.system(size: 13 * s, weight: .semibold))
-                        if let p = u.plan { Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
-                    }
-                    if let e = u.error {
-                        Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                        UsageRow(w: w, s: s, showReset: showReset, used: displayMode == "used")
-                    }
-                    if let n = u.note {
-                        Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .frame(width: CardWindow.column * s, alignment: .topLeading)
-            }
+            switch layout {
+            case "vertical":
+                VStack(alignment: .leading, spacing: 14 * s) { ForEach(shown, id: \.name, content: column) }
+            case "compact":
+                VStack(alignment: .leading, spacing: 6 * s) { ForEach(shown, id: \.name, content: compactRow) }
+            default:
+                HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.name, content: column) }
             }
             if let t = model.lastUpdate {
                 Text(L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
@@ -725,6 +767,48 @@ struct CardView: View {
             Button(L("用量统计…")) { model.onStats() }
             Button(L("设置…")) { model.onSettings() }
             Button(L("隐藏桌面卡片")) { model.onHide() }
+        }
+    }
+}
+
+extension CardView {
+    /// 一家一栏：名称、各额度的进度条和重置时间
+    func column(_ u: ProviderUsage) -> some View {
+        VStack(alignment: .leading, spacing: 8 * s) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+                if let p = u.plan { Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
+            }
+            if let e = u.error {
+                Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
+                UsageRow(w: w, s: s, showReset: showReset, used: used)
+            }
+            if let n = u.note {
+                Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(width: CardWindow.column * s, alignment: .topLeading)
+    }
+
+    /// 紧凑：一家一行，只有数字
+    func compactRow(_ u: ProviderUsage) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14 * s) {
+            Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+                .frame(width: 54 * s, alignment: .leading)
+            if let e = u.error, u.windows.isEmpty {
+                Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(maxWidth: 260 * s, alignment: .leading)
+            }
+            ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
+                HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
+                    Text(w.label).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+                    Text(w.shownText(used)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+                }
+            }
         }
     }
 }
@@ -775,8 +859,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timerMinutes = 0
     var statsTimer: Timer?
     var statsTimerMinutes = 0
-    var settingsWindow: NSWindow?
-    var statsWindow: NSWindow?
+    var mainWindow: NSWindow?
+    let nav = MainNav()
     let stats = StatsStore()
     var lastLang = ""
     var showCard: Bool {
@@ -872,55 +956,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if I18n.lang != lastLang {
             // 错误提示、额度名称是取数时生成的，换语言后重新取一次
             lastLang = I18n.lang
-            statsWindow?.title = L("用量统计")
             refresh()
-            // 设置窗口开着的话，按新语言重建（保留当前页和位置）
-            if let old = settingsWindow, old.isVisible {
-                let idx = (old.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex ?? 0
-                let topLeft = NSPoint(x: old.frame.minX, y: old.frame.maxY)
-                DispatchQueue.main.async {
-                    old.close()
-                    let w = makeSettingsWindow(selected: idx)
-                    w.setFrameTopLeftPoint(topLeft)
-                    self.settingsWindow = w
-                    w.makeKeyAndOrderFront(nil)
-                }
-            } else {
-                settingsWindow = nil
-            }
         }
         updateTitle()
         rebuildMenu()
     }
 
-    @objc func openSettings() {
-        if settingsWindow == nil {
-            let w = makeSettingsWindow(selected: 0)
-            w.center()
-            settingsWindow = w
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
-    }
+    @objc func openSettings() { openMain(.general) }
+    @objc func openStats() { openMain(.stats) }
 
-    @objc func openStats() {
-        if statsWindow == nil {
-            let host = NSHostingController(rootView: StatsView(store: stats))
+    /// 主窗口：统计和设置都在这里，左侧边栏切换
+    func openMain(_ tab: MainTab) {
+        nav.tab = tab
+        if mainWindow == nil {
+            let host = NSHostingController(rootView: MainView(nav: nav, stats: stats))
             host.sizingOptions = .minSize
             let w = NSWindow(contentViewController: host)
-            w.title = L("用量统计")
-            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            w.title = "UsageBar"
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             w.isReleasedWhenClosed = false
             // 固定 16:10 的宽屏比例，拖动缩放时保持形状
             w.contentAspectRatio = NSSize(width: 16, height: 10)
-            w.setContentSize(NSSize(width: 1120, height: 700))
+            w.setContentSize(NSSize(width: 1280, height: 800))
             w.center()
-            w.setFrameAutosaveName("StatsWindowWide")
-            statsWindow = w
+            w.setFrameAutosaveName("MainWindow")
+            mainWindow = w
         }
         stats.reload()
         NSApp.activate(ignoringOtherApps: true)
-        statsWindow?.makeKeyAndOrderFront(nil)
+        mainWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc func toggleCard() {
