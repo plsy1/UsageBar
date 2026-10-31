@@ -1136,7 +1136,7 @@ struct CardForm: View {
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
                 Divider()
-                SettingsRow(L("大小")) { PercentControl(value: $scale, range: 0.8...1.6, step: 0.1) }
+                SettingsRow(L("大小")) { PercentControl(value: $scale, range: 0.8...2.5, step: 0.1) }
             }
             .disabled(!show)
             SettingsGroup(L("外观")) {
@@ -1207,8 +1207,10 @@ struct CardPreview: View {
         GeometryReader { g in
             // 白字配深色底，黑字配浅色底
             let dark = textColor == "white"
-            let size = cardSize
-            let fit = min(1, (g.size.width - 48) / size.width, (g.size.height - 48) / size.height)
+            // 按 100% 的样子缩进预览框：调「大小」时预览不跟着变，只有桌面上的卡片变
+            let base = CGSize(width: cardSize.width / scale, height: cardSize.height / scale)
+            let fitBase = min(1, (g.size.width - 48) / base.width, (g.size.height - 48) / base.height)
+            let fit = fitBase / scale
             ZStack {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(LinearGradient(colors: dark ? [Color(white: 0.32), Color(white: 0.14)] : [Color(white: 0.92), Color(white: 0.78)],
@@ -1219,7 +1221,7 @@ struct CardPreview: View {
                 .allowsHitTesting(false)
                 .scaleEffect(fit)
                 // scaleEffect 只缩画面不缩占位，占位也按缩放后的尺寸来，免得撑出预览框
-                .frame(width: size.width * fit, height: size.height * fit)
+                .frame(width: base.width * fitBase, height: base.height * fitBase)
             }
             .opacity(show ? 1 : 0.4)
         }
