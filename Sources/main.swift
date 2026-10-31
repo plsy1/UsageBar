@@ -148,6 +148,19 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "卡片": ("カード", "Cards"),
+        "额度卡片": ("上限カード", "Limits Card"),
+        "用量卡片": ("使用量カード", "Usage Card"),
+        "显示额度卡片": ("上限カードを表示", "Show Limits Card"),
+        "隐藏额度卡片": ("上限カードを隠す", "Hide Limits Card"),
+        "额度": ("上限", "Limits"),
+        "开机启动、外观、额度显示和数据来源": ("ログイン時の起動、外観、上限の表示、データソース", "Launch at login, appearance, limits and data sources"),
+        "菜单栏和两张卡片都按这里显示": ("メニューバーと 2 枚のカードはここの設定で表示します", "The menu bar and both cards follow these settings"),
+        "菜单栏上显示的文字，右边是点开后的菜单": ("メニューバーに表示する文字。右はクリックしたときのメニューです", "What the menu bar shows; the menu it opens is on the right"),
+        "每家显示最紧的那个额度；显示剩余还是已用、显示哪几家在「通用」里设置": ("各サービスで最も残りが少ない上限を表示します。残り／使用済みと表示するサービスは「一般」で設定します", "Each service shows its tightest limit; remaining or used and which services to show are set in General"),
+        "额度卡片和用量卡片分开设置，改动会实时显示在右边的预览里": ("上限カードと使用量カードは別々に設定します。変更は右のプレビューにすぐ反映されます", "Set up the limits card and the usage card separately; changes show in the preview on the right"),
+        "用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率": ("使用量カードには各サービスの推定コスト、リクエスト数、Tokens、キャッシュヒット率を表示します", "The usage card shows each service's estimated cost, requests, tokens and cache hit rate"),
+        "额度卡片显示各家额度的剩余（或已用）和重置时间": ("上限カードには各上限の残り（または使用済み）とリセット時刻を表示します", "The limits card shows how much of each limit is left (or used) and when it resets"),
         "拖动表头换顺序，拖动分隔线调整宽度": ("見出しをドラッグで並べ替え、区切り線をドラッグで幅を調整", "Drag a header to reorder; drag a divider to resize"),
         "成功率": ("成功率", "Success"),
         "显示用量卡片": ("使用量カードを表示", "Show Usage Card"),
@@ -514,8 +527,15 @@ enum Pref {
     static let cardLayout = "cardLayout"       // horizontal / vertical / compact
     static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
     static let appearance = "appearance"       // auto / light / dark
-    static let showStatsCard = "showStatsCard" // 用量卡片（成本、请求数、Tokens），外观跟额度卡片共用
+    static let showStatsCard = "showStatsCard" // 用量卡片（成本、请求数、Tokens）
     static let statsCardRange = "statsCardRange"  // today / cycle / 7d
+    // 用量卡片自己的布局和外观（和额度卡片分开设置）
+    static let statsCardLayout = "statsCardLayout"
+    static let statsCardScale = "statsCardScale"
+    static let statsCardBackground = "statsCardBackground"
+    static let statsCardText = "statsCardText"
+    static let statsCardOpacity = "statsCardOpacity"
+    static let statsCardBgOpacity = "statsCardBgOpacity"
 
     /// 主窗口和菜单的外观；桌面卡片有自己的文字颜色和背景，不受影响
     static func applyAppearance() {
@@ -532,6 +552,13 @@ enum Pref {
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
             showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative", appearance: "auto",
             showStatsCard: false, statsCardRange: "today",
+        ])
+        // 用量卡片的外观一开始跟额度卡片现在的一样，之后各改各的
+        let u = UserDefaults.standard
+        u.register(defaults: [
+            statsCardLayout: u.string(forKey: cardLayout) ?? "horizontal", statsCardScale: u.double(forKey: scale),
+            statsCardBackground: u.string(forKey: background) ?? "none", statsCardText: u.string(forKey: textColor) ?? "white",
+            statsCardOpacity: u.double(forKey: opacity), statsCardBgOpacity: u.double(forKey: bgOpacity),
         ])
         // 旧版只有「显示重置时间」开关：关掉过的人沿用为「不显示」
         // 只看用户真正保存过的值（注册的默认值不算）
@@ -615,16 +642,24 @@ struct SidePanel<Content: View>: View {
     }
 }
 
+/// 「通用」：开机启动、外观；额度怎么显示（菜单栏和两张卡片共用）；用量统计和数据来源
 struct GeneralSettings: View {
     let updater: Updater
+    @ObservedObject var model: UsageModel
+    @ObservedObject var stats: StatsStore
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsChartColor") var chartColor = "pink"
     @AppStorage(Pref.appearance) var appearance = "auto"
+    @AppStorage(Pref.displayMode) var displayMode = "remaining"
+    @AppStorage(Pref.showClaude) var showClaude = true
+    @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
+    @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @State var launchAtLogin = LoginItem.status == .enabled
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
-        SettingsPage(.general, L("开机启动、外观、语言和主题色")) {
+        SettingsPage(.general, L("开机启动、外观、额度显示和数据来源")) {
             Form {
                 Section {
                     Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
@@ -664,6 +699,58 @@ struct GeneralSettings: View {
                         }
                     }
                 }
+                Section {
+                    Picker(L("显示数值"), selection: $displayMode) {
+                        Text(L("剩余")).tag("remaining")
+                        Text(L("已使用")).tag("used")
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("Claude", isOn: $showClaude)
+                    Toggle("Codex", isOn: $showCodex)
+                    Picker(L("刷新间隔"), selection: $refreshMinutes) {
+                        ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                    }
+                } header: {
+                    Text(L("额度"))
+                } footer: {
+                    Text(L("菜单栏和两张卡片都按这里显示")).font(.callout).foregroundStyle(.secondary)
+                }
+                Section(L("用量统计")) {
+                    LabeledContent(L("价格表")) {
+                        HStack(spacing: 10) {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取"))
+                                if Pricing.downloadFailed && !stats.loading {
+                                    Text(L("更新失败，继续使用旧价格")).font(.caption)
+                                }
+                            }
+                            .foregroundStyle(.secondary)
+                            if stats.loading {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button(L("立即更新")) { stats.reload(forcePrices: true) }
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                    LabeledContent(L("本机会话记录")) {
+                        Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
+                            .foregroundStyle(.secondary)
+                    }
+                    Picker(L("刷新间隔（后台增量更新）"), selection: $statsRefreshMinutes) {
+                        ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                    }
+                }
+                Section {
+                    provider("Claude", source: L("Claude Code 登录（钥匙串）"))
+                    provider("Codex", source: "~/.codex/auth.json")
+                } header: {
+                    Text(L("数据来源"))
+                } footer: {
+                    Text(L("额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。"))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -671,16 +758,41 @@ struct GeneralSettings: View {
             SidePanel(L("关于")) { AboutCard(updater: updater) }
         }
     }
+
+    /// 一家一行：名字，右边是连接状态和读取的地方
+    func provider(_ name: String, source: String) -> some View {
+        LabeledContent(name) {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(status(model.results.first { $0.name == name })).multilineTextAlignment(.trailing)
+                Text(source).font(.caption)
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    func status(_ u: ProviderUsage?) -> String {
+        guard let u else { return L("正在获取用量…") }
+        if let e = u.error { return e }
+        var parts = [L("已连接")]
+        if let p = u.plan { parts.append(p) }
+        if u.note != nil { parts.append(L("本地缓存")) }
+        return parts.joined(separator: " · ")
+    }
+
+    func shortDate(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
+    }
 }
 
-/// 「额度显示」：菜单栏和桌面卡片显示哪些额度、怎么显示（卡片的外观在「桌面卡片」页）
-struct LimitsSettings: View {
+/// 「菜单栏」：菜单栏上的文字，右边预览菜单栏和点开后的菜单
+struct MenuBarSettings: View {
     @ObservedObject var model: UsageModel
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
     @AppStorage(Pref.displayMode) var displayMode = "remaining"
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
-    @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
+    @AppStorage(Pref.showCard) var showCard = true
+    @AppStorage(Pref.showStatsCard) var showStatsCard = false
 
     var shown: [ProviderUsage] { model.results.filter { $0.name == "Claude" ? showClaude : showCodex } }
     var used: Bool { displayMode == "used" }
@@ -695,32 +807,17 @@ struct LimitsSettings: View {
     }
 
     var body: some View {
-        SettingsPage(.menuBar, L("菜单栏和桌面卡片显示哪些额度、怎么显示")) {
+        SettingsPage(.menuBar, L("菜单栏上显示的文字，右边是点开后的菜单")) {
             Form {
-                Section(L("显示内容")) {
-                    Picker(L("显示数值"), selection: $displayMode) {
-                        Text(L("剩余")).tag("remaining")
-                        Text(L("已使用")).tag("used")
-                    }
-                    .pickerStyle(.segmented)
-                    Toggle("Claude", isOn: $showClaude)
-                    Toggle("Codex", isOn: $showCodex)
-                }
                 Section {
                     Picker(L("名称"), selection: $menuLabel) {
                         Text(L("简写（Cc / Cx）")).tag("short")
                         Text(L("全名（Claude / Codex）")).tag("full")
                     }
                     .pickerStyle(.radioGroup)
-                } header: {
-                    Text(L("菜单栏"))
                 } footer: {
-                    Text(L("每家显示最紧的那个额度")).font(.callout).foregroundStyle(.secondary)
-                }
-                Section(L("刷新")) {
-                    Picker(L("刷新间隔"), selection: $refreshMinutes) {
-                        ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                    }
+                    Text(L("每家显示最紧的那个额度；显示剩余还是已用、显示哪几家在「通用」里设置"))
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -749,7 +846,9 @@ struct LimitsSettings: View {
                         }
                         Text(L("更新于 %@", Date().formatted(.dateTime.hour().minute())))
                             .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 12)
-                        ForEach([("arrow.clockwise", L("立即刷新")), ("eye.slash", L("隐藏桌面卡片")),
+                        ForEach([("arrow.clockwise", L("立即刷新")),
+                                 (showCard ? "eye.slash" : "eye", showCard ? L("隐藏额度卡片") : L("显示额度卡片")),
+                                 ("chart.bar", showStatsCard ? L("隐藏用量卡片") : L("显示用量卡片")),
                                  ("macwindow", L("打开 UsageBar…")), ("power", L("退出"))], id: \.1) { icon, title in
                             if icon == "power" { Divider().padding(.vertical, 3) }
                             HStack(spacing: 8) {
@@ -771,186 +870,183 @@ struct LimitsSettings: View {
     }
 }
 
-/// 「数据来源」：各家连接状态、价格表、本机记录
-struct DataSettings: View {
+/// 「卡片」：额度卡片和用量卡片，上面切换，各自的显示内容、布局和外观分开设置
+struct CardSettings: View {
     @ObservedObject var model: UsageModel
     @ObservedObject var stats: StatsStore
-    @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
+    @AppStorage("cardSettingsTab") var which = "limits"
 
     var body: some View {
-        SettingsPage(.data, L("用量从哪里读取，以及价格表和本机记录")) {
-            Form {
-                provider("Claude", source: L("Claude Code 登录（钥匙串）"))
-                provider("Codex", source: "~/.codex/auth.json")
-                Section(L("用量统计")) {
-                    LabeledContent(L("价格表")) {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(Pricing.updatedAt.map { "models.dev · " + L("更新于 %@", shortDate($0)) } ?? L("未获取"))
-                                if Pricing.downloadFailed && !stats.loading {
-                                    Text(L("更新失败，继续使用旧价格")).font(.caption)
-                                }
-                            }
-                            .foregroundStyle(.secondary)
-                            if stats.loading {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Button(L("立即更新")) { stats.reload(forcePrices: true) }
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
-                    LabeledContent(L("本机会话记录")) {
-                        Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
-                            .foregroundStyle(.secondary)
-                    }
-                    Picker(L("刷新间隔（后台增量更新）"), selection: $statsRefreshMinutes) {
-                        ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                    }
+        let keys = which == "stats" ? CardKeys.stats : CardKeys.limits
+        SettingsPage(.card, L("额度卡片和用量卡片分开设置，改动会实时显示在右边的预览里")) {
+            VStack(spacing: 0) {
+                Picker("", selection: $which) {
+                    Text(L("额度卡片")).tag("limits")
+                    Text(L("用量卡片")).tag("stats")
                 }
+                .pickerStyle(.segmented).labelsHidden()
+                .padding(.horizontal, 20).padding(.top, 18)
+                // 换一张卡片时重建，@AppStorage 才会换成那张卡片的键
+                CardForm(keys: keys).id(which)
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
         } side: {
-            SidePanel(L("说明")) {
-                Text(L("额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。"))
-                    .font(.callout).foregroundStyle(.secondary)
-                    // 宽度可以收缩但有下限，否则会按最窄宽度算出极高的最小高度
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(minWidth: 300, maxWidth: 420, alignment: .leading)
-                    .padding(16)
-                    .modifier(Panel())
+            SidePanel(L("预览")) {
+                CardPreview(keys: keys, model: model, stats: stats).id(which)
+                    .frame(height: 420)
+                Text(L("拖动桌面上的卡片可以移动位置，右键有更多操作"))
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
-    }
-
-    func provider(_ name: String, source: String) -> some View {
-        Section(name) {
-            LabeledContent(L("状态")) {
-                Text(status(model.results.first { $0.name == name }))
-                    .multilineTextAlignment(.trailing).foregroundStyle(.secondary)
-            }
-            LabeledContent(L("来源")) { Text(source).foregroundStyle(.secondary) }
-        }
-    }
-
-    func status(_ u: ProviderUsage?) -> String {
-        guard let u else { return L("正在获取用量…") }
-        if let e = u.error { return e }
-        var parts = [L("已连接")]
-        if let p = u.plan { parts.append(p) }
-        if u.note != nil { parts.append(L("本地缓存")) }
-        return parts.joined(separator: " · ")
-    }
-
-    func shortDate(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
     }
 }
 
-struct CardSettings: View {
-    @ObservedObject var model: UsageModel
-    @AppStorage(Pref.showCard) var showCard = true
-    @AppStorage(Pref.background) var background = "none"
-    @AppStorage(Pref.textColor) var textColor = "white"
-    @AppStorage(Pref.scale) var scale = 1.0
-    @AppStorage(Pref.opacity) var opacity = 1.0
-    @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
-    @AppStorage(Pref.resetStyle) var resetStyle = "relative"
-    @AppStorage(Pref.cardLayout) var layout = "horizontal"
-    @AppStorage(Pref.showStatsCard) var showStatsCard = false
-    @AppStorage(Pref.statsCardRange) var statsRange = "today"
-    /// 外观对两张卡片都生效，任一张显示着就能改
-    var anyCard: Bool { showCard || showStatsCard }
+/// 一张卡片的各项设置存在哪些键下
+struct CardKeys {
+    let stats: Bool  // 用量卡片；否则是额度卡片
+    let show, layout, scale, background, text, opacity, bgOpacity: String
+    static let limits = CardKeys(stats: false, show: Pref.showCard, layout: Pref.cardLayout, scale: Pref.scale,
+                                 background: Pref.background, text: Pref.textColor, opacity: Pref.opacity, bgOpacity: Pref.bgOpacity)
+    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, layout: Pref.statsCardLayout, scale: Pref.statsCardScale,
+                                background: Pref.statsCardBackground, text: Pref.statsCardText, opacity: Pref.statsCardOpacity,
+                                bgOpacity: Pref.statsCardBgOpacity)
+}
 
-    /// 卡片实际尺寸：卡片显示着就用桌面上那张的窗口尺寸，否则按布局估算
-    var cardSize: CGSize {
-        if showCard, model.cardSize.width > 0 { return model.cardSize }
-        let base = layout == "horizontal" ? CGSize(width: 476, height: 167)
-            : layout == "vertical" ? CGSize(width: 292, height: 295) : CGSize(width: 273, height: 93)
-        return CGSize(width: base.width * scale, height: base.height * scale)
+struct CardForm: View {
+    let keys: CardKeys
+    @AppStorage var show: Bool
+    @AppStorage var layout: String
+    @AppStorage var scale: Double
+    @AppStorage var background: String
+    @AppStorage var textColor: String
+    @AppStorage var opacity: Double
+    @AppStorage var bgOpacity: Double
+    @AppStorage(Pref.resetStyle) var resetStyle = "relative"
+    @AppStorage(Pref.statsCardRange) var statsRange = "today"
+
+    init(keys: CardKeys) {
+        self.keys = keys
+        _show = AppStorage(wrappedValue: !keys.stats, keys.show)
+        _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
+        _scale = AppStorage(wrappedValue: 1.0, keys.scale)
+        _background = AppStorage(wrappedValue: "none", keys.background)
+        _textColor = AppStorage(wrappedValue: "white", keys.text)
+        _opacity = AppStorage(wrappedValue: 1.0, keys.opacity)
+        _bgOpacity = AppStorage(wrappedValue: 1.0, keys.bgOpacity)
     }
 
     var body: some View {
-        SettingsPage(.card, L("布局、外观和大小，改动会实时显示在右边的预览里")) {
-            Form {
-                Section {
-                    Toggle(L("显示桌面卡片"), isOn: $showCard)
-                }
-                Section {
-                    Toggle(L("显示用量卡片"), isOn: $showStatsCard)
+        Form {
+            Section {
+                Toggle(keys.stats ? L("显示用量卡片") : L("显示额度卡片"), isOn: $show)
+                if keys.stats {
                     Picker(L("统计范围"), selection: $statsRange) {
                         Text(L("今天")).tag("today")
                         Text(L("重置以来")).tag("cycle")
                         Text(L("近 7 天")).tag("7d")
                     }
                     .pickerStyle(.segmented)
-                    .disabled(!showStatsCard)
-                } footer: {
-                    Text(L("用量卡片显示各家的估算成本、请求数和 Tokens，布局和外观跟额度卡片一样"))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Section {
-                    Picker(L("布局"), selection: $layout) {
-                        Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
-                        Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
-                        Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
-                    }
-                    .pickerStyle(.segmented)
-                    PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
-                }
-                .disabled(!anyCard)
-                Section {
-                    Picker(L("背景"), selection: $background) {
-                        Text(L("无")).tag("none")
-                        Text(L("深色毛玻璃")).tag("dark")
-                        Text(L("浅色毛玻璃")).tag("light")
-                    }
-                    PercentSlider(title: L("毛玻璃浓度"), value: $bgOpacity, range: 0.1...1.0, step: 0.05)
-                        .disabled(background == "none")
-                    Picker(L("文字颜色"), selection: $textColor) {
-                        Text(L("白色")).tag("white")
-                        Text(L("黑色")).tag("black")
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .disabled(!anyCard)
-                Section {
-                    PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
+                    .disabled(!show)
+                } else {
                     Picker(L("重置时间"), selection: $resetStyle) {
                         Text(L("不显示")).tag("hidden")
                         Text(L("剩余时间")).tag("relative")
                         Text(L("具体时间")).tag("absolute")
                     }
                     .pickerStyle(.segmented)
-                    .disabled(!showCard)  // 只有额度卡片有重置时间
+                    .disabled(!show)
                 }
-                .disabled(!anyCard)
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-        } side: {
-            SidePanel(L("预览")) {
-                GeometryReader { g in
-                    // 预览底色模拟壁纸：白字配深色，黑字配浅色
-                    let dark = textColor == "white"
-                    let fit = min(1, (g.size.width - 48) / cardSize.width, (g.size.height - 48) / cardSize.height)
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(LinearGradient(colors: dark ? [Color(white: 0.32), Color(white: 0.14)] : [Color(white: 0.92), Color(white: 0.78)],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-                        CardView(model: model)
-                            .allowsHitTesting(false)
-                            .scaleEffect(fit)
-                            // scaleEffect 只缩画面不缩占位，占位也按缩放后的尺寸来，免得撑出预览框
-                            .frame(width: cardSize.width * fit, height: cardSize.height * fit)
-                    }
-                    .opacity(showCard ? 1 : 0.4)
-                }
-                .frame(height: 420)
-                Text(L("拖动桌面上的卡片可以移动位置，右键有更多操作"))
+            } footer: {
+                Text(keys.stats ? L("用量卡片显示各家的估算成本、请求数、Tokens 和缓存命中率")
+                                : L("额度卡片显示各家额度的剩余（或已用）和重置时间"))
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section(L("布局")) {
+                Picker(L("布局"), selection: $layout) {
+                    Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                    Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                    Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                }
+                .pickerStyle(.segmented)
+                PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
+            }
+            .disabled(!show)
+            Section(L("外观")) {
+                Picker(L("背景"), selection: $background) {
+                    Text(L("无")).tag("none")
+                    Text(L("深色毛玻璃")).tag("dark")
+                    Text(L("浅色毛玻璃")).tag("light")
+                }
+                PercentSlider(title: L("毛玻璃浓度"), value: $bgOpacity, range: 0.1...1.0, step: 0.05)
+                    .disabled(background == "none")
+                Picker(L("文字颜色"), selection: $textColor) {
+                    Text(L("白色")).tag("white")
+                    Text(L("黑色")).tag("black")
+                }
+                .pickerStyle(.segmented)
+                PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
+            }
+            .disabled(!show)
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+    }
+}
+
+/// 卡片预览：底色模拟壁纸，卡片按预览框缩放
+struct CardPreview: View {
+    let keys: CardKeys
+    @ObservedObject var model: UsageModel
+    @ObservedObject var stats: StatsStore
+    @AppStorage var show: Bool
+    @AppStorage var layout: String
+    @AppStorage var scale: Double
+    @AppStorage var textColor: String
+
+    init(keys: CardKeys, model: UsageModel, stats: StatsStore) {
+        self.keys = keys
+        self.model = model
+        self.stats = stats
+        _show = AppStorage(wrappedValue: !keys.stats, keys.show)
+        _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
+        _scale = AppStorage(wrappedValue: 1.0, keys.scale)
+        _textColor = AppStorage(wrappedValue: "white", keys.text)
+    }
+
+    /// 卡片实际尺寸：卡片显示着就用桌面上那张的窗口尺寸，否则按布局估算
+    var cardSize: CGSize {
+        let live = keys.stats ? model.statsCardSize : model.cardSize
+        if show, live.width > 0 { return live }
+        let base: CGSize
+        switch (keys.stats, layout) {
+        case (false, "vertical"): base = CGSize(width: 292, height: 295)
+        case (false, "compact"): base = CGSize(width: 273, height: 93)
+        case (false, _): base = CGSize(width: 476, height: 167)
+        case (true, "vertical"): base = CGSize(width: 292, height: 330)
+        case (true, "compact"): base = CGSize(width: 330, height: 93)
+        default: base = CGSize(width: 476, height: 180)
+        }
+        return CGSize(width: base.width * scale, height: base.height * scale)
+    }
+
+    var body: some View {
+        GeometryReader { g in
+            // 白字配深色底，黑字配浅色底
+            let dark = textColor == "white"
+            let size = cardSize
+            let fit = min(1, (g.size.width - 48) / size.width, (g.size.height - 48) / size.height)
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(LinearGradient(colors: dark ? [Color(white: 0.32), Color(white: 0.14)] : [Color(white: 0.92), Color(white: 0.78)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                Group {
+                    if keys.stats { StatsCardView(stats: stats, model: model) } else { CardView(model: model) }
+                }
+                .allowsHitTesting(false)
+                .scaleEffect(fit)
+                // scaleEffect 只缩画面不缩占位，占位也按缩放后的尺寸来，免得撑出预览框
+                .frame(width: size.width * fit, height: size.height * fit)
+            }
+            .opacity(show ? 1 : 0.4)
         }
     }
 }
@@ -1044,24 +1140,22 @@ struct HideSidebarToggle: ViewModifier {
 }
 
 enum MainTab: String, CaseIterable, Identifiable {
-    case stats, general, menuBar, card, data
+    case stats, general, menuBar, card
     var id: String { rawValue }
     var title: String {
         switch self {
         case .stats: return L("用量统计")
         case .general: return L("通用")
-        case .menuBar: return L("额度显示")
-        case .card: return L("桌面卡片")
-        case .data: return L("数据来源")
+        case .menuBar: return L("菜单栏")
+        case .card: return L("卡片")
         }
     }
     var symbol: String {
         switch self {
         case .stats: return "chart.bar.xaxis"
         case .general: return "gearshape"
-        case .menuBar: return "gauge.with.dots.needle.50percent"
+        case .menuBar: return "menubar.rectangle"
         case .card: return "rectangle.on.rectangle"
-        case .data: return "cylinder.split.1x2"
         }
     }
 }
@@ -1090,7 +1184,7 @@ struct MainView: View {
                     row(.stats)
                     Text(L("设置")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .padding(.leading, 10).padding(.top, 14).padding(.bottom, 4)
-                    ForEach([MainTab.general, .menuBar, .card, .data]) { row($0) }
+                    ForEach([MainTab.general, .menuBar, .card]) { row($0) }
                 }
                 .padding(.horizontal, 10).padding(.top, 6)
             }
@@ -1100,10 +1194,9 @@ struct MainView: View {
             Group {
                 switch nav.tab {
                 case .stats: StatsView(store: stats)
-                case .general: GeneralSettings(updater: updater)
-                case .menuBar: LimitsSettings(model: model)
-                case .card: CardSettings(model: model)
-                case .data: DataSettings(model: model, stats: stats)
+                case .general: GeneralSettings(updater: updater, model: model, stats: stats)
+                case .menuBar: MenuBarSettings(model: model)
+                case .card: CardSettings(model: model, stats: stats)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1150,6 +1243,7 @@ final class UsageModel: ObservableObject {
     var onHide: () -> Void = {}
     /// 桌面卡片窗口的当前尺寸（设置页预览按它缩放）
     @Published var cardSize = CGSize.zero
+    @Published var statsCardSize = CGSize.zero
     var onOpen: () -> Void = {}
     var onCardSettings: () -> Void = {}
     // 用量卡片的右键菜单
@@ -1257,7 +1351,7 @@ struct CardView: View {
             Button { model.onOpen() } label: { Label(L("打开 UsageBar…"), systemImage: "macwindow") }
             Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
             Divider()
-            Button { model.onHide() } label: { Label(L("隐藏桌面卡片"), systemImage: "eye.slash") }
+            Button { model.onHide() } label: { Label(L("隐藏额度卡片"), systemImage: "eye.slash") }
         }
     }
 }
@@ -1494,8 +1588,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setStatsCardVisible(_ on: Bool) {
         if on {
-            if statsCard == nil { statsCard = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard",
-                                                         near: card?.isVisible == true ? card : nil) }
+            if statsCard == nil {
+                let w = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard",
+                                   near: card?.isVisible == true ? card : nil)
+                w.onResize = { [weak model] size in if let model, model.statsCardSize != size { model.statsCardSize = size } }
+                statsCard = w
+            }
             statsCard?.orderFront(nil)
         } else {
             statsCard?.orderOut(nil)
@@ -1660,7 +1758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         add(L("立即刷新"), "arrow.clockwise", #selector(refresh), key: "r")
         // 不用勾号：卡片显示时叫「隐藏」，隐藏时叫「显示」，和卡片右键菜单一致
-        add(showCard ? L("隐藏桌面卡片") : L("显示桌面卡片"), showCard ? "eye.slash" : "eye", #selector(toggleCard))
+        add(showCard ? L("隐藏额度卡片") : L("显示额度卡片"), showCard ? "eye.slash" : "eye", #selector(toggleCard))
         add(showStatsCard ? L("隐藏用量卡片") : L("显示用量卡片"), "chart.bar", #selector(toggleStatsCard))
         if case .available(let v) = updater.state {
             add(L("有新版本 %@…", v), "arrow.down.circle", #selector(openUpdate))

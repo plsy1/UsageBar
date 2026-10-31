@@ -1364,19 +1364,19 @@ struct RequestDetail: View {
 // MARK: - 用量卡片
 
 /// 桌面上的用量卡片：各家在所选范围内的估算成本、请求数、Tokens、缓存命中率。
-/// 布局、背景、文字颜色、大小、不透明度都跟额度卡片共用，两张放在一起风格一致
+/// 布局和外观有自己的一套设置（一开始沿用额度卡片的）
 struct StatsCardView: View {
     @ObservedObject var stats: StatsStore
     let model: UsageModel
-    @AppStorage(Pref.background) var background = "none"
-    @AppStorage(Pref.textColor) var textColor = "white"
-    @AppStorage(Pref.scale) var scale = 1.0
-    @AppStorage(Pref.opacity) var opacity = 1.0
-    @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
+    @AppStorage(Pref.statsCardBackground) var background = "none"
+    @AppStorage(Pref.statsCardText) var textColor = "white"
+    @AppStorage(Pref.statsCardScale) var scale = 1.0
+    @AppStorage(Pref.statsCardOpacity) var opacity = 1.0
+    @AppStorage(Pref.statsCardBgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
-    @AppStorage(Pref.cardLayout) var layout = "horizontal"
+    @AppStorage(Pref.statsCardLayout) var layout = "horizontal"
     @AppStorage(Pref.statsCardRange) var range = "today"
 
     var s: CGFloat { CGFloat(scale) }
