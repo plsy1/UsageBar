@@ -321,6 +321,8 @@ struct StatsView: View {
     static let pageSize = 50
     @State var showRange = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
+    @AppStorage("statsChartColor") var chartColor = "pink"
+    @State var showColors = false
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -476,22 +478,43 @@ struct StatsView: View {
                     Image(systemName: "chart.bar").help(L("柱状图")).tag("bar")
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
+                // 图表颜色：点开一排色块
+                Button { showColors.toggle() } label: {
+                    Circle().fill(ChartColor.color(chartColor)).frame(width: 14, height: 14)
+                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.2)))
+                        .padding(4)
+                }
+                .help(L("图表颜色"))
+                .popover(isPresented: $showColors, arrowEdge: .bottom) {
+                    HStack(spacing: 10) {
+                        ForEach(ChartColor.all, id: \.key) { c in
+                            Button { chartColor = c.key; showColors = false } label: {
+                                Circle().fill(c.color).frame(width: 20, height: 20)
+                                    .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.8 : 0), lineWidth: 2).padding(-3))
+                            }
+                            .buttonStyle(.plain)
+                            .help(L(c.name))
+                        }
+                    }
+                    .padding(14)
+                }
             }
             if store.loading && store.all.isEmpty {
                 Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 170)
             } else {
                 Chart(buckets(rows)) { b in
+                    let c = ChartColor.color(chartColor)
                     if chartStyle == "bar" {
                         BarMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                            .foregroundStyle(Color.primary.opacity(0.55))
+                            .foregroundStyle(c.opacity(0.8))
                             .cornerRadius(2)
                     } else {
                         AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                            .foregroundStyle(Color.primary.opacity(0.08))
+                            .foregroundStyle(LinearGradient(colors: [c.opacity(0.28), c.opacity(0.03)], startPoint: .top, endPoint: .bottom))
                             .interpolationMethod(.monotone)
                         LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                            .foregroundStyle(Color.primary.opacity(0.75))
+                            .foregroundStyle(c)
                             .interpolationMethod(.monotone)
                     }
                 }
@@ -718,6 +741,15 @@ struct RangePopover: View {
         rangeRaw = StatsRange.custom.rawValue
         isPresented = false
     }
+}
+
+/// 统计图可选的颜色（系统色，深浅色模式下自动调整）
+enum ChartColor {
+    static let all: [(key: String, name: String, color: Color)] = [
+        ("pink", "粉色", .pink), ("purple", "紫色", .purple), ("blue", "蓝色", .blue), ("teal", "青色", .teal),
+        ("green", "绿色", .green), ("orange", "橙色", .orange), ("gray", "灰色", .gray),
+    ]
+    static func color(_ key: String) -> Color { all.first { $0.key == key }?.color ?? .pink }
 }
 
 /// 统计窗口里的圆角面板

@@ -163,7 +163,15 @@ enum I18n {
         "名称": ("表示名", "Labels"),
         "简写（Cc / Cx）": ("略称（Cc / Cx）", "Short (Cc / Cx)"),
         "全名（Claude / Codex）": ("フルネーム（Claude / Codex）", "Full (Claude / Codex)"),
-        "显示内容（卡片和菜单栏）": ("表示する項目（カードとメニューバー）", "Show (Card and Menu Bar)"),
+        "显示（卡片和菜单栏）": ("表示（カードとメニューバー）", "Display (Card and Menu Bar)"),
+        "图表颜色": ("グラフの色", "Chart Color"),
+        "粉色": ("ピンク", "Pink"),
+        "紫色": ("パープル", "Purple"),
+        "蓝色": ("ブルー", "Blue"),
+        "青色": ("ティール", "Teal"),
+        "绿色": ("グリーン", "Green"),
+        "橙色": ("オレンジ", "Orange"),
+        "灰色": ("グレー", "Gray"),
         "刷新": ("更新", "Refresh"),
         "额度": ("上限", "Limits"),
         "用量统计（后台增量更新）": ("使用量の統計（バックグラウンドで差分更新）", "Usage statistics (updated in the background)"),
@@ -537,11 +545,15 @@ struct GeneralSettings: View {
                         Text("日本語").tag("ja")
                         Text("English").tag("en")
                     }
+                }
+                Section(L("显示（卡片和菜单栏）")) {
                     Picker(L("显示数值"), selection: $displayMode) {
                         Text(L("剩余")).tag("remaining")
                         Text(L("已使用")).tag("used")
                     }
                     .pickerStyle(.segmented)
+                    Toggle("Claude", isOn: $showClaude)
+                    Toggle("Codex", isOn: $showCodex)
                 }
                 Section(L("刷新")) {
                     Picker(L("额度"), selection: $refreshMinutes) {
@@ -550,10 +562,6 @@ struct GeneralSettings: View {
                     Picker(L("用量统计（后台增量更新）"), selection: $statsRefreshMinutes) {
                         ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                     }
-                }
-                Section(L("显示内容（卡片和菜单栏）")) {
-                    Toggle("Claude", isOn: $showClaude)
-                    Toggle("Codex", isOn: $showCodex)
                 }
             }
             .formStyle(.grouped)
