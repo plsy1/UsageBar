@@ -512,6 +512,14 @@ struct StatsView: View {
     @State var selected: UsageRecord?
     /// 请求明细可用的宽度：列多了放不下时改成左右滚动
     @State var tableWidth: CGFloat = 0
+    /// 请求明细的列顺序和列宽（拖表头调整），逗号分隔：time,app,… / app:64,model:220
+    @AppStorage("statsColumnOrder") var columnOrder = ""
+    @AppStorage("statsColumnWidths") var columnWidths = ""
+    /// 正在拖的分隔线：拖动中的宽度先放这里，松手再存
+    @State var liveWidths: [LogColumn: CGFloat] = [:]
+    @State var resizeBase: CGFloat?
+    /// 正在拖着换位置的表头和拖了多远
+    @State var reorder: (column: LogColumn, dx: CGFloat)?
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -873,7 +881,105 @@ struct StatsView: View {
         }
     }
 
-    var hidden: Set<LogColumn> { Set(hiddenColumns.split(separator: ",").compactMap { LogColumn(rawValue: String($0)) }) }
+    var hidden: Set<LogColumn> {
+        Set(hiddenColumns.split(separator: ",").compactMap { LogColumn(rawValue: String($0)) }).subtracting([.time])
+    }
+
+    // MARK: 列的顺序和宽度
+
+    /// 存下的顺序，之后新加的列补在后面
+    var orderedColumns: [LogColumn] {
+        var list = columnOrder.split(separator: ",").compactMap { LogColumn(rawValue: String($0)) }
+        for c in LogColumn.allCases where !list.contains(c) { list.append(c) }
+        return list
+    }
+
+    var savedWidths: [LogColumn: CGFloat] {
+        let pairs = columnWidths.split(separator: ",").compactMap { kv -> (LogColumn, CGFloat)? in
+            let p = kv.split(separator: ":")
+            guard p.count == 2, let c = LogColumn(rawValue: String(p[0])), let w = Double(p[1]) else { return nil }
+            return (c, CGFloat(w))
+        }
+        return Dictionary(pairs, uniquingKeysWith: { $1 })
+    }
+
+    /// nil：占满剩余宽度（模型那一列，除非拖过）
+    func width(_ c: LogColumn, saved: [LogColumn: CGFloat]) -> CGFloat? {
+        liveWidths[c] ?? saved[c] ?? c.defaultWidth(today: range == .today)
+    }
+
+    func moveColumn(_ from: LogColumn, to target: LogColumn) {
+        var list = orderedColumns
+        guard let i = list.firstIndex(of: from), let j = list.firstIndex(of: target) else { return }
+        list.move(fromOffsets: [i], toOffset: j > i ? j + 1 : j)
+        columnOrder = list.map(\.rawValue).joined(separator: ",")
+    }
+
+    /// 表头：按住拖到别的列上换位置；拖右边的分隔线调宽度
+    func logHeader(_ cols: [LogColumn], saved: [LogColumn: CGFloat], flex: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ForEach(cols, id: \.self) { c in
+                let w = width(c, saved: saved)
+                Text(c.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    .padding(.trailing, 10)
+                    .frame(width: w, alignment: .leading)
+                    .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
+                    .frame(height: 38)
+                    .contentShape(Rectangle())
+                    .overlay(alignment: .trailing) { resizeHandle(c, current: w ?? flex, saved: saved) }
+                    // 拖着的表头跟着鼠标走，松手时按落点换位置
+                    .background(reorder?.column == c ? Color.primary.opacity(0.08) : .clear)
+                    .offset(x: reorder?.column == c ? reorder?.dx ?? 0 : 0)
+                    .zIndex(reorder?.column == c ? 1 : 0)
+                    .gesture(DragGesture(minimumDistance: 4)
+                        .onChanged { v in reorder = (c, v.translation.width) }
+                        .onEnded { v in
+                            reorder = nil
+                            let ws = cols.map { width($0, saved: saved) ?? flex }
+                            guard let i = cols.firstIndex(of: c) else { return }
+                            let center = ws[..<i].reduce(0, +) + ws[i] / 2 + v.translation.width
+                            var x: CGFloat = 0, j = cols.count - 1
+                            for (k, wk) in ws.enumerated() {
+                                if center < x + wk { j = k; break }
+                                x += wk
+                            }
+                            if j != i { moveColumn(c, to: cols[j]) }
+                        })
+            }
+        }
+        .padding(.horizontal, 20)
+        // 列都拖成固定宽度后不够宽：靠左放，底色铺满
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035))
+        .help(L("拖动表头换顺序，拖动分隔线调整宽度"))
+    }
+
+    func resizeHandle(_ c: LogColumn, current: CGFloat, saved: [LogColumn: CGFloat]) -> some View {
+        // 线在这一列的右边缘，可抓的范围往里多留几像素（不伸进右边那列，免得和拖表头换位置抢）
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1, height: 16)
+        }
+        .frame(width: 8, height: 38)
+            .contentShape(Rectangle())
+            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+            .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { v in
+                    let base = resizeBase ?? current
+                    resizeBase = base
+                    liveWidths[c] = max(c.minWidth, (base + v.translation.width).rounded())
+                }
+                .onEnded { _ in
+                    if let w = liveWidths[c] {
+                        var d = saved
+                        d[c] = w
+                        columnWidths = LogColumn.allCases.compactMap { k in d[k].map { "\(k.rawValue):\(Int($0))" } }
+                            .joined(separator: ",")
+                    }
+                    liveWidths[c] = nil
+                    resizeBase = nil
+                })
+    }
 
     /// 按状态码筛选（ccswitch 那样）：只列出这段时间里出现过的状态码
     func statusMenu(_ rows: [UsageRecord]) -> some View {
@@ -893,7 +999,7 @@ struct StatsView: View {
     /// 显示哪些列
     var columnMenu: some View {
         Menu {
-            ForEach(LogColumn.allCases, id: \.self) { c in
+            ForEach(LogColumn.allCases.filter { $0 != .time }, id: \.self) { c in
                 Button {
                     var h = hidden
                     if h.contains(c) { h.remove(c) } else { h.insert(c) }
@@ -901,7 +1007,7 @@ struct StatsView: View {
                 } label: { check(!hidden.contains(c), c.title) }
             }
             Divider()
-            Button(L("恢复默认")) { hiddenColumns = "" }
+            Button(L("恢复默认")) { hiddenColumns = ""; columnOrder = ""; columnWidths = "" }
         } label: {
             Image(systemName: "rectangle.split.3x1")
         }
@@ -920,16 +1026,18 @@ struct StatsView: View {
         let current = min(page, pages - 1)  // 数据变少时别停在不存在的页
         let f = DateFormatter()
         f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
-        let shown = LogColumn.allCases.filter { !hidden.contains($0) }
-        let cols: [Column] = [(L("时间"), range == .today ? 80 : 118)] + shown.map { ($0.title, $0.width) }
+        let cols = orderedColumns.filter { !hidden.contains($0) }
+        let saved = savedWidths
         // 列多了放不下就左右滚动；放得下时模型那一列占满剩余宽度
-        let needed = cols.reduce(40) { $0 + ($1.width ?? 170) }
+        let fixed = cols.reduce(40) { $0 + (width($1, saved: saved) ?? 0) }
+        let needed = fixed + (cols.contains { width($0, saved: saved) == nil } ? 170 : 0)
+        let flex = max(170, tableWidth - fixed)  // 占满剩余宽度那一列现在的实际宽度
         let table = LazyVStack(spacing: 0) {
-            headerRow(cols)
+            logHeader(cols, saved: saved, flex: flex)
             if rows.isEmpty { emptyRow() }
             ForEach(rows[min(rows.count, current * size)..<min(rows.count, (current + 1) * size)]) { r in
                 Divider()
-                logRow(r, time: f.string(from: r.time), cols: cols, shown: shown)
+                logRow(r, time: f.string(from: r.time), cols: cols, saved: saved)
             }
         }
         return VStack(spacing: 0) {
@@ -957,19 +1065,20 @@ struct StatsView: View {
     }
 
     /// 请求明细的一行：点一下看详情
-    func logRow(_ r: UsageRecord, time: String, cols: [Column], shown: [LogColumn]) -> some View {
+    func logRow(_ r: UsageRecord, time: String, cols: [LogColumn], saved: [LogColumn: CGFloat]) -> some View {
         HStack(spacing: 0) {
-            ForEach(Array(cols.enumerated()), id: \.offset) { i, c in
-                Group {
-                    if i == 0 { Text(time) } else { shown[i - 1].cell(r) }
-                }
-                .lineLimit(1)
-                .frame(width: c.width, alignment: .leading)
-                .frame(minWidth: c.width == nil ? 170 : nil, maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
+            ForEach(cols, id: \.self) { c in
+                let w = width(c, saved: saved)
+                c.cell(r, time: time)
+                    .lineLimit(1)
+                    .padding(.trailing, 10)
+                    .frame(width: w, alignment: .leading)
+                    .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
             }
         }
         .font(.body.monospacedDigit())
         .padding(.horizontal, 20).frame(height: 42)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(selected?.id == r.id ? ChartColor.color(chartColor).opacity(0.12) : .clear)
         .contentShape(Rectangle())
         .onTapGesture { selected = r }
@@ -979,10 +1088,11 @@ struct StatsView: View {
 // MARK: - 请求明细的列
 
 enum LogColumn: String, CaseIterable {
-    case app, model, cost, input, output, cacheRead, cacheWrite, hitRate, speed, firstToken, duration, status
+    case time, app, model, cost, input, output, cacheRead, cacheWrite, hitRate, speed, firstToken, duration, status
 
     var title: String {
         switch self {
+        case .time: return L("时间")
         case .app: return L("应用")
         case .model: return L("模型")
         case .cost: return L("成本")
@@ -998,9 +1108,10 @@ enum LogColumn: String, CaseIterable {
         }
     }
 
-    /// nil：占满剩余宽度
-    var width: CGFloat? {
+    /// 默认宽度；nil：占满剩余宽度。今天的时间只有时分秒，跨天的范围要带日期
+    func defaultWidth(today: Bool) -> CGFloat? {
         switch self {
+        case .time: return today ? 80 : 118
         case .app: return 64
         case .model: return nil
         case .cost: return 84
@@ -1014,8 +1125,12 @@ enum LogColumn: String, CaseIterable {
         }
     }
 
-    @ViewBuilder func cell(_ r: UsageRecord) -> some View {
+    /// 拖窄的下限
+    var minWidth: CGFloat { self == .model ? 100 : 44 }
+
+    @ViewBuilder func cell(_ r: UsageRecord, time: String) -> some View {
         switch self {
+        case .time: Text(time)
         case .app: Text(r.source.rawValue)
         case .model: Text(r.model).font(.system(.body, design: .monospaced))
         case .cost: Text(r.failed ? "—" : money(r.cost, digits: 4))

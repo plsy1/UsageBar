@@ -148,6 +148,7 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "拖动表头换顺序，拖动分隔线调整宽度": ("見出しをドラッグで並べ替え、区切り線をドラッグで幅を調整", "Drag a header to reorder; drag a divider to resize"),
         "成功率": ("成功率", "Success"),
         "显示用量卡片": ("使用量カードを表示", "Show Usage Card"),
         "隐藏用量卡片": ("使用量カードを隠す", "Hide Usage Card"),
@@ -1568,7 +1569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.titlebarSeparatorStyle = .none
-            w.isMovableByWindowBackground = true  // 标题栏透明后，空白处也能拖动窗口
+            // 不开「拖背景移动窗口」：开了的话表头上拖列宽、拖顺序都会变成拖整个窗口；窗口靠顶上的标题栏区域拖
             w.isReleasedWhenClosed = false
             // 固定 16:10 的宽屏比例，拖动缩放时保持形状
             w.contentAspectRatio = NSSize(width: 16, height: 10)
