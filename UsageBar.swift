@@ -25,6 +25,85 @@ struct ProviderUsage {
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
 }
 
+// MARK: - 多语言（中文 / 日本語 / English）
+
+/// 中文原文就是 key；表里是对应的日文和英文
+enum I18n {
+    static let table: [String: (ja: String, en: String)] = [
+        // 额度名称
+        "5 小时": ("5時間", "5 hours"),
+        "本周": ("今週", "Weekly"),
+        "本周 Opus": ("今週 Opus", "Weekly Opus"),
+        "本周 Sonnet": ("今週 Sonnet", "Weekly Sonnet"),
+        "%d 小时": ("%d時間", "%d hours"),
+        "%d 天": ("%d日", "%d days"),
+        // 错误和提示
+        "在终端运行 claude auth login 登录一次": ("ターミナルで claude auth login を実行してログインしてください", "run claude auth login in Terminal"),
+        "读不到 Claude Code 登录信息 · %@": ("Claude Code のログイン情報が見つかりません · %@", "No Claude Code login found · %@"),
+        "Claude Code 登录已失效 · %@": ("Claude Code のログインが期限切れです · %@", "Claude Code login expired · %@"),
+        "请求失败（HTTP %d）": ("リクエスト失敗（HTTP %d）", "Request failed (HTTP %d)"),
+        "登录过期，显示本地缓存（打开 Codex 会自动刷新）": ("ログイン期限切れのためローカルキャッシュを表示（Codex を開くと更新されます）", "Login expired, showing local cache (opening Codex refreshes it)"),
+        "接口请求失败（HTTP %d），显示本地缓存": ("API リクエスト失敗（HTTP %d）、ローカルキャッシュを表示", "API request failed (HTTP %d), showing local cache"),
+        "本地缓存": ("ローカルキャッシュ", "Local cache"),
+        "%@ · 数据时间 %@": ("%@ · データ時刻 %@", "%@ · data from %@"),
+        "读不到 Codex 登录信息或会话记录": ("Codex のログイン情報またはセッション記録が見つかりません", "No Codex login or session history found"),
+        // 重置时间
+        "%d天%d小时": ("%d日%d時間", "%dd %dh"),
+        "%d小时%d分": ("%d時間%d分", "%dh %dm"),
+        "%d分钟": ("%d分", "%dm"),
+        "%@后重置（%@）": ("%@後にリセット（%@）", "resets in %@ (%@)"),
+        // 卡片和菜单
+        "剩 %d%%": ("残り %d%%", "%d%% left"),
+        "正在获取用量…": ("使用量を取得中…", "Fetching usage…"),
+        "更新于 %@": ("更新 %@", "Updated %@"),
+        "正在刷新…": ("更新中…", "Refreshing…"),
+        "更新于 %@ · 每 %d 分钟自动刷新": ("更新 %@ · %d 分ごとに自動更新", "Updated %@ · auto-refresh every %d min"),
+        "立即刷新": ("今すぐ更新", "Refresh Now"),
+        "设置…": ("設定…", "Settings…"),
+        "隐藏桌面卡片": ("デスクトップカードを隠す", "Hide Desktop Card"),
+        "显示桌面卡片": ("デスクトップカードを表示", "Show Desktop Card"),
+        "退出": ("終了", "Quit"),
+        // 设置窗口
+        "UsageBar 设置": ("UsageBar 設定", "UsageBar Settings"),
+        "语言": ("言語", "Language"),
+        "跟随系统": ("システムに合わせる", "System"),
+        "桌面卡片": ("デスクトップカード", "Desktop Card"),
+        "背景": ("背景", "Background"),
+        "无": ("なし", "None"),
+        "深色毛玻璃": ("すりガラス（ダーク）", "Frosted (Dark)"),
+        "浅色毛玻璃": ("すりガラス（ライト）", "Frosted (Light)"),
+        "文字颜色": ("文字色", "Text Color"),
+        "白色": ("白", "White"),
+        "黑色": ("黒", "Black"),
+        "毛玻璃浓度": ("すりガラスの濃さ", "Frosted Strength"),
+        "大小": ("サイズ", "Size"),
+        "整体不透明度": ("全体の不透明度", "Overall Opacity"),
+        "显示重置时间": ("リセット時刻を表示", "Show Reset Time"),
+        "菜单栏": ("メニューバー", "Menu Bar"),
+        "名称": ("表示名", "Labels"),
+        "简写（Cc / Cx）": ("略称（Cc / Cx）", "Short (Cc / Cx)"),
+        "全名（Claude / Codex）": ("フルネーム（Claude / Codex）", "Full (Claude / Codex)"),
+        "显示内容（卡片和菜单栏）": ("表示する項目（カードとメニューバー）", "Show (Card and Menu Bar)"),
+        "刷新": ("更新", "Refresh"),
+        "自动刷新间隔": ("自動更新の間隔", "Auto-Refresh Interval"),
+        "%d 分钟": ("%d 分", "%d min"),
+    ]
+
+    /// 当前语言：zh / ja / en；"跟随系统" 时按系统首选语言，非中日一律英文
+    static var lang: String {
+        let p = UserDefaults.standard.string(forKey: Pref.language) ?? "auto"
+        if p != "auto" { return p }
+        let sys = Locale.preferredLanguages.first ?? "en"
+        return sys.hasPrefix("zh") ? "zh" : sys.hasPrefix("ja") ? "ja" : "en"
+    }
+}
+
+func L(_ zh: String, _ args: CVarArg...) -> String {
+    let lang = I18n.lang
+    let fmt = lang == "zh" ? zh : I18n.table[zh].map { lang == "ja" ? $0.ja : $0.en } ?? zh
+    return args.isEmpty ? fmt : String(format: fmt, arguments: args)
+}
+
 // MARK: - 工具函数
 
 @discardableResult
@@ -105,9 +184,9 @@ enum Claude {
 
     static func fetch() async -> ProviderUsage {
         var u = ProviderUsage(name: "Claude")
-        let loginHint = "在终端运行 claude auth login 登录一次"
+        let loginHint = L("在终端运行 claude auth login 登录一次")
         guard var creds = readCreds(), let oauth = creds["claudeAiOauth"] as? [String: Any] else {
-            u.error = "读不到 Claude Code 登录信息 · \(loginHint)"; return u
+            u.error = L("读不到 Claude Code 登录信息 · %@", loginHint); return u
         }
         u.plan = oauth["subscriptionType"] as? String
 
@@ -115,7 +194,7 @@ enum Claude {
         var refreshed = false
         if expiresAt < Date().timeIntervalSince1970 + 60 {
             refreshed = await refresh(&creds)
-            if !refreshed { u.error = "Claude Code 登录已失效 · \(loginHint)"; return u }
+            if !refreshed { u.error = L("Claude Code 登录已失效 · %@", loginHint); return u }
         }
 
         for attempt in 0..<2 {
@@ -127,14 +206,14 @@ enum Claude {
             let (status, json) = await httpJSON(req)
             if status == 401, attempt == 0, !refreshed, await refresh(&creds) { refreshed = true; continue }
             guard status == 200, let json else {
-                u.error = status == 401 ? "Claude Code 登录已失效 · \(loginHint)"
-                                        : "请求失败（HTTP \(status)）"
+                u.error = status == 401 ? L("Claude Code 登录已失效 · %@", loginHint)
+                                        : L("请求失败（HTTP %d）", status)
                 return u
             }
             let keys = order.filter { json[$0] != nil } + json.keys.filter { !order.contains($0) }.sorted()
             for key in keys {
                 guard let w = json[key] as? [String: Any], let util = w["utilization"] as? Double else { continue }
-                u.windows.append(LimitWindow(label: labels[key] ?? key, usedPercent: util,
+                u.windows.append(LimitWindow(label: labels[key].map { L($0) } ?? key, usedPercent: util,
                                              resetsAt: (w["resets_at"] as? String).flatMap(parseISODate)))
             }
             return u
@@ -150,9 +229,9 @@ enum Codex {
 
     static func windowLabel(seconds: Double) -> String {
         switch seconds {
-        case ..<(6 * 3600): return "\(Int(seconds / 3600)) 小时"
-        case (6 * 86400)...(8 * 86400): return "本周"
-        default: return "\(Int(seconds / 86400)) 天"
+        case ..<(6 * 3600): return L("%d 小时", Int(seconds / 3600))
+        case (6 * 86400)...(8 * 86400): return L("本周")
+        default: return L("%d 天", Int(seconds / 86400))
         }
     }
 
@@ -178,8 +257,8 @@ enum Codex {
                 }
                 return u
             }
-            u.note = status == 401 ? "登录过期，显示本地缓存（打开 Codex 会自动刷新）"
-                                   : "接口请求失败（HTTP \(status)），显示本地缓存"
+            u.note = status == 401 ? L("登录过期，显示本地缓存（打开 Codex 会自动刷新）")
+                                   : L("接口请求失败（HTTP %d），显示本地缓存", status)
         }
         // 退回：最近一次会话日志里的 rate_limits
         if let (rl, mtime) = latestLocalRateLimits() {
@@ -193,9 +272,9 @@ enum Codex {
                                              usedPercent: expired ? 0 : used, resetsAt: expired ? nil : reset))
             }
             let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
-            u.note = (u.note ?? "本地缓存") + " · 数据时间 \(f.string(from: mtime))"
+            u.note = L("%@ · 数据时间 %@", u.note ?? L("本地缓存"), f.string(from: mtime))
         } else if u.windows.isEmpty {
-            u.error = "读不到 Codex 登录信息或会话记录"
+            u.error = L("读不到 Codex 登录信息或会话记录")
         }
         return u
     }
@@ -233,9 +312,9 @@ func resetText(_ d: Date?) -> String {
     guard let d else { return "" }
     let s = max(0, d.timeIntervalSinceNow)
     let days = Int(s) / 86400, hours = Int(s) % 86400 / 3600, mins = Int(s) % 3600 / 60
-    let rel = days > 0 ? "\(days)天\(hours)小时" : hours > 0 ? "\(hours)小时\(mins)分" : "\(mins)分钟"
+    let rel = days > 0 ? L("%d天%d小时", days, hours) : hours > 0 ? L("%d小时%d分", hours, mins) : L("%d分钟", mins)
     let f = DateFormatter(); f.dateFormat = days > 0 ? "M/d HH:mm" : "HH:mm"
-    return "\(rel)后重置（\(f.string(from: d))）"
+    return L("%@后重置（%@）", rel, f.string(from: d))
 }
 
 // MARK: - 设置
@@ -252,11 +331,12 @@ enum Pref {
     static let showCodex = "showCodex"
     static let refreshMinutes = "refreshMinutes"
     static let menuLabel = "menuLabel"         // short / full
+    static let language = "language"           // auto / zh / ja / en
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short",
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short", language: "auto",
         ])
     }
     static func visible(_ name: String) -> Bool {
@@ -276,48 +356,55 @@ struct SettingsView: View {
     @AppStorage(Pref.showCodex) var showCodex = true
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
+    @AppStorage(Pref.language) var language = "auto"
 
     var body: some View {
         Form {
-            Section("桌面卡片") {
-                Toggle("显示桌面卡片", isOn: $showCard)
-                Picker("背景", selection: $background) {
-                    Text("无").tag("none")
-                    Text("深色毛玻璃").tag("dark")
-                    Text("浅色毛玻璃").tag("light")
+            Picker(L("语言"), selection: $language) {
+                Text(L("跟随系统")).tag("auto")
+                Text("中文").tag("zh")
+                Text("日本語").tag("ja")
+                Text("English").tag("en")
+            }
+            Section(L("桌面卡片")) {
+                Toggle(L("显示桌面卡片"), isOn: $showCard)
+                Picker(L("背景"), selection: $background) {
+                    Text(L("无")).tag("none")
+                    Text(L("深色毛玻璃")).tag("dark")
+                    Text(L("浅色毛玻璃")).tag("light")
                 }
-                Picker("文字颜色", selection: $textColor) {
-                    Text("白色").tag("white")
-                    Text("黑色").tag("black")
+                Picker(L("文字颜色"), selection: $textColor) {
+                    Text(L("白色")).tag("white")
+                    Text(L("黑色")).tag("black")
                 }
-                LabeledContent("毛玻璃浓度") {
+                LabeledContent(L("毛玻璃浓度")) {
                     Slider(value: $bgOpacity, in: 0.1...1.0, step: 0.05) { EmptyView() }
                     Text("\(Int((bgOpacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
                 }
                 .disabled(background == "none")
-                LabeledContent("大小") {
+                LabeledContent(L("大小")) {
                     Slider(value: $scale, in: 0.8...1.6, step: 0.1) { EmptyView() }
                     Text("\(Int((scale * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
                 }
-                LabeledContent("整体不透明度") {
+                LabeledContent(L("整体不透明度")) {
                     Slider(value: $opacity, in: 0.3...1.0, step: 0.05) { EmptyView() }
                     Text("\(Int((opacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
                 }
-                Toggle("显示重置时间", isOn: $showReset)
+                Toggle(L("显示重置时间"), isOn: $showReset)
             }
-            Section("菜单栏") {
-                Picker("名称", selection: $menuLabel) {
-                    Text("简写（Cc / Cx）").tag("short")
-                    Text("全名（Claude / Codex）").tag("full")
+            Section(L("菜单栏")) {
+                Picker(L("名称"), selection: $menuLabel) {
+                    Text(L("简写（Cc / Cx）")).tag("short")
+                    Text(L("全名（Claude / Codex）")).tag("full")
                 }
             }
-            Section("显示内容（卡片和菜单栏）") {
+            Section(L("显示内容（卡片和菜单栏）")) {
                 Toggle("Claude", isOn: $showClaude)
                 Toggle("Codex", isOn: $showCodex)
             }
-            Section("刷新") {
-                Picker("自动刷新间隔", selection: $refreshMinutes) {
-                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text("\($0) 分钟").tag($0) }
+            Section(L("刷新")) {
+                Picker(L("自动刷新间隔"), selection: $refreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                 }
             }
         }
@@ -361,7 +448,7 @@ struct UsageRow: View {
             HStack {
                 Text(w.label).font(.system(size: 12 * s))
                 Spacer()
-                Text("剩 \(Int(w.remaining.rounded()))%")
+                Text(L("剩 %d%%", Int(w.remaining.rounded())))
                     .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
             }
             GeometryReader { g in
@@ -388,14 +475,16 @@ struct CardView: View {
     @AppStorage(Pref.showReset) var showReset = true
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.language) var language = "auto"
 
     var body: some View {
+        let _ = language  // 切换语言时重绘
         let s = CGFloat(scale)
         let white = textColor == "white"
         let shown = model.results.filter { $0.name == "Claude" ? showClaude : showCodex }
         VStack(alignment: .leading, spacing: 14 * s) {
             if model.results.isEmpty {
-                Text("正在获取用量…").font(.system(size: 12 * s)).foregroundStyle(.secondary)
+                Text(L("正在获取用量…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             }
             ForEach(shown, id: \.name) { u in
                 VStack(alignment: .leading, spacing: 8 * s) {
@@ -417,7 +506,7 @@ struct CardView: View {
                 }
             }
             if let t = model.lastUpdate {
-                Text("更新于 \(t.formatted(date: .omitted, time: .shortened))")
+                Text(L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
                     .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
@@ -435,9 +524,9 @@ struct CardView: View {
         }
         .opacity(opacity)
         .contextMenu {
-            Button("立即刷新") { model.onRefresh() }
-            Button("设置…") { model.onSettings() }
-            Button("隐藏桌面卡片") { model.onHide() }
+            Button(L("立即刷新")) { model.onRefresh() }
+            Button(L("设置…")) { model.onSettings() }
+            Button(L("隐藏桌面卡片")) { model.onHide() }
         }
     }
 }
@@ -485,6 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var timerMinutes = 0
     var settingsWindow: NSWindow?
+    var lastLang = ""
     var showCard: Bool {
         get { UserDefaults.standard.bool(forKey: Pref.showCard) }
         set { UserDefaults.standard.set(newValue, forKey: Pref.showCard) }
@@ -492,6 +582,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         Pref.register()
+        lastLang = I18n.lang
         item.button?.title = "Cc …  Cx …"
         model.onRefresh = { [weak self] in self?.refresh() }
         model.onHide = { [weak self] in self?.toggleCard() }
@@ -551,6 +642,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func syncPrefs() {
         if UserDefaults.standard.integer(forKey: Pref.refreshMinutes) != timerMinutes { scheduleTimer() }
         if (card?.isVisible ?? false) != showCard { setCardVisible(showCard) }
+        if I18n.lang != lastLang {
+            // 错误提示、额度名称是取数时生成的，换语言后重新取一次
+            lastLang = I18n.lang
+            settingsWindow?.title = L("UsageBar 设置")
+            refresh()
+        }
         updateTitle()
         rebuildMenu()
     }
@@ -558,7 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openSettings() {
         if settingsWindow == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
-            w.title = "UsageBar 设置"
+            w.title = L("UsageBar 设置")
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
             w.center()
@@ -614,7 +711,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                      attributes: [.font: mono])
                 line.append(NSAttributedString(string: bar(w.remaining),
                                                attributes: [.font: mono]))
-                line.append(NSAttributedString(string: String(format: " 剩 %3d%%", Int(w.remaining.rounded())),
+                line.append(NSAttributedString(string: " " + L("剩 %d%%", Int(w.remaining.rounded())),
                                                attributes: [.font: mono]))
                 info(line)
                 if w.resetsAt != nil {
@@ -629,22 +726,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let status: String
-        if loading { status = "正在刷新…" }
+        if loading { status = L("正在刷新…") }
         else if let t = lastUpdate {
             let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-            status = "更新于 \(f.string(from: t)) · 每 \(timerMinutes) 分钟自动刷新"
+            status = L("更新于 %@ · 每 %d 分钟自动刷新", f.string(from: t), timerMinutes)
         } else { status = "" }
         if !status.isEmpty { info(NSAttributedString(string: status, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor])) }
 
-        let r = NSMenuItem(title: "立即刷新", action: #selector(refresh), keyEquivalent: "r"); r.target = self
+        let r = NSMenuItem(title: L("立即刷新"), action: #selector(refresh), keyEquivalent: "r"); r.target = self
         menu.addItem(r)
-        let c = NSMenuItem(title: "显示桌面卡片", action: #selector(toggleCard), keyEquivalent: "")
+        let c = NSMenuItem(title: L("显示桌面卡片"), action: #selector(toggleCard), keyEquivalent: "")
         c.target = self
         c.state = showCard ? .on : .off
         menu.addItem(c)
-        let st = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ","); st.target = self
+        let st = NSMenuItem(title: L("设置…"), action: #selector(openSettings), keyEquivalent: ","); st.target = self
         menu.addItem(st)
-        let q = NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let q = NSMenuItem(title: L("退出"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(q)
         item.menu = menu
     }
@@ -658,7 +755,7 @@ if CommandLine.arguments.contains("--print") {
             print("\(u.name)\(u.plan.map { " (\($0))" } ?? "")")
             if let e = u.error { print("  ⚠︎ \(e)") }
             for w in u.windows {
-                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.remaining)) 剩 \(Int(w.remaining.rounded()))%  \(resetText(w.resetsAt))")
+                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.remaining)) \(L("剩 %d%%", Int(w.remaining.rounded())))  \(resetText(w.resetsAt))")
             }
             if let n = u.note { print("  ⓘ \(n)") }
         }
