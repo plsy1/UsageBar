@@ -330,6 +330,8 @@ final class CardWindow: NSWindow {
         let host = NSHostingController(rootView: CardView(model: model))
         host.sizingOptions = .preferredContentSize
         contentViewController = host
+        // 固定深色外观：文字始终是白色，和菜单栏一致
+        appearance = NSAppearance(named: .darkAqua)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
