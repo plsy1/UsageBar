@@ -1,4 +1,5 @@
-// 窗口界面：「额度」和「设置」两页；数据和设置都在 Rust 那边（src-tauri/src/main.rs）
+// 窗口界面：「额度」「桌面卡片」「设置」三页；同一个页面也用作托盘小面板（#flyout）和桌面卡片（#card）
+// 数据和设置都在 Rust 那边（src-tauri/src/main.rs）
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -6,6 +7,33 @@ const { listen } = window.__TAURI__.event;
 const T = {
   nav_usage: ['额度', '上限', 'Limits'],
   nav_settings: ['设置', '設定', 'Settings'],
+  nav_card: ['桌面卡片', 'デスクトップカード', 'Desktop Card'],
+  card_sub: ['布局、外观和大小，改动会马上显示在卡片上', 'レイアウト、外観、サイズ。変更はすぐカードに反映されます', 'Layout, look and size. Changes show on the card right away'],
+  g_card: ['卡片', 'カード', 'Card'],
+  g_look: ['外观', '外観', 'Appearance'],
+  show_card: ['显示桌面卡片', 'デスクトップカードを表示', 'Show Desktop Card'],
+  on_top: ['保持在最前', '常に手前に表示', 'Keep on Top'],
+  on_top_hint: ['关掉时卡片在桌面层，会被其他窗口盖住', 'オフのときはデスクトップ層に置かれ、他のウインドウに隠れます', 'When off, the card sits on the desktop behind other windows'],
+  layout: ['布局', 'レイアウト', 'Layout'],
+  l_horizontal: ['左右', '左右', 'Side by Side'],
+  l_vertical: ['上下', '上下', 'Stacked'],
+  l_compact: ['紧凑', 'コンパクト', 'Compact'],
+  size: ['大小', 'サイズ', 'Size'],
+  background: ['背景', '背景', 'Background'],
+  bg_none: ['无', 'なし', 'None'],
+  bg_dark: ['深色', 'ダーク', 'Dark'],
+  bg_light: ['浅色', 'ライト', 'Light'],
+  bg_opacity: ['背景浓度', '背景の濃さ', 'Background Strength'],
+  text_color: ['文字颜色', '文字色', 'Text Color'],
+  white: ['白色', '白', 'White'],
+  black: ['黑色', '黒', 'Black'],
+  opacity: ['整体不透明度', '全体の不透明度', 'Overall Opacity'],
+  reset_time: ['重置时间', 'リセット時刻', 'Reset Time'],
+  r_hidden: ['不显示', '表示しない', 'Hidden'],
+  r_relative: ['剩余时间', '残り時間', 'Countdown'],
+  r_absolute: ['具体时间', '日時', 'Date & Time'],
+  card_hint: ['在卡片上按住拖动可以换位置，右键有更多选项', 'カードをドラッグして移動、右クリックでその他の操作', 'Drag the card to move it; right-click for more options'],
+  resets_at: ['%s 重置', '%s にリセット', 'resets %s'],
   usage_sub: ['Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量', 'Remaining Claude and Codex usage'],
   settings_sub: ['托盘、语言和刷新频率', 'トレイ、言語、更新頻度', 'Tray, language and refresh frequency'],
   refresh: ['立即刷新', '今すぐ更新', 'Refresh Now'],
@@ -51,8 +79,9 @@ const T = {
 
 let state = null;
 let page = 'usage';
-// 托盘点开的小面板（Windows）：同一个页面，地址带 #flyout
+// 托盘点开的小面板（Windows）和桌面卡片：同一个页面，地址带 #flyout / #card
 const FLYOUT = location.hash === '#flyout';
+const CARD = location.hash === '#card';
 let autostart = false;
 
 const L = () => ({ zh: 0, ja: 1, en: 2 })[state?.lang] ?? 2;
@@ -70,9 +99,19 @@ function windowLabel(w) {
   return T[w.kind] ? t(w.kind) : w.kind;
 }
 
-function resetText(at) {
+function resetText(at, style = 'relative') {
   // 差几秒到整分钟就进位（接口常给 05:59:59.x）
-  const s = Math.max(0, Math.floor((at + 5) / 60) * 60 - Date.now() / 1000);
+  at = Math.floor((at + 5) / 60) * 60;
+  if (style === 'absolute') {
+    // 今天内只写几点，否则带上星期几
+    const d = new Date(at * 1000);
+    const locale = { zh: 'zh-CN', ja: 'ja-JP' }[state.lang] ?? 'en-US';
+    const time = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+    const today = d.toDateString() === new Date().toDateString();
+    const day = d.toLocaleDateString(locale, { weekday: state.lang === 'ja' ? 'long' : 'short' });
+    return t('resets_at', today ? time : `${day} ${time}`);
+  }
+  const s = Math.max(0, at - Date.now() / 1000);
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   const rel = d > 0 ? t('d_h').replace('%d', d).replace('%h', h)
     : h > 0 ? t('h_m').replace('%h', h).replace('%m', m)
@@ -128,11 +167,88 @@ function fitFlyout() {
   window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(340, h)).catch(() => {});
 }
 
+// MARK: 桌面卡片（布局和尺寸照 macOS 版的 CardView）
+
+const shownProviders = () => state.providers.filter((p) => (p.name === 'Claude' ? state.settings.show_claude : state.settings.show_codex));
+
+function cardRow(w) {
+  const s = state.settings, used = s.display === 'used';
+  const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
+  return `<div class="c-row">
+    <div class="c-top"><span>${esc(windowLabel(w))}</span><span class="c-val">${t(used ? 'used' : 'left', Math.round(v))}</span></div>
+    <div class="c-bar"><div style="width:${v}%"></div></div>
+    ${s.card_reset !== 'hidden' && w.resets_at ? `<div class="c-reset">${esc(resetText(w.resets_at, s.card_reset))}</div>` : ''}
+  </div>`;
+}
+
+function cardColumn(p) {
+  return `<div class="c-col">
+    <div class="c-name">${esc(p.name)}${p.plan ? `<span class="c-plan">${esc(p.plan)}</span>` : ''}</div>
+    ${p.error ? `<div class="c-err">${esc(t(p.error, p.detail ?? ''))}</div>` : ''}
+    ${p.windows.map(cardRow).join('')}
+    ${p.note ? `<div class="c-note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>` : ''}
+  </div>`;
+}
+
+// 紧凑：一家一行，只有数字
+function cardCompactRow(p) {
+  const used = state.settings.display === 'used';
+  return `<div class="c-line"><span class="c-name">${esc(p.name)}</span>
+    ${p.error && p.windows.length === 0 ? `<span class="c-err">${esc(t(p.error, p.detail ?? ''))}</span>` : ''}
+    ${p.windows.map((w) => {
+      const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
+      return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num">${t(used ? 'used' : 'left', Math.round(v))}</span></span>`;
+    }).join('')}
+  </div>`;
+}
+
+function cardPage() {
+  const s = state.settings;
+  const shown = shownProviders();
+  const body = state.providers.length === 0 ? `<div class="c-reset">${t('loading')}</div>`
+    : s.card_layout === 'compact' ? `<div class="c-lines">${shown.map(cardCompactRow).join('')}</div>`
+    : `<div class="c-cols ${s.card_layout === 'vertical' ? 'vertical' : ''}">${shown.map(cardColumn).join('')}</div>`;
+  const style = `--s:${s.card_scale};--bgop:${s.card_bg_opacity};opacity:${s.card_opacity}`;
+  return `<div class="card-box bg-${esc(s.card_background)} text-${esc(s.card_text)}" style="${style}">
+    ${body}
+    ${state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : ''}
+  </div>`;
+}
+
+// 卡片窗口的大小跟着内容走
+function fitCard() {
+  const r = document.querySelector('.card-box').getBoundingClientRect();
+  window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(Math.ceil(r.width), Math.ceil(r.height))).catch(() => {});
+}
+
 function seg(key, options) {
   const cur = state.settings[key];
   return `<div class="seg">${options.map(([v, label]) => `<button data-set="${key}" data-val="${v}" class="${cur === v ? 'on' : ''}">${esc(label)}</button>`).join('')}</div>`;
 }
 const toggle = (id, on) => `<label class="switch"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}><span></span></label>`;
+// 百分比滑块：拖动时只更新数字，松手再保存
+const slider = (key, min, max, step) => `<span class="slider"><input type="range" data-num="${key}" min="${min}" max="${max}" step="${step}" value="${state.settings[key]}"><span class="pct">${Math.round(state.settings[key] * 100)}%</span></span>`;
+
+function cardSettingsPage() {
+  const s = state.settings;
+  return `<div class="header"><div><h1>${t('nav_card')}</h1><div class="sub">${t('card_sub')}</div></div></div>
+    <div class="group-title">${t('g_card')}</div>
+    <div class="panel group">
+      <div class="field"><span>${t('show_card')}</span>${toggle('card_show', s.card_show)}</div>
+      <div class="field"><span>${t('on_top')}<div class="hint">${t('on_top_hint')}</div></span>${toggle('card_on_top', s.card_on_top)}</div>
+      <div class="field"><span>${t('layout')}</span>${seg('card_layout', [['horizontal', t('l_horizontal')], ['vertical', t('l_vertical')], ['compact', t('l_compact')]])}</div>
+      <div class="field"><span>${t('size')}</span>${slider('card_scale', 0.8, 1.6, 0.1)}</div>
+      <div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>
+    </div>
+    <div class="group-title">${t('g_look')}</div>
+    <div class="panel group">
+      <div class="field"><span>${t('background')}</span>${seg('card_background', [['none', t('bg_none')], ['dark', t('bg_dark')], ['light', t('bg_light')]])}</div>
+      ${s.card_background !== 'none' ? `<div class="field"><span>${t('bg_opacity')}</span>${slider('card_bg_opacity', 0.1, 1, 0.05)}</div>` : ''}
+      <div class="field"><span>${t('text_color')}</span>${seg('card_text', [['white', t('white')], ['black', t('black')]])}</div>
+      <div class="field"><span>${t('opacity')}</span>${slider('card_opacity', 0.3, 1, 0.05)}</div>
+    </div>
+    <div class="footnote">${t('card_hint')}</div>`;
+}
 
 function settingsPage() {
   const s = state.settings;
@@ -165,7 +281,13 @@ function render() {
     fitFlyout();
     return;
   }
-  document.getElementById('content').innerHTML = page === 'usage' ? usagePage() : settingsPage();
+  if (CARD) {
+    document.getElementById('content').innerHTML = cardPage();
+    fitCard();
+    return;
+  }
+  const pages = { usage: usagePage, card: cardSettingsPage, settings: settingsPage };
+  document.getElementById('content').innerHTML = pages[page]();
 }
 
 async function save(patch) {
@@ -186,7 +308,8 @@ document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'language') save({ language: el.value });
   else if (el.id === 'refresh_minutes') save({ refresh_minutes: Number(el.value) });
-  else if (el.id === 'show_claude' || el.id === 'show_codex') save({ [el.id]: el.checked });
+  else if (['show_claude', 'show_codex', 'card_show', 'card_on_top'].includes(el.id)) save({ [el.id]: el.checked });
+  else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
   else if (el.id === 'autostart') {
     await invoke(el.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable').catch(() => {});
     autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
@@ -194,13 +317,29 @@ document.addEventListener('change', async (e) => {
   }
 });
 
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (el.dataset.num) el.nextElementSibling.textContent = `${Math.round(el.value * 100)}%`;
+});
+
+// 桌面卡片：按住拖动，右键弹出菜单
+if (CARD) {
+  document.addEventListener('mousedown', (e) => {
+    if (e.button === 0) window.__TAURI__.window.getCurrentWindow().startDragging().catch(() => {});
+  });
+  document.addEventListener('contextmenu', (e) => { e.preventDefault(); invoke('card_menu'); });
+}
+
 (async () => {
   if (FLYOUT) document.body.classList.add('flyout');
+  if (CARD) { document.documentElement.classList.add('card'); document.body.classList.add('card'); }
   document.getElementById('version').textContent = await window.__TAURI__.app.getVersion().catch(() => '');
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
   state = await invoke('get_state');
   render();
   await listen('state', (e) => { state = e.payload; render(); });
+  // 卡片右键「卡片设置…」：主窗口切到卡片页
+  await listen('navigate', (e) => { page = e.payload; render(); });
   // 重置倒计时每分钟走一次
-  setInterval(() => { if (FLYOUT || page === 'usage') render(); }, 60000);
+  setInterval(() => { if (FLYOUT || CARD || page === 'usage') render(); }, 60000);
 })();

@@ -31,6 +31,20 @@
         "skipTaskbar": true,
         "alwaysOnTop": true,
         "shadow": true
+      },
+      {
+        "label": "card",
+        "title": "UsageBar",
+        "url": "index.html#card",
+        "width": 500,
+        "height": 200,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": false,
+        "skipTaskbar": true,
+        "focus": false
       }
     ],
     "security": {

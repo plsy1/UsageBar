@@ -143,3 +143,54 @@ body.flyout .provider { padding: 14px 16px; }
 body.flyout .row { margin-top: 10px; }
 .fly-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .fly-foot .spacer { flex: 1; }
+
+.field .hint { margin-top: 2px; }
+.slider { display: inline-flex; align-items: center; gap: 10px; }
+.slider input { width: 180px; accent-color: var(--accent); }
+.slider .pct { width: 40px; text-align: right; color: var(--secondary); font-variant-numeric: tabular-nums; }
+
+/* 桌面卡片：尺寸都按 --s 缩放，数值跟 macOS 版 CardView 一样 */
+html.card, body.card { background: transparent; }
+body.card { display: block; }
+body.card .sidebar { display: none; }
+body.card main { padding: 0; overflow: hidden; }
+.card-box {
+  --u: calc(var(--s) * 1px);
+  display: inline-block;
+  padding: calc(16 * var(--u));
+  border-radius: calc(20 * var(--u));
+  cursor: default;
+  white-space: nowrap;
+}
+.card-box.text-white { --c1: #fff; --c2: rgba(255, 255, 255, 0.72); --c3: rgba(255, 255, 255, 0.5); --ctrack: rgba(255, 255, 255, 0.25); --cfill: rgba(255, 255, 255, 0.9); --cshadow: rgba(0, 0, 0, 0.6); }
+.card-box.text-black { --c1: #111; --c2: rgba(0, 0, 0, 0.62); --c3: rgba(0, 0, 0, 0.42); --ctrack: rgba(0, 0, 0, 0.18); --cfill: rgba(0, 0, 0, 0.85); --cshadow: rgba(255, 255, 255, 0.6); }
+.card-box { color: var(--c1); }
+/* 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清 */
+.card-box.bg-none { text-shadow: 0 1px 2px var(--cshadow); }
+.card-box.bg-none .c-bar { box-shadow: 0 1px 2px var(--cshadow); }
+.card-box.bg-dark { background: rgba(30, 30, 32, calc(0.78 * var(--bgop))); }
+.card-box.bg-light { background: rgba(246, 246, 248, calc(0.82 * var(--bgop))); }
+
+.c-cols { display: flex; gap: calc(24 * var(--u)); align-items: flex-start; }
+.c-cols.vertical { flex-direction: column; gap: calc(20 * var(--u)); }
+.c-col { width: calc(210 * var(--u)); display: flex; flex-direction: column; gap: calc(8 * var(--u)); }
+.c-cols.vertical .c-col { width: calc(260 * var(--u)); }
+.c-name { font-size: calc(13 * var(--u)); font-weight: 600; }
+.c-plan { font-size: calc(10 * var(--u)); color: var(--c2); font-weight: 400; margin-left: 6px; }
+.c-err, .c-note { font-size: calc(11 * var(--u)); color: var(--c2); white-space: normal; }
+.c-note { font-size: calc(10 * var(--u)); color: var(--c3); }
+.c-row { display: flex; flex-direction: column; gap: calc(3 * var(--u)); }
+.c-top { display: flex; justify-content: space-between; font-size: calc(12 * var(--u)); }
+.c-val, .c-num { font-weight: 500; font-variant-numeric: tabular-nums; }
+.c-bar { height: calc(4 * var(--u)); border-radius: 99px; background: var(--ctrack); overflow: hidden; }
+.c-bar > div { height: 100%; border-radius: 99px; background: var(--cfill); }
+.c-reset { font-size: calc(10 * var(--u)); color: var(--c2); }
+.c-updated { font-size: calc(10 * var(--u)); color: var(--c3); margin-top: calc(14 * var(--u)); }
+.c-lines { display: flex; flex-direction: column; gap: calc(6 * var(--u)); }
+.c-line { display: flex; align-items: baseline; gap: calc(14 * var(--u)); }
+.c-line .c-name { width: calc(54 * var(--u)); }
+.c-line .c-err { max-width: calc(260 * var(--u)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-pair { display: inline-flex; align-items: baseline; gap: calc(5 * var(--u)); }
+.c-lab { font-size: calc(11 * var(--u)); color: var(--c2); }
+.c-num { font-size: calc(12 * var(--u)); }
+.card-box:has(.c-lines) .c-updated { margin-top: calc(10 * var(--u)); }
