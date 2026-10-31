@@ -16,6 +16,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>$LABEL</string>
   <key>CFBundleName</key><string>UsageBar</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleExecutable</key><string>UsageBar</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>

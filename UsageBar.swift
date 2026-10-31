@@ -64,7 +64,11 @@ enum I18n {
         "显示桌面卡片": ("デスクトップカードを表示", "Show Desktop Card"),
         "退出": ("終了", "Quit"),
         // 设置窗口
-        "UsageBar 设置": ("UsageBar 設定", "UsageBar Settings"),
+        "通用": ("一般", "General"),
+        "关于": ("情報", "About"),
+        "预览": ("プレビュー", "Preview"),
+        "版本 %@": ("バージョン %@", "Version %@"),
+        "在菜单栏和桌面显示 Claude 与 Codex 的剩余用量": ("Claude と Codex の残り使用量をメニューバーとデスクトップに表示", "Shows remaining Claude and Codex usage in the menu bar and on the desktop"),
         "语言": ("言語", "Language"),
         "跟随系统": ("システムに合わせる", "System"),
         "桌面卡片": ("デスクトップカード", "Desktop Card"),
@@ -344,7 +348,54 @@ enum Pref {
     }
 }
 
-struct SettingsView: View {
+/// 设置里每一行右侧的滑块 + 百分比
+struct PercentSlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    var body: some View {
+        LabeledContent(title) {
+            Slider(value: $value, in: range, step: step) { EmptyView() }
+                .frame(width: 160)
+            Text("\(Int((value * 100).rounded()))%").monospacedDigit().foregroundStyle(.secondary)
+                .frame(width: 40, alignment: .trailing)
+        }
+    }
+}
+
+struct GeneralSettings: View {
+    @AppStorage(Pref.language) var language = "auto"
+    @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
+    @AppStorage(Pref.showClaude) var showClaude = true
+    @AppStorage(Pref.showCodex) var showCodex = true
+
+    var body: some View {
+        Form {
+            Section {
+                Picker(L("语言"), selection: $language) {
+                    Text(L("跟随系统")).tag("auto")
+                    Divider()
+                    Text("中文").tag("zh")
+                    Text("日本語").tag("ja")
+                    Text("English").tag("en")
+                }
+                Picker(L("自动刷新间隔"), selection: $refreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
+                }
+            }
+            Section(L("显示内容（卡片和菜单栏）")) {
+                Toggle("Claude", isOn: $showClaude)
+                Toggle("Codex", isOn: $showCodex)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440)
+        .fixedSize()
+    }
+}
+
+struct CardSettings: View {
     @AppStorage(Pref.showCard) var showCard = true
     @AppStorage(Pref.background) var background = "none"
     @AppStorage(Pref.textColor) var textColor = "white"
@@ -352,66 +403,109 @@ struct SettingsView: View {
     @AppStorage(Pref.opacity) var opacity = 1.0
     @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.showReset) var showReset = true
-    @AppStorage(Pref.showClaude) var showClaude = true
-    @AppStorage(Pref.showCodex) var showCodex = true
-    @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
-    @AppStorage(Pref.menuLabel) var menuLabel = "short"
-    @AppStorage(Pref.language) var language = "auto"
 
     var body: some View {
         Form {
-            Picker(L("语言"), selection: $language) {
-                Text(L("跟随系统")).tag("auto")
-                Text("中文").tag("zh")
-                Text("日本語").tag("ja")
-                Text("English").tag("en")
-            }
-            Section(L("桌面卡片")) {
+            Section {
                 Toggle(L("显示桌面卡片"), isOn: $showCard)
+            }
+            Section {
                 Picker(L("背景"), selection: $background) {
                     Text(L("无")).tag("none")
                     Text(L("深色毛玻璃")).tag("dark")
                     Text(L("浅色毛玻璃")).tag("light")
                 }
+                PercentSlider(title: L("毛玻璃浓度"), value: $bgOpacity, range: 0.1...1.0, step: 0.05)
+                    .disabled(background == "none")
                 Picker(L("文字颜色"), selection: $textColor) {
                     Text(L("白色")).tag("white")
                     Text(L("黑色")).tag("black")
                 }
-                LabeledContent(L("毛玻璃浓度")) {
-                    Slider(value: $bgOpacity, in: 0.1...1.0, step: 0.05) { EmptyView() }
-                    Text("\(Int((bgOpacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
-                }
-                .disabled(background == "none")
-                LabeledContent(L("大小")) {
-                    Slider(value: $scale, in: 0.8...1.6, step: 0.1) { EmptyView() }
-                    Text("\(Int((scale * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
-                }
-                LabeledContent(L("整体不透明度")) {
-                    Slider(value: $opacity, in: 0.3...1.0, step: 0.05) { EmptyView() }
-                    Text("\(Int((opacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
-                }
+                .pickerStyle(.segmented)
+            }
+            .disabled(!showCard)
+            Section {
+                PercentSlider(title: L("大小"), value: $scale, range: 0.8...1.6, step: 0.1)
+                PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
                 Toggle(L("显示重置时间"), isOn: $showReset)
             }
-            Section(L("菜单栏")) {
+            .disabled(!showCard)
+        }
+        .formStyle(.grouped)
+        .frame(width: 440)
+        .fixedSize()
+    }
+}
+
+struct MenuBarSettings: View {
+    @AppStorage(Pref.menuLabel) var menuLabel = "short"
+
+    var body: some View {
+        Form {
+            Section {
                 Picker(L("名称"), selection: $menuLabel) {
                     Text(L("简写（Cc / Cx）")).tag("short")
                     Text(L("全名（Claude / Codex）")).tag("full")
                 }
+                .pickerStyle(.radioGroup)
             }
-            Section(L("显示内容（卡片和菜单栏）")) {
-                Toggle("Claude", isOn: $showClaude)
-                Toggle("Codex", isOn: $showCodex)
-            }
-            Section(L("刷新")) {
-                Picker(L("自动刷新间隔"), selection: $refreshMinutes) {
-                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
-                }
+            Section(L("预览")) {
+                Text(menuLabel == "full" ? "Claude 59%  Codex 53%" : "Cc 59%  Cx 53%")
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                    .frame(maxWidth: .infinity)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 380)
+        .frame(width: 440)
         .fixedSize()
     }
+}
+
+struct AboutSettings: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "gauge.with.dots.needle.67percent")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("UsageBar").font(.title2.weight(.semibold))
+            Text(L("版本 %@", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"))
+                .font(.callout).foregroundStyle(.secondary)
+            Text(L("在菜单栏和桌面显示 Claude 与 Codex 的剩余用量"))
+                .font(.callout).multilineTextAlignment(.center)
+            Link("github.com/plsy1/UsageBar", destination: URL(string: "https://github.com/plsy1/UsageBar")!)
+                .font(.callout)
+        }
+        .padding(28)
+        .frame(width: 440)
+    }
+}
+
+/// 偏好设置窗口：顶部工具栏图标切换各页（系统设置那种样式）
+func makeSettingsWindow(selected: Int) -> NSWindow {
+    let tabs = NSTabViewController()
+    tabs.tabStyle = .toolbar
+    func add<V: View>(_ title: String, _ symbol: String, _ view: V) {
+        let host = NSHostingController(rootView: view)
+        host.sizingOptions = .preferredContentSize
+        host.title = title
+        let item = NSTabViewItem(viewController: host)
+        item.label = title
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        tabs.addTabViewItem(item)
+    }
+    add(L("通用"), "gearshape", GeneralSettings())
+    add(L("桌面卡片"), "rectangle.on.rectangle", CardSettings())
+    add(L("菜单栏"), "menubar.rectangle", MenuBarSettings())
+    add(L("关于"), "info.circle", AboutSettings())
+    tabs.selectedTabViewItemIndex = selected
+
+    let w = NSWindow(contentViewController: tabs)
+    w.styleMask = [.titled, .closable]
+    w.toolbarStyle = .preference
+    w.isReleasedWhenClosed = false
+    return w
 }
 
 // MARK: - 桌面卡片
@@ -645,8 +739,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if I18n.lang != lastLang {
             // 错误提示、额度名称是取数时生成的，换语言后重新取一次
             lastLang = I18n.lang
-            settingsWindow?.title = L("UsageBar 设置")
             refresh()
+            // 设置窗口开着的话，按新语言重建（保留当前页和位置）
+            if let old = settingsWindow, old.isVisible {
+                let idx = (old.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex ?? 0
+                let topLeft = NSPoint(x: old.frame.minX, y: old.frame.maxY)
+                DispatchQueue.main.async {
+                    old.close()
+                    let w = makeSettingsWindow(selected: idx)
+                    w.setFrameTopLeftPoint(topLeft)
+                    self.settingsWindow = w
+                    w.makeKeyAndOrderFront(nil)
+                }
+            } else {
+                settingsWindow = nil
+            }
         }
         updateTitle()
         rebuildMenu()
@@ -654,10 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
-            w.title = L("UsageBar 设置")
-            w.styleMask = [.titled, .closable]
-            w.isReleasedWhenClosed = false
+            let w = makeSettingsWindow(selected: 0)
             w.center()
             settingsWindow = w
         }
@@ -693,8 +797,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let small = NSFont.systemFont(ofSize: 11)
 
+        // 纯展示的行：用自定义视图，否则 macOS 会把不可点的菜单项画成灰色
         func info(_ a: NSAttributedString) {
-            let mi = NSMenuItem(); mi.attributedTitle = a; mi.isEnabled = false; menu.addItem(mi)
+            let text = NSMutableAttributedString(attributedString: a)
+            text.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: text.length)) { v, r, _ in
+                if v == nil { text.addAttribute(.foregroundColor, value: NSColor.labelColor, range: r) }
+            }
+            let label = NSTextField(labelWithAttributedString: text)
+            let size = label.fittingSize
+            let pad = NSSize(width: 14, height: 2)
+            label.frame = NSRect(x: pad.width, y: pad.height, width: size.width, height: size.height)
+            let box = NSView(frame: NSRect(x: 0, y: 0, width: size.width + pad.width * 2, height: size.height + pad.height * 2))
+            box.addSubview(label)
+            let mi = NSMenuItem()
+            mi.view = box
+            menu.addItem(mi)
         }
 
         for u in results where Pref.visible(u.name) {
