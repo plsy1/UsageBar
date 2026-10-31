@@ -1565,6 +1565,8 @@ struct UsageRow: View {
     let showReset: Bool
     let used: Bool  // 显式传进来：SwiftUI 只在输入变化时重绘这一行
     var resetStyle = "full"  // 菜单用完整的；桌面卡片按设置用 relative / absolute
+    /// 不显示重置时间时仍占着那一行的位置（桌面卡片用：布局不动，只是字不见了）
+    var keepResetSpace = false
     var body: some View {
         VStack(alignment: .leading, spacing: 3 * s) {
             HStack {
@@ -1582,6 +1584,8 @@ struct UsageRow: View {
             .frame(height: 4 * s)
             if showReset, w.resetsAt != nil {
                 Text(resetText(w.resetsAt, style: resetStyle)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+            } else if keepResetSpace {
+                Text(" ").font(.system(size: 10 * s)).hidden()
             }
         }
     }
@@ -1673,7 +1677,7 @@ extension CardView {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle)
+                UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, keepResetSpace: true)
             }
             if let n = u.note {
                 Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
