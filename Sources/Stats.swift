@@ -565,16 +565,20 @@ struct StatsView: View {
     @AppStorage("statsStatus") var statusFilter = 0
     /// 点开详情的那条请求
     @State var selected: UsageRecord?
-    /// 请求明细可用的宽度：列多了放不下时改成左右滚动
+    /// 表格可用的宽度：列多了放不下时改成左右滚动
     @State var tableWidth: CGFloat = 0
-    /// 请求明细的列顺序和列宽（拖表头调整），逗号分隔：time,app,… / app:64,model:220
+    /// 三张表各自的列顺序和列宽（拖表头调整），逗号分隔：time,app,… / app:64,model:220
     @AppStorage("statsColumnOrder") var columnOrder = ""
     @AppStorage("statsColumnWidths") var columnWidths = ""
-    /// 正在拖的分隔线：拖动中的宽度先放这里，松手再存
-    @State var liveWidths: [LogColumn: CGFloat] = [:]
+    @AppStorage("statsModelColumnOrder") var modelColumnOrder = ""
+    @AppStorage("statsModelColumnWidths") var modelColumnWidths = ""
+    @AppStorage("statsAppColumnOrder") var appColumnOrder = ""
+    @AppStorage("statsAppColumnWidths") var appColumnWidths = ""
+    /// 正在拖的分隔线：拖动中的宽度先放这里，松手再存（键是「表.列」）
+    @State var liveWidths: [String: CGFloat] = [:]
     @State var resizeBase: CGFloat?
-    /// 正在拖着换位置的表头和拖了多远
-    @State var reorder: (column: LogColumn, dx: CGFloat)?
+    /// 正在拖着换位置的表头（「表.列」）和拖了多远
+    @State var reorder: (key: String, dx: CGFloat)?
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -838,6 +842,8 @@ struct StatsView: View {
                     statusMenu(rows)
                     Divider().frame(height: 16)
                     columnMenu
+                } else {
+                    layoutMenu(tab == "apps" ? appLayout : modelLayout)
                 }
             }
             .padding(.horizontal, 20).padding(.top, 12)
@@ -870,127 +876,110 @@ struct StatsView: View {
         .buttonStyle(.plain)
     }
 
-    /// 表格的一列：标题、宽度（nil 表示占满剩余宽度）
-    typealias Column = (title: String, width: CGFloat?)
-
-    func headerRow(_ cols: [Column]) -> some View {
-        HStack(spacing: 0) {
-            ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                Text(c.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                    .frame(width: c.width, alignment: .leading)
-                    .frame(minWidth: c.width == nil ? 170 : nil, maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 20).frame(height: 38)
-        .background(Color.primary.opacity(0.035))
-    }
-
-    func dataRow(_ cols: [Column], _ cells: [String], mono: Set<Int> = []) -> some View {
-        HStack(spacing: 0) {
-            ForEach(Array(cols.enumerated()), id: \.offset) { i, c in
-                Text(cells[i])
-                    .font(mono.contains(i) ? .system(.body, design: .monospaced) : .body.monospacedDigit())
-                    .lineLimit(1)
-                    .frame(width: c.width, alignment: .leading)
-                    .frame(minWidth: c.width == nil ? 170 : nil, maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 20).frame(height: 42)
-    }
-
     func emptyRow() -> some View {
         Text(store.loading ? L("正在读取本机会话记录…") : L("该时间段内没有记录"))
             .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 36)
     }
 
-    func modelTable(_ models: [ModelRow]) -> some View {
-        // 各项 token 在上面汇总的「更多指标」里，这里和 CC Switch 一样只列总数，腾出位置给成功率、速度、首字
-        let cols: [Column] = [(L("模型"), nil), (L("应用"), 76), (L("请求数"), 76), (L("成本"), 96), ("Tokens", 84),
-                              (L("命中率"), 76), (L("成功率"), 76), (L("速度"), 84), (L("首字"), 64)]
-        return VStack(spacing: 0) {
-            headerRow(cols)
-            if models.isEmpty { emptyRow() }
-            ForEach(models) { m in
+    var logLayout: ColumnLayout { ColumnLayout(table: "log", order: $columnOrder, widths: $columnWidths) }
+    var modelLayout: ColumnLayout { ColumnLayout(table: "models", order: $modelColumnOrder, widths: $modelColumnWidths) }
+    var appLayout: ColumnLayout { ColumnLayout(table: "apps", order: $appColumnOrder, widths: $appColumnWidths) }
+
+    /// 按模型、按应用：各项 token 在上面汇总的「更多指标」里，这里和 CC Switch 一样只列总数
+    func groupTable(_ rows: [ModelRow], _ l: ColumnLayout) -> some View {
+        let apps = l.table == "apps"
+        let cols: [GroupColumn] = ordered(l).filter { !(apps && $0 == .app) }
+        let saved: [GroupColumn: CGFloat] = savedWidths(l)
+        let m = metrics(cols, l, saved)
+        let table = VStack(spacing: 0) {
+            columnHeader(cols, l, saved: saved, flex: m.flex) { c in c == .name ? L(apps ? "应用" : "模型") : c.title }
+            if rows.isEmpty { emptyRow() }
+            ForEach(rows) { row in
                 Divider()
-                dataRow(cols, [m.model, m.source.rawValue, m.s.requests.formatted(), m.priced ? money(m.s.cost) : "—",
-                               abbrev(m.s.tokens), m.s.hitRate.map(percent) ?? "—", percent(m.successRate),
-                               m.speed.map { String(format: "≈%.0f t/s", $0) } ?? "—",
-                               m.firstToken.map { "≈" + seconds($0) } ?? "—"], mono: [0])
+                columnRow(cols, l, saved: saved) { c in c.cell(row, appName: apps) }
+                    .frame(height: 42)
             }
         }
+        return fitted(table, needed: m.needed)
     }
 
-    func appTable(_ apps: [ModelRow]) -> some View {
-        let cols: [Column] = [(L("应用"), nil), (L("请求数"), 76), (L("成本"), 96), ("Tokens", 84),
-                              (L("命中率"), 76), (L("成功率"), 76), (L("速度"), 84), (L("首字"), 64)]
-        return VStack(spacing: 0) {
-            headerRow(cols)
-            if apps.isEmpty { emptyRow() }
-            ForEach(apps) { a in
-                Divider()
-                dataRow(cols, [a.source == .claude ? "Claude Code" : "Codex", a.s.requests.formatted(),
-                               a.priced ? money(a.s.cost) : "—", abbrev(a.s.tokens), a.s.hitRate.map(percent) ?? "—",
-                               percent(a.successRate), a.speed.map { String(format: "≈%.0f t/s", $0) } ?? "—",
-                               a.firstToken.map { "≈" + seconds($0) } ?? "—"])
-            }
-        }
-    }
+    func modelTable(_ models: [ModelRow]) -> some View { groupTable(models, modelLayout) }
+    func appTable(_ apps: [ModelRow]) -> some View { groupTable(apps, appLayout) }
 
     var hidden: Set<LogColumn> {
         Set(hiddenColumns.split(separator: ",").compactMap { LogColumn(rawValue: String($0)) }).subtracting([.time])
     }
 
-    // MARK: 列的顺序和宽度
+    // MARK: 列的顺序和宽度（三张表共用）
 
     /// 存下的顺序，之后新加的列补在后面
-    var orderedColumns: [LogColumn] {
-        var list = columnOrder.split(separator: ",").compactMap { LogColumn(rawValue: String($0)) }
-        for c in LogColumn.allCases where !list.contains(c) { list.append(c) }
+    func ordered<C: StatsColumn>(_ l: ColumnLayout) -> [C] {
+        var list = l.order.wrappedValue.split(separator: ",").compactMap { C(rawValue: String($0)) }
+        for c in C.allCases where !list.contains(c) { list.append(c) }
         return list
     }
 
-    var savedWidths: [LogColumn: CGFloat] {
-        let pairs = columnWidths.split(separator: ",").compactMap { kv -> (LogColumn, CGFloat)? in
+    func savedWidths<C: StatsColumn>(_ l: ColumnLayout) -> [C: CGFloat] {
+        let pairs = l.widths.wrappedValue.split(separator: ",").compactMap { kv -> (C, CGFloat)? in
             let p = kv.split(separator: ":")
-            guard p.count == 2, let c = LogColumn(rawValue: String(p[0])), let w = Double(p[1]) else { return nil }
+            guard p.count == 2, let c = C(rawValue: String(p[0])), let w = Double(p[1]) else { return nil }
             return (c, CGFloat(w))
         }
         return Dictionary(pairs, uniquingKeysWith: { $1 })
     }
 
-    /// nil：占满剩余宽度（模型那一列，除非拖过）
-    func width(_ c: LogColumn, saved: [LogColumn: CGFloat]) -> CGFloat? {
-        liveWidths[c] ?? saved[c] ?? c.defaultWidth(today: range == .today)
+    /// nil：占满剩余宽度（名称那一列，除非拖过）
+    func width<C: StatsColumn>(_ c: C, _ l: ColumnLayout, _ saved: [C: CGFloat]) -> CGFloat? {
+        liveWidths[l.key(c)] ?? saved[c] ?? c.defaultWidth(today: range == .today)
     }
 
-    func moveColumn(_ from: LogColumn, to target: LogColumn) {
-        var list = orderedColumns
+    /// 固定列的总宽、整张表至少要多宽、占满剩余那一列现在的实际宽度
+    func metrics<C: StatsColumn>(_ cols: [C], _ l: ColumnLayout, _ saved: [C: CGFloat]) -> (needed: CGFloat, flex: CGFloat) {
+        let fixed = cols.reduce(2 * (20 - Self.cellInset)) { $0 + (width($1, l, saved) ?? 0) }
+        let needed = fixed + (cols.contains { width($0, l, saved) == nil } ? 170 : 0)
+        return (needed, max(170, tableWidth - fixed))
+    }
+
+    func moveColumn<C: StatsColumn>(_ from: C, to target: C, _ l: ColumnLayout) {
+        var list: [C] = ordered(l)
         guard let i = list.firstIndex(of: from), let j = list.firstIndex(of: target) else { return }
         list.move(fromOffsets: [i], toOffset: j > i ? j + 1 : j)
-        columnOrder = list.map(\.rawValue).joined(separator: ",")
+        l.order.wrappedValue = list.map(\.rawValue).joined(separator: ",")
+    }
+
+    /// 列多了放不下就左右滚动；放得下时名称那一列占满剩余宽度
+    func fitted<T: View>(_ table: T, needed: CGFloat) -> some View {
+        Group {
+            if tableWidth >= needed { table } else { ScrollView(.horizontal) { table.frame(width: needed) } }
+        }
+        .frame(maxWidth: .infinity)
+        .background(GeometryReader { g in
+            Color.clear.onAppear { tableWidth = g.size.width }.onChange(of: g.size.width) { tableWidth = $0 }
+        })
     }
 
     /// 表头：按住拖到别的列上换位置；拖右边的分隔线调宽度
-    func logHeader(_ cols: [LogColumn], saved: [LogColumn: CGFloat], flex: CGFloat) -> some View {
+    func columnHeader<C: StatsColumn>(_ cols: [C], _ l: ColumnLayout, saved: [C: CGFloat], flex: CGFloat,
+                                      title: @escaping (C) -> String = { $0.title }) -> some View {
         HStack(spacing: 0) {
             ForEach(cols, id: \.self) { c in
-                let w = width(c, saved: saved)
-                Text(c.title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                let w = width(c, l, saved), key = l.key(c)
+                Text(title(c)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     .padding(.leading, Self.cellInset).padding(.trailing, 4)  // 文字和左边的分隔线隔开
                     .frame(width: w, alignment: .leading)
                     .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
                     .frame(height: 38)
                     .contentShape(Rectangle())
-                    .overlay(alignment: .trailing) { resizeHandle(c, current: w ?? flex, saved: saved) }
+                    .overlay(alignment: .trailing) { resizeHandle(c, l, current: w ?? flex, saved: saved) }
                     // 拖着的表头跟着鼠标走，松手时按落点换位置
-                    .background(reorder?.column == c ? Color.primary.opacity(0.08) : .clear)
-                    .offset(x: reorder?.column == c ? reorder?.dx ?? 0 : 0)
-                    .zIndex(reorder?.column == c ? 1 : 0)
+                    .background(reorder?.key == key ? Color.primary.opacity(0.08) : .clear)
+                    .offset(x: reorder?.key == key ? reorder?.dx ?? 0 : 0)
+                    .zIndex(reorder?.key == key ? 1 : 0)
                     .gesture(DragGesture(minimumDistance: 4)
-                        .onChanged { v in reorder = (c, v.translation.width) }
+                        .onChanged { v in reorder = (key, v.translation.width) }
                         .onEnded { v in
                             reorder = nil
-                            let ws = cols.map { width($0, saved: saved) ?? flex }
+                            let ws = cols.map { width($0, l, saved) ?? flex }
                             guard let i = cols.firstIndex(of: c) else { return }
                             let center = ws[..<i].reduce(0, +) + ws[i] / 2 + v.translation.width
                             var x: CGFloat = 0, j = cols.count - 1
@@ -998,7 +987,7 @@ struct StatsView: View {
                                 if center < x + wk { j = k; break }
                                 x += wk
                             }
-                            if j != i { moveColumn(c, to: cols[j]) }
+                            if j != i { moveColumn(c, to: cols[j], l) }
                         })
             }
         }
@@ -1009,31 +998,60 @@ struct StatsView: View {
         .help(L("拖动表头换顺序，拖动分隔线调整宽度"))
     }
 
-    func resizeHandle(_ c: LogColumn, current: CGFloat, saved: [LogColumn: CGFloat]) -> some View {
+    func resizeHandle<C: StatsColumn>(_ c: C, _ l: ColumnLayout, current: CGFloat, saved: [C: CGFloat]) -> some View {
         // 线在这一列的右边缘，可抓的范围往里多留几像素（不伸进右边那列，免得和拖表头换位置抢）
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1, height: 16)
         }
         .frame(width: 8, height: 38)
-            .contentShape(Rectangle())
-            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
-            .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { v in
-                    let base = resizeBase ?? current
-                    resizeBase = base
-                    liveWidths[c] = max(c.minWidth, (base + v.translation.width).rounded())
+        .contentShape(Rectangle())
+        .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+        .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { v in
+                let base = resizeBase ?? current
+                resizeBase = base
+                liveWidths[l.key(c)] = max(c.minWidth, (base + v.translation.width).rounded())
+            }
+            .onEnded { _ in
+                if let w = liveWidths[l.key(c)] {
+                    var d = saved
+                    d[c] = w
+                    l.widths.wrappedValue = C.allCases.compactMap { k in d[k].map { "\(k.rawValue):\(Int($0))" } }
+                        .joined(separator: ",")
                 }
-                .onEnded { _ in
-                    if let w = liveWidths[c] {
-                        var d = saved
-                        d[c] = w
-                        columnWidths = LogColumn.allCases.compactMap { k in d[k].map { "\(k.rawValue):\(Int($0))" } }
-                            .joined(separator: ",")
-                    }
-                    liveWidths[c] = nil
-                    resizeBase = nil
-                })
+                liveWidths[l.key(c)] = nil
+                resizeBase = nil
+            })
+    }
+
+    /// 一行数据，列宽和表头对齐
+    func columnRow<C: StatsColumn, Cell: View>(_ cols: [C], _ l: ColumnLayout, saved: [C: CGFloat],
+                                               @ViewBuilder cell: @escaping (C) -> Cell) -> some View {
+        HStack(spacing: 0) {
+            ForEach(cols, id: \.self) { c in
+                let w = width(c, l, saved)
+                cell(c)
+                    .lineLimit(1)
+                    .padding(.leading, Self.cellInset).padding(.trailing, 4)
+                    .frame(width: w, alignment: .leading)
+                    .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
+            }
+        }
+        .font(.body.monospacedDigit())
+        .padding(.horizontal, 20 - Self.cellInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 按应用、按模型右上角：恢复这张表的列宽和顺序
+    func layoutMenu(_ l: ColumnLayout) -> some View {
+        Menu {
+            Button(L("恢复默认")) { l.order.wrappedValue = ""; l.widths.wrappedValue = "" }
+        } label: {
+            Image(systemName: "rectangle.split.3x1")
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(L("拖动表头换顺序，拖动分隔线调整宽度"))
     }
 
     /// 按状态码筛选（ccswitch 那样）：只列出这段时间里出现过的状态码
@@ -1081,28 +1099,25 @@ struct StatsView: View {
         let current = min(page, pages - 1)  // 数据变少时别停在不存在的页
         let f = DateFormatter()
         f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
-        let cols = orderedColumns.filter { !hidden.contains($0) }
-        let saved = savedWidths
-        // 列多了放不下就左右滚动；放得下时模型那一列占满剩余宽度
-        let fixed = cols.reduce(2 * (20 - Self.cellInset)) { $0 + (width($1, saved: saved) ?? 0) }
-        let needed = fixed + (cols.contains { width($0, saved: saved) == nil } ? 170 : 0)
-        let flex = max(170, tableWidth - fixed)  // 占满剩余宽度那一列现在的实际宽度
+        let l = logLayout
+        let cols: [LogColumn] = ordered(l).filter { !hidden.contains($0) }
+        let saved: [LogColumn: CGFloat] = savedWidths(l)
+        let m = metrics(cols, l, saved)
         let table = LazyVStack(spacing: 0) {
-            logHeader(cols, saved: saved, flex: flex)
+            columnHeader(cols, l, saved: saved, flex: m.flex)
             if rows.isEmpty { emptyRow() }
             ForEach(rows[min(rows.count, current * size)..<min(rows.count, (current + 1) * size)]) { r in
                 Divider()
-                logRow(r, time: f.string(from: r.time), cols: cols, saved: saved)
+                let time = f.string(from: r.time)
+                columnRow(cols, l, saved: saved) { c in c.cell(r, time: time) }
+                    .frame(height: 42)
+                    .background(selected?.id == r.id ? ChartColor.color(chartColor).opacity(0.12) : .clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selected = r }
             }
         }
         return VStack(spacing: 0) {
-            Group {
-                if tableWidth >= needed { table } else { ScrollView(.horizontal) { table.frame(width: needed) } }
-            }
-            .frame(maxWidth: .infinity)
-            .background(GeometryReader { g in
-                Color.clear.onAppear { tableWidth = g.size.width }.onChange(of: g.size.width) { tableWidth = $0 }
-            })
+            fitted(table, needed: m.needed)
             if !rows.isEmpty {
                 Divider()
                 HStack(spacing: 12) {
@@ -1119,30 +1134,76 @@ struct StatsView: View {
         }
     }
 
-    /// 请求明细的一行：点一下看详情
-    func logRow(_ r: UsageRecord, time: String, cols: [LogColumn], saved: [LogColumn: CGFloat]) -> some View {
-        HStack(spacing: 0) {
-            ForEach(cols, id: \.self) { c in
-                let w = width(c, saved: saved)
-                c.cell(r, time: time)
-                    .lineLimit(1)
-                    .padding(.leading, Self.cellInset).padding(.trailing, 4)
-                    .frame(width: w, alignment: .leading)
-                    .frame(minWidth: w == nil ? 170 : nil, maxWidth: w == nil ? .infinity : nil, alignment: .leading)
-            }
+}
+
+// MARK: - 表格的列
+
+/// 能拖宽度、拖顺序的表格列
+protocol StatsColumn: RawRepresentable, CaseIterable, Hashable where RawValue == String, AllCases == [Self] {
+    var title: String { get }
+    /// 默认宽度；nil：占满剩余宽度
+    func defaultWidth(today: Bool) -> CGFloat?
+    /// 拖窄的下限
+    var minWidth: CGFloat { get }
+}
+
+/// 一张表的列顺序和列宽存在哪
+struct ColumnLayout {
+    let table: String
+    let order: Binding<String>
+    let widths: Binding<String>
+    func key<C: StatsColumn>(_ c: C) -> String { "\(table).\(c.rawValue)" }
+}
+
+/// 按模型、按应用两张表的列（按应用没有「应用」那一列，名称列就是应用）
+enum GroupColumn: String, CaseIterable, StatsColumn {
+    case name, app, requests, cost, tokens, hitRate, success, speed, firstToken
+
+    var title: String {
+        switch self {
+        case .name: return L("模型")
+        case .app: return L("应用")
+        case .requests: return L("请求数")
+        case .cost: return L("成本")
+        case .tokens: return "Tokens"
+        case .hitRate: return L("命中率")
+        case .success: return L("成功率")
+        case .speed: return L("速度")
+        case .firstToken: return L("首字")
         }
-        .font(.body.monospacedDigit())
-        .padding(.horizontal, 20 - Self.cellInset).frame(height: 42)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected?.id == r.id ? ChartColor.color(chartColor).opacity(0.12) : .clear)
-        .contentShape(Rectangle())
-        .onTapGesture { selected = r }
+    }
+
+    func defaultWidth(today: Bool) -> CGFloat? {
+        switch self {
+        case .name: return nil
+        case .app, .requests, .hitRate, .success: return 76
+        case .cost: return 96
+        case .tokens, .speed: return 84
+        case .firstToken: return 64
+        }
+    }
+
+    var minWidth: CGFloat { self == .name ? 100 : 44 }
+
+    @ViewBuilder func cell(_ m: ModelRow, appName: Bool) -> some View {
+        switch self {
+        case .name:
+            if appName { Text(m.source == .claude ? "Claude Code" : "Codex") }
+            else { Text(m.model).font(.system(.body, design: .monospaced)) }
+        case .app: Text(m.source.rawValue)
+        case .requests: Text(m.s.requests.formatted())
+        case .cost: Text(m.priced ? money(m.s.cost) : "—")
+        case .tokens: Text(abbrev(m.s.tokens))
+        case .hitRate: Text(m.s.hitRate.map(percent) ?? "—")
+        case .success: Text(percent(m.successRate))
+        case .speed: Text(m.speed.map { String(format: "≈%.0f t/s", $0) } ?? "—")
+        case .firstToken: Text(m.firstToken.map { "≈" + seconds($0) } ?? "—")
+        }
     }
 }
 
-// MARK: - 请求明细的列
-
-enum LogColumn: String, CaseIterable {
+/// 请求明细的列
+enum LogColumn: String, CaseIterable, StatsColumn {
     case time, app, model, cost, input, output, cacheRead, cacheWrite, hitRate, speed, firstToken, duration, status
 
     var title: String {
@@ -1163,7 +1224,7 @@ enum LogColumn: String, CaseIterable {
         }
     }
 
-    /// 默认宽度；nil：占满剩余宽度。今天的时间只有时分秒，跨天的范围要带日期
+    /// 今天的时间只有时分秒，跨天的范围要带日期
     func defaultWidth(today: Bool) -> CGFloat? {
         switch self {
         case .time: return today ? 80 : 118
@@ -1180,7 +1241,6 @@ enum LogColumn: String, CaseIterable {
         }
     }
 
-    /// 拖窄的下限
     var minWidth: CGFloat { self == .model ? 100 : 44 }
 
     @ViewBuilder func cell(_ r: UsageRecord, time: String) -> some View {
