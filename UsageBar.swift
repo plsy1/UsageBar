@@ -15,9 +15,10 @@ struct LimitWindow {
     let resetsAt: Date?
     var remaining: Double { max(0, 100 - usedPercent) }
     /// 按设置显示剩余还是已使用（进度条和百分比都跟着变）
-    var shown: Double { Pref.showUsed ? min(100, usedPercent) : remaining }
-    var shownText: String {
-        Pref.showUsed ? L("已用 %d%%", Int(shown.rounded())) : L("剩 %d%%", Int(shown.rounded()))
+    func shown(_ used: Bool = Pref.showUsed) -> Double { used ? min(100, usedPercent) : remaining }
+    func shownText(_ used: Bool = Pref.showUsed) -> String {
+        let v = Int(shown(used).rounded())
+        return used ? L("已用 %d%%", v) : L("剩 %d%%", v)
     }
 }
 
@@ -578,18 +579,19 @@ struct UsageRow: View {
     let w: LimitWindow
     let s: CGFloat
     let showReset: Bool
+    let used: Bool  // 显式传进来：SwiftUI 只在输入变化时重绘这一行
     var body: some View {
         VStack(alignment: .leading, spacing: 3 * s) {
             HStack {
                 Text(w.label).font(.system(size: 12 * s))
                 Spacer()
-                Text(w.shownText)
+                Text(w.shownText(used))
                     .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.25))
-                    Capsule().fill(Color.primary.opacity(0.9)).frame(width: g.size.width * w.shown / 100)
+                    Capsule().fill(Color.primary.opacity(0.9)).frame(width: g.size.width * w.shown(used) / 100)
                 }
             }
             .frame(height: 4 * s)
@@ -633,7 +635,7 @@ struct CardView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                        UsageRow(w: w, s: s, showReset: showReset)
+                        UsageRow(w: w, s: s, showReset: showReset, used: displayMode == "used")
                     }
                     if let n = u.note {
                         Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
@@ -828,7 +830,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
             if let b = u.binding {
-                s.append(NSAttributedString(string: "\(Int(b.shown.rounded()))%", attributes: [.font: font]))
+                s.append(NSAttributedString(string: "\(Int(b.shown().rounded()))%", attributes: [.font: font]))
             } else {
                 s.append(NSAttributedString(string: "–", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
             }
@@ -870,9 +872,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for w in u.windows {
                 let line = NSMutableAttributedString(string: "  " + w.label.padding(toLength: 10, withPad: " ", startingAt: 0),
                                                      attributes: [.font: mono])
-                line.append(NSAttributedString(string: bar(w.shown),
+                line.append(NSAttributedString(string: bar(w.shown()),
                                                attributes: [.font: mono]))
-                line.append(NSAttributedString(string: " " + w.shownText,
+                line.append(NSAttributedString(string: " " + w.shownText(),
                                                attributes: [.font: mono]))
                 info(line)
                 if w.resetsAt != nil {
@@ -916,7 +918,7 @@ if CommandLine.arguments.contains("--print") {
             print("\(u.name)\(u.plan.map { " (\($0))" } ?? "")")
             if let e = u.error { print("  ⚠︎ \(e)") }
             for w in u.windows {
-                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.shown)) \(w.shownText)  \(resetText(w.resetsAt))")
+                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.shown())) \(w.shownText())  \(resetText(w.resetsAt))")
             }
             if let n = u.note { print("  ⓘ \(n)") }
         }
