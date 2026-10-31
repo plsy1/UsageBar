@@ -9,6 +9,7 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
 - **Main window**: usage statistics and settings in one window with a sidebar
 - **Usage statistics**: like CC Switch's — estimated cost, requests, tokens and cache hit rate for today, since the weekly limit last reset, the last 24 hours / 7 / 14 / 30 days, all time or a custom start and end, an hourly or daily chart, and per-model and per-request tables. Built from local Claude Code and Codex session logs; cost uses [models.dev](https://models.dev) API prices
 - **Settings**: launch at login, language, theme color, show remaining or used, separate refresh intervals for limits and statistics; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
+- **In-app updates**: checks GitHub Releases daily; one click downloads the new version, verifies its SHA-256, replaces the app and restarts
 - **Languages**: English / 简体中文 / 日本語, following the system by default
 - Requires macOS 13 or later, Apple silicon and Intel
 
