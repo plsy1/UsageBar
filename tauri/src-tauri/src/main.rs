@@ -659,7 +659,10 @@ fn main() {
                 trays.push(tray);
             }
             *app.state::<AppState>().trays.lock().unwrap() = trays;
-            place_card(&handle, "card");
+            // 两张卡片都按记录摆好（额度卡片先，用量卡片第一次要挨着它放）
+            for l in CARD_LABELS {
+                place_card(&handle, l);
+            }
             apply_card(&handle);
             tauri::async_runtime::spawn(watch_monitors(handle.clone()));
             tauri::async_runtime::spawn(stats_loop(handle.clone()));
