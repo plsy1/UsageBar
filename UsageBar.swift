@@ -224,10 +224,6 @@ enum Codex {
 
 // MARK: - 菜单栏 UI
 
-func color(forRemaining r: Double) -> NSColor {
-    r >= 50 ? .systemGreen : r >= 20 ? .systemOrange : .systemRed
-}
-
 func bar(_ remaining: Double, width: Int = 12) -> String {
     let filled = Int((remaining / 100 * Double(width)).rounded())
     return String(repeating: "█", count: filled) + String(repeating: "░", count: width - filled)
@@ -266,21 +262,20 @@ struct Blur: NSViewRepresentable {
 struct UsageRow: View {
     let w: LimitWindow
     var body: some View {
-        let c = Color(nsColor: color(forRemaining: w.remaining))
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(w.label).font(.system(size: 12))
                 Spacer()
                 Text("剩 \(Int(w.remaining.rounded()))%")
-                    .font(.system(size: 12, weight: .semibold).monospacedDigit()).foregroundStyle(c)
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.12))
-                    Capsule().fill(c).frame(width: g.size.width * w.remaining / 100)
+                    Capsule().fill(Color.primary.opacity(0.1))
+                    Capsule().fill(Color.primary.opacity(0.6)).frame(width: g.size.width * w.remaining / 100)
                 }
             }
-            .frame(height: 6)
+            .frame(height: 4)
             if w.resetsAt != nil {
                 Text(resetText(w.resetsAt)).font(.system(size: 10)).foregroundStyle(.secondary)
             }
@@ -298,16 +293,16 @@ struct CardView: View {
             ForEach(model.results, id: \.name) { u in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(u.name).font(.system(size: 14, weight: .bold))
+                        Text(u.name).font(.system(size: 13, weight: .semibold))
                         if let p = u.plan { Text(p).font(.system(size: 10)).foregroundStyle(.secondary) }
                     }
                     if let e = u.error {
-                        Text("⚠︎ \(e)").font(.system(size: 11)).foregroundStyle(.red)
+                        Text(e).font(.system(size: 11)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in UsageRow(w: w) }
                     if let n = u.note {
-                        Text("ⓘ \(n)").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(n).font(.system(size: 10)).foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -430,8 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let short = u.name == "Claude" ? "Cl " : "Cx "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
             if let b = u.binding {
-                s.append(NSAttributedString(string: "\(Int(b.remaining.rounded()))%",
-                                            attributes: [.font: font, .foregroundColor: color(forRemaining: b.remaining)]))
+                s.append(NSAttributedString(string: "\(Int(b.remaining.rounded()))%", attributes: [.font: font]))
             } else {
                 s.append(NSAttributedString(string: "–", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
             }
@@ -455,13 +449,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             info(head)
             if let e = u.error {
-                info(NSAttributedString(string: "  ⚠︎ \(e)", attributes: [.font: small, .foregroundColor: NSColor.systemRed]))
+                info(NSAttributedString(string: "  \(e)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
             }
             for w in u.windows {
                 let line = NSMutableAttributedString(string: "  " + w.label.padding(toLength: 10, withPad: " ", startingAt: 0),
                                                      attributes: [.font: mono])
                 line.append(NSAttributedString(string: bar(w.remaining),
-                                               attributes: [.font: mono, .foregroundColor: color(forRemaining: w.remaining)]))
+                                               attributes: [.font: mono]))
                 line.append(NSAttributedString(string: String(format: " 剩 %3d%%", Int(w.remaining.rounded())),
                                                attributes: [.font: mono]))
                 info(line)
@@ -471,7 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             if let n = u.note {
-                info(NSAttributedString(string: "  ⓘ \(n)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+                info(NSAttributedString(string: "  \(n)", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
             }
             menu.addItem(.separator())
         }
