@@ -8,7 +8,7 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
 - **Desktop card**: sits on the desktop layer, draggable; side-by-side, stacked or compact layout with adjustable size; right-click to refresh, open UsageBar or the card settings, or hide it
 - **Main window**: usage statistics and settings in one window with a sidebar
 - **Usage statistics**: like CC Switch's — estimated cost, requests, tokens and cache hit rate for today, since the weekly limit last reset, the last 24 hours / 7 / 14 / 30 days, all time or a custom start and end, an hourly or daily chart, and per-model and per-request tables. Built from local Claude Code and Codex session logs; cost uses [models.dev](https://models.dev) API prices
-- **Settings**: launch at login, language, show remaining or used, separate refresh intervals for limits and statistics; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
+- **Settings**: launch at login, language, theme color, show remaining or used, separate refresh intervals for limits and statistics; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
 - **Languages**: English / 简体中文 / 日本語, following the system by default
 - Requires macOS 13 or later, Apple silicon and Intel
 

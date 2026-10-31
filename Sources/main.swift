@@ -166,7 +166,7 @@ enum I18n {
         "刷新间隔": ("更新間隔", "Refresh Interval"),
         "刷新间隔（后台增量更新）": ("更新間隔（バックグラウンドで差分更新）", "Refresh Interval (in the background)"),
         "语言、额度显示和用量统计": ("言語、上限の表示、使用量の統計", "Language, limits display and usage statistics"),
-        "图表颜色": ("グラフの色", "Chart Color"),
+        "主题色": ("テーマカラー", "Theme Color"),
         "粉色": ("ピンク", "Pink"),
         "紫色": ("パープル", "Purple"),
         "蓝色": ("ブルー", "Blue"),
@@ -548,6 +548,20 @@ struct GeneralSettings: View {
                         Text("日本語").tag("ja")
                         Text("English").tag("en")
                     }
+                    // 主题色：统计图、开关和主窗口里的选中标记都用它
+                    LabeledContent(L("主题色")) {
+                        HStack(spacing: 9) {
+                            ForEach(ChartColor.all, id: \.key) { c in
+                                Button { chartColor = c.key } label: {
+                                    Circle().fill(c.color).frame(width: 16, height: 16)
+                                        .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.7 : 0), lineWidth: 1.5).padding(-3))
+                                        .padding(3)
+                                }
+                                .buttonStyle(.plain)
+                                .help(L(c.name))
+                            }
+                        }
+                    }
                 }
                 // 按功能分组：额度（卡片和菜单栏）/ 用量统计
                 Section(L("额度（卡片和菜单栏）")) {
@@ -563,19 +577,6 @@ struct GeneralSettings: View {
                     }
                 }
                 Section(L("用量统计")) {
-                    LabeledContent(L("图表颜色")) {
-                        HStack(spacing: 9) {
-                            ForEach(ChartColor.all, id: \.key) { c in
-                                Button { chartColor = c.key } label: {
-                                    Circle().fill(c.color).frame(width: 16, height: 16)
-                                        .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.7 : 0), lineWidth: 1.5).padding(-3))
-                                        .padding(3)
-                                }
-                                .buttonStyle(.plain)
-                                .help(L(c.name))
-                            }
-                        }
-                    }
                     Picker(L("刷新间隔（后台增量更新）"), selection: $statsRefreshMinutes) {
                         ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                     }
@@ -837,6 +838,7 @@ struct MainView: View {
     @ObservedObject var stats: StatsStore
     let model: UsageModel
     @AppStorage(Pref.language) var language = "auto"
+    @AppStorage("statsChartColor") var themeColor = "pink"
 
     var body: some View {
         let _ = language  // 切换语言时重绘
@@ -861,6 +863,9 @@ struct MainView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .navigationTitle(nav.tab.title)
         }
+        // 主题色：主窗口里的开关、分段按钮、选中标记都用它（桌面卡片和菜单栏保持单色）
+        .tint(ChartColor.color(themeColor))
+        .accentColor(ChartColor.color(themeColor))
     }
 
     func row(_ t: MainTab) -> some View {

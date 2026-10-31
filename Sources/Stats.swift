@@ -321,7 +321,7 @@ struct StatsView: View {
     static let pageSize = 50
     @State var showRange = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
-    @AppStorage("statsChartColor") var chartColor = "pink"  // 在 设置 → 通用 里选
+    @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -543,7 +543,7 @@ struct StatsView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
                 }
-                Rectangle().fill(selected ? Color.primary : .clear).frame(height: 2)
+                Rectangle().fill(selected ? ChartColor.color(chartColor) : .clear).frame(height: 2)
             }
             .fixedSize()
             .contentShape(Rectangle())
@@ -722,7 +722,7 @@ struct RangePopover: View {
     }
 }
 
-/// 统计图可选的颜色（系统色，深浅色模式下自动调整）
+/// 主题色可选的颜色（系统色，深浅色模式下自动调整）：统计图、开关、选中标记
 enum ChartColor {
     static let all: [(key: String, name: String, color: Color)] = [
         ("pink", "粉色", .pink), ("purple", "紫色", .purple), ("blue", "蓝色", .blue), ("teal", "青色", .teal),
