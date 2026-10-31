@@ -1761,8 +1761,7 @@ final class CardWindow: NSWindow {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
-        ignoresMouseEvents = false  // 透明区域也能拖动
-        isMovableByWindowBackground = true
+        ignoresMouseEvents = false  // 透明区域也能拖动（拖动自己处理，见 sendEvent）
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
         applyLevel()
         // 先按内容定好大小再摆位置，不然窗口之后从 0 长高时会往上长
@@ -1788,12 +1787,85 @@ final class CardWindow: NSWindow {
             savePlacement()
         }
         NotificationCenter.default.addObserver(self, selector: #selector(moved), name: NSWindow.didMoveNotification, object: self)
+        CardWindow.all.add(self)
     }
     /// 每家一栏的宽度；两栏并排时卡片约 500 宽
     static let column: CGFloat = 210
     static let wideColumn: CGFloat = 260
     static let defaultWidth: CGFloat = column * 2 + 24 + 32
     override var canBecomeKey: Bool { false }
+
+    // MARK: 拖动：自己处理，靠近屏幕边缘、屏幕中线、另一张卡片的边时吸过去，并画出对齐线
+
+    /// 所有卡片（拖一张时和另一张对齐）
+    static let all = NSHashTable<CardWindow>.weakObjects()
+    static let guides = GuideWindow()
+    /// 离对齐位置多近就吸过去（这段距离内拖不动，像碰到了边）
+    static let snapDistance: CGFloat = 10
+    /// 离屏幕边缘留的空、两张卡片挨着时的间隔
+    static let margin: CGFloat = 16
+    static let gap: CGFloat = 12
+
+    private var dragStart: (mouse: NSPoint, origin: NSPoint)?
+    private var snappedX: CGFloat?, snappedY: CGFloat?
+
+    override func sendEvent(_ e: NSEvent) {
+        switch e.type {
+        case .leftMouseDown:
+            dragStart = (NSEvent.mouseLocation, frame.origin)
+        case .leftMouseDragged:
+            if let d = dragStart {
+                let m = NSEvent.mouseLocation
+                drag(to: NSPoint(x: d.origin.x + m.x - d.mouse.x, y: d.origin.y + m.y - d.mouse.y))
+                return
+            }
+        case .leftMouseUp:
+            if dragStart != nil {
+                dragStart = nil
+                snappedX = nil; snappedY = nil
+                Self.guides.orderOut(nil)
+            }
+        default:
+            break
+        }
+        super.sendEvent(e)
+    }
+
+    /// 一个可以吸附的位置：窗口左下角该放的坐标，和要画的对齐线在哪
+    typealias Snap = (origin: CGFloat, line: CGFloat)
+
+    func drag(to raw: NSPoint) {
+        let size = frame.size
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? self.screen ?? NSScreen.main
+        var xs: [Snap] = [], ys: [Snap] = []
+        if let v = screen?.visibleFrame {
+            let m = Self.margin
+            xs += [(v.minX, v.minX), (v.minX + m, v.minX + m), (v.maxX - size.width, v.maxX),
+                   (v.maxX - m - size.width, v.maxX - m), (v.midX - size.width / 2, v.midX)]
+            ys += [(v.minY, v.minY), (v.minY + m, v.minY + m), (v.maxY - size.height, v.maxY),
+                   (v.maxY - m - size.height, v.maxY - m), (v.midY - size.height / 2, v.midY)]
+        }
+        for other in Self.all.allObjects where other !== self && other.isVisible {
+            let f = other.frame, g = Self.gap
+            // 左边、右边、中线对齐；或者隔一点并排（线画在两张中间）
+            xs += [(f.minX, f.minX), (f.maxX - size.width, f.maxX), (f.midX - size.width / 2, f.midX),
+                   (f.maxX + g, f.maxX + g / 2), (f.minX - g - size.width, f.minX - g / 2)]
+            // 顶边、底边对齐；或者隔一点上下叠放
+            ys += [(f.minY, f.minY), (f.maxY - size.height, f.maxY),
+                   (f.maxY + g, f.maxY + g / 2), (f.minY - g - size.height, f.minY - g / 2)]
+        }
+        func nearest(_ c: [Snap], _ v: CGFloat) -> Snap? {
+            c.filter { abs($0.origin - v) <= Self.snapDistance }.min { abs($0.origin - v) < abs($1.origin - v) }
+        }
+        let sx = nearest(xs, raw.x), sy = nearest(ys, raw.y)
+        // 刚吸上的那一下给个触感（力度触控板才有）
+        if (sx != nil && sx?.line != snappedX) || (sy != nil && sy?.line != snappedY) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        snappedX = sx?.line; snappedY = sy?.line
+        setFrameOrigin(NSPoint(x: sx?.origin ?? raw.x, y: sy?.origin ?? raw.y))
+        Self.guides.show(x: snappedX, y: snappedY, on: screen, above: level)
+    }
 
     /// 保持在最前：浮在所有窗口上面；否则贴在桌面层（桌面图标上面一层，其他窗口会盖住它）
     func applyLevel() {
@@ -1865,6 +1937,41 @@ final class CardWindow: NSWindow {
             self?.onResize(size)
             if resized { self?.clampToScreen() }
         }
+    }
+}
+
+/// 拖卡片时的对齐线：一层铺满屏幕、透明、不接鼠标的窗口，盖在卡片上面一层
+final class GuideWindow: NSWindow {
+    let lines = GuideView()
+
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: true)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        ignoresMouseEvents = true
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        contentView = lines
+    }
+
+    /// x、y 是屏幕坐标里的竖线和横线；都没有就收起来
+    func show(x: CGFloat?, y: CGFloat?, on screen: NSScreen?, above cardLevel: NSWindow.Level) {
+        guard let screen, x != nil || y != nil else { orderOut(nil); return }
+        if frame != screen.frame { setFrame(screen.frame, display: false) }
+        level = NSWindow.Level(rawValue: cardLevel.rawValue + 1)
+        lines.x = x.map { $0 - screen.frame.minX }
+        lines.y = y.map { $0 - screen.frame.minY }
+        lines.needsDisplay = true
+        orderFrontRegardless()
+    }
+}
+
+final class GuideView: NSView {
+    var x: CGFloat?, y: CGFloat?
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
+        if let x { NSRect(x: x - 0.5, y: 0, width: 1, height: bounds.height).fill() }
+        if let y { NSRect(x: 0, y: y - 0.5, width: bounds.width, height: 1).fill() }
     }
 }
 
