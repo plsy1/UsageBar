@@ -1,6 +1,8 @@
 // 用量统计：从本机会话记录算 token 用量和按 API 价格估算的成本
 //   Claude: ~/.claude/projects/**/*.jsonl 里 assistant 消息的 message.usage
 //   Codex : ~/.codex/sessions/**/*.jsonl 里 token_count 事件的 last_token_usage
+//   耗时  : 两边日志都不记，按时间戳估算：请求发出（上一条用户消息 / 工具结果）到回复最后一段写入；
+//           首字取第一段内容写入的时间（日志要等一整段生成完才写，所以偏大）
 //   价格  : models.dev/api.json（每天更新一次，缓存在 ~/Library/Caches）
 
 import AppKit
@@ -22,7 +24,19 @@ struct UsageRecord: Identifiable {
     let cacheWrite: Int
     var cacheWrite1h = 0  // cacheWrite 里属于 1 小时缓存的部分（Claude 才有），单价是输入的 2 倍
     var cost: Double?
+    var duration: Double?  // 估算的总耗时（秒）
+    var firstToken: Double?  // 估算的首字时间（秒）：第一段内容写入日志的时间
+    var status = 200       // 失败的请求（Claude Code 会记下来）：429、401 等
     var tokens: Int { input + output + cacheRead + cacheWrite }
+    var failed: Bool { status != 200 }
+    var hitRate: Double? {
+        let prompt = input + cacheRead + cacheWrite
+        return prompt > 0 ? Double(cacheRead) / Double(prompt) : nil
+    }
+    /// 输出速度（token/秒），按总耗时算（思考也算在输出里，扣掉首字反而偏高）。
+    /// 输出太少时耗时几乎全是等待，算出来没意义
+    static let minSpeedOutput = 200
+    var speed: Double? { duration.flatMap { $0 > 0.05 && output >= Self.minSpeedOutput ? Double(output) / $0 : nil } }
 }
 
 // MARK: - 价格（models.dev）
@@ -97,6 +111,11 @@ enum Pricing {
     }
 
     static func cost(_ r: UsageRecord) -> Double? {
+        breakdown(r).map { $0.input + $0.output + $0.cacheRead + $0.cacheWrite }
+    }
+
+    /// 各部分的成本（美元），请求详情里显示
+    static func breakdown(_ r: UsageRecord) -> (input: Double, output: Double, cacheRead: Double, cacheWrite: Double)? {
         let models = table[r.source == .claude ? "anthropic" : "openai"]
         // 带日期后缀的型号（如 -20261001）去掉后缀再找一次
         let base = r.model.replacingOccurrences(of: #"-\d{8}$"#, with: "", options: .regularExpression)
@@ -105,10 +124,10 @@ enum Pricing {
         if let tier = p.tiers.last(where: { prompt > $0.size }) { p = tier.price }
         // models.dev 的 cache_write 是 5 分钟缓存的价格；1 小时缓存按 Anthropic 的规则算输入价的 2 倍
         let write5m = r.cacheWrite - r.cacheWrite1h
-        let total = Double(r.input) * p.input + Double(r.output) * p.output
-            + Double(r.cacheRead) * (p.cacheRead ?? p.input)
-            + Double(write5m) * (p.cacheWrite ?? p.input) + Double(r.cacheWrite1h) * p.input * 2
-        return total / 1_000_000
+        let m = 1_000_000.0
+        return (Double(r.input) * p.input / m, Double(r.output) * p.output / m,
+                Double(r.cacheRead) * (p.cacheRead ?? p.input) / m,
+                (Double(write5m) * (p.cacheWrite ?? p.input) + Double(r.cacheWrite1h) * p.input * 2) / m)
     }
 }
 
@@ -163,41 +182,137 @@ enum LogReader {
         }
     }
 
+    /// 一行里第一个 "timestamp"（顶层那个，在消息内容之前），不用解析整行 JSON
+    static func timestamp(in line: Data.SubSequence) -> Date? {
+        guard let r = line.range(of: Data("\"timestamp\":\"".utf8)) else { return nil }
+        let rest = line[r.upperBound...]
+        guard let end = rest.firstIndex(of: UInt8(ascii: "\"")) else { return nil }
+        return String(data: Data(rest[..<end]), encoding: .utf8).flatMap(iso.date)
+    }
+
+    /// 合理的耗时才要：负数（时间戳乱序）或超过半小时的多半是续接会话里拼起来的旧记录
+    static func span(_ from: Date?, _ to: Date) -> Double? {
+        guard let from else { return nil }
+        let d = to.timeIntervalSince(from)
+        return d > 0 && d < 1800 ? d : nil
+    }
+
+    /// Claude Code 失败请求的状态码：有 apiErrorStatus 就用，没有按错误类型对应
+    static func claudeStatus(_ o: [String: Any]) -> Int {
+        if let s = o["apiErrorStatus"] as? Int { return s }
+        switch o["error"] as? String {
+        case "authentication_failed": return 401
+        case "rate_limit": return 429
+        case "invalid_request": return 400
+        case "overloaded": return 529
+        default: return 500
+        }
+    }
+
     static func parseClaude(_ url: URL) -> [UsageRecord] {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return [] }
+        let usageKey = Data("\"usage\"".utf8)
+        let sentKeys = [Data("\"type\":\"user\"".utf8), Data("\"type\":\"api-request\"".utf8)]
         var out: [UsageRecord] = []
-        lines(url, containing: ["\"usage\""]) { o in
-            guard o["type"] as? String == "assistant",
-                  let msg = o["message"] as? [String: Any], let u = msg["usage"] as? [String: Any],
-                  let model = msg["model"] as? String, model != "<synthetic>",
-                  let ts = (o["timestamp"] as? String).flatMap(iso.date) else { return }
+        var index: [String: Int] = [:]  // 一个回复分成几行写（每段内容一行），记下它在 out 里的位置
+        var sentAt: Date?               // 最近一次发出请求：用户消息、工具结果，或新版的 api-request
+        var model = "—"                 // 失败的请求没有模型名，用前面最近的那个
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            // 大部分行是对话内容：先按字节粗筛，用户消息和工具结果只取时间戳，不解析整行
+            guard line.range(of: usageKey) != nil else {
+                if sentKeys.contains(where: { line.range(of: $0) != nil }), let t = timestamp(in: line) { sentAt = t }
+                continue
+            }
+            guard let o = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                  let ts = (o["timestamp"] as? String).flatMap(iso.date) else { continue }
+            guard o["type"] as? String == "assistant" else {
+                if ["user", "api-request"].contains(o["type"] as? String) { sentAt = ts }
+                continue
+            }
+            guard let msg = o["message"] as? [String: Any], let u = msg["usage"] as? [String: Any] else { continue }
             let id = "\(msg["id"] as? String ?? UUID().uuidString):\(o["requestId"] as? String ?? "")"
-            var r = UsageRecord(id: id, time: ts, source: .claude, model: model,
+            if let i = index[id] {
+                out[i].duration = span(sentAt, ts) ?? out[i].duration  // 后面几段写入时更新结束时间
+                continue
+            }
+            let name = msg["model"] as? String ?? model
+            if name == "<synthetic>" {
+                // Claude Code 自己插的消息；isApiErrorMessage 的是失败的请求，其他（比如中断提示）不算
+                guard o["isApiErrorMessage"] as? Bool == true else { continue }
+                var r = UsageRecord(id: id, time: ts, source: .claude, model: model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0)
+                r.status = claudeStatus(o)
+                r.duration = span(sentAt, ts)
+                index[id] = out.count
+                out.append(r)
+                continue
+            }
+            model = name
+            var r = UsageRecord(id: id, time: ts, source: .claude, model: name,
                                 input: u["input_tokens"] as? Int ?? 0, output: u["output_tokens"] as? Int ?? 0,
                                 cacheRead: u["cache_read_input_tokens"] as? Int ?? 0,
                                 cacheWrite: u["cache_creation_input_tokens"] as? Int ?? 0)
             r.cacheWrite1h = min(r.cacheWrite, (u["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"] as? Int ?? 0)
+            r.duration = span(sentAt, ts)
+            r.firstToken = r.duration
+            index[id] = out.count
             out.append(r)
         }
         return out
     }
 
+    /// Codex 日志一行是 {"timestamp":…,"type":…,"payload":{"type":"…"：取出 payload 的类型，不解析整行
+    static func payloadType(in line: Data.SubSequence) -> String? {
+        guard let r = line.range(of: Data("\"payload\":{\"type\":\"".utf8)) else { return nil }
+        let rest = line[r.upperBound...]
+        guard let end = rest.firstIndex(of: UInt8(ascii: "\"")) else { return nil }
+        return String(data: Data(rest[..<end]), encoding: .utf8)
+    }
+
     static func parseCodex(_ url: URL) -> [UsageRecord] {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return [] }
+        let parseKeys = [Data("\"token_count\"".utf8), Data("\"turn_context\"".utf8)]
+        let outputs: Set<String> = ["reasoning", "message", "function_call", "custom_tool_call", "web_search_call", "local_shell_call"]
         var out: [UsageRecord] = []
         var model = "codex", lastTotal = -1
-        lines(url, containing: ["\"token_count\"", "\"turn_context\""]) { o in
-            guard let p = o["payload"] as? [String: Any] else { return }
-            if o["type"] as? String == "turn_context" { model = p["model"] as? String ?? model; return }
+        // 耗时：一次回复从「最近一次输入」（用户消息、工具结果）开始，到它最后一项内容写入为止。
+        // token_count 要等工具执行完才写，不能当结束时间
+        var inputAt: Date?, start: Date?, first: Date?, end: Date?
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            // turn_context 的 payload 第一个字段不是 type，取不到类型，单独认
+            let kind = payloadType(in: line) ?? ""
+            if !parseKeys.contains(where: { line.range(of: $0) != nil }) || kind == "message" {
+                // 只看类型和时间，不解析整行（工具输出往往很长）
+                guard let ts = timestamp(in: line) else { continue }
+                if kind.hasSuffix("_call_output") || kind == "task_started" || kind == "user_message" {
+                    inputAt = ts
+                } else if kind == "message", line.range(of: Data("\"role\":\"user\"".utf8)) != nil {
+                    inputAt = ts
+                } else if outputs.contains(kind) {
+                    if start == nil { start = inputAt; first = ts }
+                    end = ts
+                } else if kind == "token_usage_record" || line.range(of: Data("\"type\":\"token_usage_record\"".utf8)) != nil {
+                    end = ts
+                }
+                continue
+            }
+            guard let o = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                  let p = o["payload"] as? [String: Any] else { continue }
+            if o["type"] as? String == "turn_context" { model = p["model"] as? String ?? model; continue }
             guard p["type"] as? String == "token_count", let info = p["info"] as? [String: Any],
                   let last = info["last_token_usage"] as? [String: Any],
                   let total = (info["total_token_usage"] as? [String: Any])?["total_tokens"] as? Int,
                   total != lastTotal,  // 只更新了额度信息的重复事件
-                  let tsString = o["timestamp"] as? String, let ts = iso.date(from: tsString) else { return }
+                  let tsString = o["timestamp"] as? String, let ts = iso.date(from: tsString) else { continue }
             lastTotal = total
             let cached = last["cached_input_tokens"] as? Int ?? 0
-            out.append(UsageRecord(id: "\(tsString)|\(total)", time: ts, source: .codex, model: model,
-                                   input: max(0, (last["input_tokens"] as? Int ?? 0) - cached),
-                                   output: last["output_tokens"] as? Int ?? 0,
-                                   cacheRead: cached, cacheWrite: last["cache_write_input_tokens"] as? Int ?? 0))
+            var r = UsageRecord(id: "\(tsString)|\(total)", time: ts, source: .codex, model: model,
+                                input: max(0, (last["input_tokens"] as? Int ?? 0) - cached),
+                                output: last["output_tokens"] as? Int ?? 0,
+                                cacheRead: cached, cacheWrite: last["cache_write_input_tokens"] as? Int ?? 0)
+            if let end { r.duration = span(start, end) }
+            if let first { r.firstToken = span(start, first) }
+            start = nil; first = nil; end = nil
+            out.append(r)
         }
         return out
     }
@@ -238,7 +353,7 @@ enum StatsRange: String, CaseIterable {
 struct Summary {
     var cost = 0.0, requests = 0, tokens = 0, input = 0, output = 0, cacheRead = 0, cacheWrite = 0
     init(_ rs: [UsageRecord]) {
-        for r in rs {
+        for r in rs where !r.failed {  // 失败的请求只在请求明细里列出来
             cost += r.cost ?? 0; requests += 1; tokens += r.tokens
             input += r.input; output += r.output; cacheRead += r.cacheRead; cacheWrite += r.cacheWrite
         }
@@ -322,6 +437,16 @@ struct StatsView: View {
     @State var showRange = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
+    /// 请求明细里隐藏的列（LogColumn 的 rawValue，逗号分隔）
+    @AppStorage("statsHiddenColumns") var hiddenColumns = ""
+    /// 汇总下面展开的第二行（新增输入、输出、缓存读取、缓存写入）
+    @AppStorage("statsMoreTiles") var moreTiles = false
+    /// 请求明细只看某个状态码；0 是全部
+    @AppStorage("statsStatus") var statusFilter = 0
+    /// 点开详情的那条请求
+    @State var selected: UsageRecord?
+    /// 请求明细可用的宽度：列多了放不下时改成左右滚动
+    @State var tableWidth: CGFloat = 0
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -373,18 +498,48 @@ struct StatsView: View {
         .padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 12)
         ScrollView {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 0) {
-                tile(L("估算成本"), money(sum.cost))
-                Divider().padding(.vertical, 4)
-                tile(L("请求数"), sum.requests.formatted())
-                Divider().padding(.vertical, 4)
-                tile("Tokens", abbrev(sum.tokens))
-                Divider().padding(.vertical, 4)
-                tile(L("缓存命中率"), sum.hitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    tile(L("估算成本"), money(sum.cost))
+                    Divider().padding(.vertical, 4)
+                    tile(L("请求数"), sum.requests.formatted())
+                    Divider().padding(.vertical, 4)
+                    tile("Tokens", abbrev(sum.tokens))
+                    Divider().padding(.vertical, 4)
+                    tile(L("缓存命中率"), sum.hitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                }
+                .fixedSize(horizontal: false, vertical: true)  // 不让分隔线把这一行撑高
+                .padding(.vertical, 14)
+                // 更多指标：Tokens 拆成四部分
+                if moreTiles {
+                    Divider()
+                    HStack(spacing: 0) {
+                        tile(L("新增输入"), abbrev(sum.input), small: true)
+                        Divider().padding(.vertical, 4)
+                        tile(L("输出"), abbrev(sum.output), small: true)
+                        Divider().padding(.vertical, 4)
+                        tile(L("缓存读取"), abbrev(sum.cacheRead), small: true)
+                        Divider().padding(.vertical, 4)
+                        tile(L("缓存写入"), abbrev(sum.cacheWrite), small: true)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 12)
+                }
             }
-            .fixedSize(horizontal: false, vertical: true)  // 不让分隔线把这一行撑高
-            .padding(.vertical, 14)
+            .padding(.bottom, 8)
             .modifier(Panel())
+            .overlay(alignment: .bottom) {
+                Button { withAnimation(.easeOut(duration: 0.15)) { moreTiles.toggle() } } label: {
+                    Image(systemName: moreTiles ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color(nsColor: .controlBackgroundColor)))
+                        .overlay(Circle().strokeBorder(Color(nsColor: .separatorColor)))
+                }
+                .buttonStyle(.plain)
+                .help(moreTiles ? L("收起") : L("更多指标"))
+                .offset(y: 11)
+            }
             chart(rows)
             tables(rows)
             Text(L("成本按 models.dev 的 API 价格估算，仅统计本机会话记录"))
@@ -394,6 +549,17 @@ struct StatsView: View {
         }
         }
         .frame(minWidth: 820, minHeight: 600)
+        // 点请求明细的一行：从右边滑出详情
+        .overlay(alignment: .trailing) {
+            if let r = selected {
+                ZStack(alignment: .trailing) {
+                    Color.black.opacity(0.12).contentShape(Rectangle()).onTapGesture { selected = nil }
+                    RequestDetail(r: r, timeFormat: "yyyy/M/d HH:mm:ss") { selected = nil }
+                        .transition(.move(edge: .trailing))
+                }
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: selected?.id)
         .environment(\.locale, locale)  // 图表坐标的日期跟着界面语言
     }
 
@@ -435,10 +601,10 @@ struct StatsView: View {
         }
     }
 
-    func tile(_ title: String, _ value: String) -> some View {
+    func tile(_ title: String, _ value: String, small: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.callout).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 26, weight: .semibold, design: .rounded).monospacedDigit())
+            Text(value).font(.system(size: small ? 18 : 26, weight: .semibold, design: .rounded).monospacedDigit())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
@@ -511,7 +677,7 @@ struct StatsView: View {
     }
 
     func modelRows(_ rows: [UsageRecord]) -> [ModelRow] {
-        Dictionary(grouping: rows) { "\($0.source.rawValue)|\($0.model)" }
+        Dictionary(grouping: rows.filter { !$0.failed }) { "\($0.source.rawValue)|\($0.model)" }
             .map { key, rs in ModelRow(id: key, source: rs[0].source, model: rs[0].model, s: Summary(rs), priced: rs[0].cost != nil) }
             .sorted { $0.s.cost != $1.s.cost ? $0.s.cost > $1.s.cost : $0.s.tokens > $1.s.tokens }
     }
@@ -524,6 +690,11 @@ struct StatsView: View {
                 tabButton(L("按模型"), count: models.count, tag: "models")
                 tabButton(L("请求明细"), count: rows.count, tag: "log")
                 Spacer()
+                if tab == "log" {
+                    statusMenu(rows)
+                    Divider().frame(height: 16)
+                    columnMenu
+                }
             }
             .padding(.horizontal, 20).padding(.top, 12)
             Divider()
@@ -598,22 +769,73 @@ struct StatsView: View {
         }
     }
 
-    func logTable(_ rows: [UsageRecord]) -> some View {
+    var hidden: Set<LogColumn> { Set(hiddenColumns.split(separator: ",").compactMap { LogColumn(rawValue: String($0)) }) }
+
+    /// 按状态码筛选（ccswitch 那样）：只列出这段时间里出现过的状态码
+    func statusMenu(_ rows: [UsageRecord]) -> some View {
+        let codes = Set(rows.map(\.status)).union([200]).sorted()
+        return Menu {
+            Button { statusFilter = 0 } label: { check(statusFilter == 0, L("全部状态码")) }
+            Divider()
+            ForEach(codes, id: \.self) { c in
+                Button { statusFilter = c } label: { check(statusFilter == c, "\(c)") }
+            }
+        } label: {
+            Label(statusFilter == 0 ? L("状态码") : "\(statusFilter)", systemImage: "line.3.horizontal.decrease")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    /// 显示哪些列
+    var columnMenu: some View {
+        Menu {
+            ForEach(LogColumn.allCases, id: \.self) { c in
+                Button {
+                    var h = hidden
+                    if h.contains(c) { h.remove(c) } else { h.insert(c) }
+                    hiddenColumns = LogColumn.allCases.filter(h.contains).map(\.rawValue).joined(separator: ",")
+                } label: { check(!hidden.contains(c), c.title) }
+            }
+            Divider()
+            Button(L("恢复默认")) { hiddenColumns = "" }
+        } label: {
+            Image(systemName: "rectangle.split.3x1")
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(L("显示的列"))
+    }
+
+    @ViewBuilder func check(_ on: Bool, _ title: String) -> some View {
+        if on { Label(title, systemImage: "checkmark") } else { Text(title) }
+    }
+
+    func logTable(_ all: [UsageRecord]) -> some View {
+        let rows = statusFilter == 0 ? all : all.filter { $0.status == statusFilter }
         let size = Self.pageSize
         let pages = max(1, (rows.count + size - 1) / size)
         let current = min(page, pages - 1)  // 数据变少时别停在不存在的页
         let f = DateFormatter()
         f.dateFormat = range == .today ? "HH:mm:ss" : "M/d HH:mm:ss"  // 跨天的范围带上日期
-        let cols: [Column] = [(L("时间"), range == .today ? 96 : 140), (L("应用"), 76), (L("模型"), nil), (L("成本"), 96),
-                              (L("新增输入"), 90), (L("输出"), 84), (L("缓存读取"), 96), (L("缓存写入"), 96)]
-        return LazyVStack(spacing: 0) {
+        let shown = LogColumn.allCases.filter { !hidden.contains($0) }
+        let cols: [Column] = [(L("时间"), range == .today ? 80 : 118)] + shown.map { ($0.title, $0.width) }
+        // 列多了放不下就左右滚动；放得下时模型那一列占满剩余宽度
+        let needed = cols.reduce(40) { $0 + ($1.width ?? 170) }
+        let table = LazyVStack(spacing: 0) {
             headerRow(cols)
             if rows.isEmpty { emptyRow() }
             ForEach(rows[min(rows.count, current * size)..<min(rows.count, (current + 1) * size)]) { r in
                 Divider()
-                dataRow(cols, [f.string(from: r.time), r.source.rawValue, r.model, money(r.cost, digits: 4),
-                               r.input.formatted(), r.output.formatted(), abbrev(r.cacheRead), abbrev(r.cacheWrite)], mono: [2])
+                logRow(r, time: f.string(from: r.time), cols: cols, shown: shown)
             }
+        }
+        return VStack(spacing: 0) {
+            Group {
+                if tableWidth >= needed { table } else { ScrollView(.horizontal) { table.frame(width: needed) } }
+            }
+            .frame(maxWidth: .infinity)
+            .background(GeometryReader { g in
+                Color.clear.onAppear { tableWidth = g.size.width }.onChange(of: g.size.width) { tableWidth = $0 }
+            })
             if !rows.isEmpty {
                 Divider()
                 HStack(spacing: 12) {
@@ -627,6 +849,180 @@ struct StatsView: View {
                 }
                 .padding(.horizontal, 20).frame(height: 44)
             }
+        }
+    }
+
+    /// 请求明细的一行：点一下看详情
+    func logRow(_ r: UsageRecord, time: String, cols: [Column], shown: [LogColumn]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(cols.enumerated()), id: \.offset) { i, c in
+                Group {
+                    if i == 0 { Text(time) } else { shown[i - 1].cell(r) }
+                }
+                .lineLimit(1)
+                .frame(width: c.width, alignment: .leading)
+                .frame(minWidth: c.width == nil ? 170 : nil, maxWidth: c.width == nil ? .infinity : nil, alignment: .leading)
+            }
+        }
+        .font(.body.monospacedDigit())
+        .padding(.horizontal, 20).frame(height: 42)
+        .background(selected?.id == r.id ? ChartColor.color(chartColor).opacity(0.12) : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture { selected = r }
+    }
+}
+
+// MARK: - 请求明细的列
+
+enum LogColumn: String, CaseIterable {
+    case app, model, cost, input, output, cacheRead, cacheWrite, hitRate, speed, firstToken, duration, status
+
+    var title: String {
+        switch self {
+        case .app: return L("应用")
+        case .model: return L("模型")
+        case .cost: return L("成本")
+        case .input: return L("新增输入")
+        case .output: return L("输出")
+        case .cacheRead: return L("缓存读取")
+        case .cacheWrite: return L("缓存写入")
+        case .hitRate: return L("命中率")
+        case .speed: return L("速度")
+        case .firstToken: return L("首字")
+        case .duration: return L("总耗时")
+        case .status: return L("状态码")
+        }
+    }
+
+    /// nil：占满剩余宽度
+    var width: CGFloat? {
+        switch self {
+        case .app: return 64
+        case .model: return nil
+        case .cost: return 84
+        case .input, .cacheRead, .cacheWrite: return 80
+        case .output: return 72
+        case .hitRate: return 70
+        case .speed: return 84
+        case .firstToken: return 60
+        case .duration: return 70
+        case .status: return 60
+        }
+    }
+
+    @ViewBuilder func cell(_ r: UsageRecord) -> some View {
+        switch self {
+        case .app: Text(r.source.rawValue)
+        case .model: Text(r.model).font(.system(.body, design: .monospaced))
+        case .cost: Text(r.failed ? "—" : money(r.cost, digits: 4))
+        case .input: Text(r.input.formatted())
+        case .output: Text(r.output.formatted())
+        case .cacheRead: Text(abbrev(r.cacheRead))
+        case .cacheWrite: Text(abbrev(r.cacheWrite))
+        case .hitRate: Text(r.hitRate.map(percent) ?? "—")
+        case .speed: Text(r.speed.map { String(format: "%.0f t/s", $0) } ?? "—")
+        case .firstToken: Text(seconds(r.firstToken))
+        case .duration: Text(seconds(r.duration))
+        case .status: Text("\(r.status)").foregroundStyle(r.failed ? Color.red : Color.secondary)
+        }
+    }
+}
+
+func percent(_ v: Double) -> String { String(format: "%.1f%%", v * 100) }
+
+/// 7.3s、1m18s
+func seconds(_ v: Double?) -> String {
+    guard let v else { return "—" }
+    return v < 60 ? String(format: "%.1fs", v) : "\(Int(v) / 60)m\(Int(v) % 60)s"
+}
+
+// MARK: - 请求详情
+
+/// 从右边滑出的详情面板：基本信息、Tokens、成本明细、性能
+struct RequestDetail: View {
+    let r: UsageRecord
+    let timeFormat: String
+    let close: () -> Void
+
+    var body: some View {
+        let f = DateFormatter()
+        f.dateFormat = timeFormat
+        let price = Pricing.breakdown(r)
+        return VStack(spacing: 0) {
+            HStack {
+                Text(L("请求详情")).font(.title3.weight(.semibold))
+                Spacer()
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless).keyboardShortcut(.cancelAction).help(L("关闭"))
+            }
+            // 往下让开透明标题栏（那一条点不到按钮），和左边的工具栏对齐
+            .padding(.horizontal, 20).padding(.top, 14).frame(height: 66)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    section(L("基本信息")) {
+                        line(L("时间"), f.string(from: r.time))
+                        line(L("应用"), r.source.rawValue)
+                        line(L("模型"), r.model, mono: true)
+                        line(L("状态码"), r.failed ? "\(r.status) · " + L("请求失败") : "\(r.status)")
+                        line(L("请求 ID"), r.id, mono: true)
+                    }
+                    section(L("Tokens 用量")) {
+                        line(L("新增输入"), r.input.formatted())
+                        line(L("输出"), r.output.formatted())
+                        line(L("缓存读取"), r.cacheRead.formatted())
+                        line(L("缓存写入"), r.cacheWrite.formatted())
+                        line(L("命中率"), r.hitRate.map(percent) ?? "—")
+                    }
+                    section(L("成本明细（USD）")) {
+                        if let p = price {
+                            line(L("新增输入"), money(p.input, digits: 4))
+                            line(L("输出"), money(p.output, digits: 4))
+                            line(L("缓存读取"), money(p.cacheRead, digits: 4))
+                            line(L("缓存写入"), money(p.cacheWrite, digits: 4))
+                            Divider()
+                            line(L("合计"), money(p.input + p.output + p.cacheRead + p.cacheWrite, digits: 4), bold: true)
+                        } else {
+                            Text(r.failed ? L("失败的请求不计费") : L("models.dev 里没有这个模型的价格"))
+                                .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    section(L("性能")) {
+                        line(L("速度"), r.speed.map { String(format: "%.1f token/s", $0) }
+                             ?? (r.output < UsageRecord.minSpeedOutput ? L("输出不到 %d token，不估速度", UsageRecord.minSpeedOutput) : "—"))
+                        line(L("首字（估算）"), seconds(r.firstToken))
+                        line(L("耗时（估算）"), seconds(r.duration))
+                    }
+                    Text(L("耗时按会话日志的时间戳估算：从请求发出到最后一段内容写进日志。日志要等一段内容生成完才写，所以首字偏大。"))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(20)
+            }
+        }
+        .frame(width: 380)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .leading) { Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1) }
+        .shadow(color: .black.opacity(0.15), radius: 12, x: -2)
+    }
+
+    func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline)
+            VStack(spacing: 10) { content() }
+                .padding(14)
+                .modifier(Panel())
+        }
+    }
+
+    func line(_ title: String, _ value: String, mono: Bool = false, bold: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(mono ? .system(.body, design: .monospaced) : .body.monospacedDigit())
+                .fontWeight(bold ? .semibold : .regular)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
         }
     }
 }

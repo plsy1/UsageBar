@@ -146,6 +146,31 @@ enum I18n {
         "输出": ("出力", "Output"),
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
+        "命中率": ("ヒット率", "Hit Rate"),
+        "收起": ("閉じる", "Show Less"),
+        "更多指标": ("その他の指標", "More Metrics"),
+        "速度": ("速度", "Speed"),
+        "首字": ("初回応答", "TTFT"),
+        "总耗时": ("合計時間", "Duration"),
+        "状态码": ("ステータス", "Status"),
+        "全部状态码": ("すべてのステータス", "All Statuses"),
+        "显示的列": ("表示する列", "Columns"),
+        "恢复默认": ("デフォルトに戻す", "Reset to Default"),
+        "请求详情": ("リクエストの詳細", "Request Details"),
+        "关闭": ("閉じる", "Close"),
+        "基本信息": ("基本情報", "Basics"),
+        "请求 ID": ("リクエスト ID", "Request ID"),
+        "请求失败": ("リクエスト失敗", "Request failed"),
+        "Tokens 用量": ("Tokens 使用量", "Tokens"),
+        "成本明细（USD）": ("コスト内訳（USD）", "Cost Breakdown (USD)"),
+        "合计": ("合計", "Total"),
+        "失败的请求不计费": ("失敗したリクエストは課金されません", "Failed requests aren't billed"),
+        "models.dev 里没有这个模型的价格": ("models.dev にこのモデルの価格がありません", "No price for this model on models.dev"),
+        "性能": ("パフォーマンス", "Performance"),
+        "输出不到 %d token，不估速度": ("出力が %d token 未満のため速度は推定しません", "Under %d output tokens, speed not estimated"),
+        "首字（估算）": ("初回応答（推定）", "TTFT (est.)"),
+        "耗时（估算）": ("所要時間（推定）", "Duration (est.)"),
+        "耗时按会话日志的时间戳估算：从请求发出到最后一段内容写进日志。日志要等一段内容生成完才写，所以首字偏大。": ("時間はセッション記録のタイムスタンプから推定しています（リクエスト送信から最後の内容が記録されるまで）。記録は内容のまとまりが生成し終わってから書かれるため、初回応答は長めに出ます。", "Times are estimated from session log timestamps, from when the request was sent until its last part was logged. The log is written only after each part finishes, so TTFT reads high."),
         "正在读取本机会话记录…": ("ローカルのセッション記録を読み込み中…", "Reading local session logs…"),
         "该时间段内没有记录": ("この期間の記録はありません", "No usage in this period"),
         "成本按 models.dev 的 API 价格估算，仅统计本机会话记录": ("コストは models.dev の API 価格による推定で、この Mac のセッション記録のみを集計しています", "Cost is estimated from models.dev API prices and covers only session logs on this Mac"),
@@ -1456,6 +1481,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 统计和设置都在主窗口里，菜单只留一个入口，打开时回到上次看的页
     @objc func openApp() { openMain(nil) }
+
+    /// 已经在运行时再打开一次（Finder、启动台、Spotlight）：弹出主窗口
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        openApp()
+        return false
+    }
     @objc func openUpdate() { openMain(.general) }
 
     /// 主窗口：统计和设置都在这里，左侧边栏切换
