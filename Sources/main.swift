@@ -1439,7 +1439,7 @@ struct MainView: View {
         // 主题色：主窗口里的开关、分段按钮、选中标记都用它（桌面卡片和菜单栏保持单色）
         // NavigationSplitView 会自带一条显示窗口标题的工具栏，整条隐藏，只留左上角三个按钮
         .toolbar(.hidden, for: .windowToolbar)
-        .frame(minWidth: 1120, minHeight: 700)  // 16:10，所有页面在这个尺寸下都能完整显示
+        .frame(minWidth: 1120, minHeight: 700)  // 最小尺寸：所有页面在这个尺寸下都能完整显示
         // 选「跟随系统」时不覆盖，控件用系统的主题颜色
         .tint(themeColor == "system" ? nil : ChartColor.color(themeColor))
         .accentColor(themeColor == "system" ? nil : ChartColor.color(themeColor))
@@ -1904,8 +1904,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.titlebarSeparatorStyle = .none
             // 不开「拖背景移动窗口」：开了的话表头上拖列宽、拖顺序都会变成拖整个窗口；窗口靠顶上的标题栏区域拖
             w.isReleasedWhenClosed = false
-            // 固定 16:10 的宽屏比例，拖动缩放时保持形状
-            w.contentAspectRatio = NSSize(width: 16, height: 10)
+            // 宽高随便拖，只有最小尺寸（MainView 的 frame(minWidth:minHeight:)）
             w.setContentSize(NSSize(width: 1280, height: 800))
             w.center()
             w.setFrameAutosaveName("MainWindow")
