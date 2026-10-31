@@ -5,7 +5,7 @@
 Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) in the macOS menu bar and on the desktop.
 
 - **Menu bar**: `Cc 61%  Cx 53%` (Claude Code / Codex), showing the tightest limit for each; click to see every limit's progress and reset time
-- **Desktop card**: sits on the desktop layer, draggable; side-by-side, stacked or compact layout with adjustable size; right-click to refresh, open statistics or settings, or hide it
+- **Desktop card**: sits on the desktop layer, draggable; side-by-side, stacked or compact layout with adjustable size; right-click to refresh, open UsageBar or the card settings, or hide it
 - **Main window**: usage statistics and settings in one window with a sidebar
 - **Usage statistics**: like CC Switch's — estimated cost, requests, tokens and cache hit rate for today, since the weekly limit last reset, the last 24 hours / 7 / 14 / 30 days, all time or a custom start and end, an hourly or daily chart, and per-model and per-request tables. Built from local Claude Code and Codex session logs; cost uses [models.dev](https://models.dev) API prices
 - **Settings**: launch at login, language, show remaining or used, separate refresh intervals for limits and statistics; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
@@ -21,7 +21,7 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
      ```bash
      xattr -dr com.apple.quarantine /Applications/UsageBar.app
      ```
-3. Click UsageBar in the menu bar → Settings… → General to turn on **Launch at Login**.
+3. Click UsageBar in the menu bar → **Open UsageBar…** → General to turn on **Launch at Login**.
 
 ## Requirements for reading usage
 
@@ -43,4 +43,4 @@ Print usage in Terminal: `/Applications/UsageBar.app/Contents/MacOS/UsageBar --p
 
 ## Uninstall
 
-Turn off **Launch at Login** in Settings → General, quit UsageBar, then delete `/Applications/UsageBar.app`.
+Turn off **Launch at Login** in Open UsageBar… → General, quit UsageBar, then delete `/Applications/UsageBar.app`.

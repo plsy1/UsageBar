@@ -72,7 +72,6 @@ enum I18n {
         "正在刷新…": ("更新中…", "Refreshing…"),
         "更新于 %@ · 每 %d 分钟自动刷新": ("更新 %@ · %d 分ごとに自動更新", "Updated %@ · auto-refresh every %d min"),
         "立即刷新": ("今すぐ更新", "Refresh Now"),
-        "设置…": ("設定…", "Settings…"),
         "隐藏桌面卡片": ("デスクトップカードを隠す", "Hide Desktop Card"),
         "显示桌面卡片": ("デスクトップカードを表示", "Show Desktop Card"),
         "退出": ("終了", "Quit"),
@@ -98,7 +97,8 @@ enum I18n {
         "上下": ("縦並び", "Stacked"),
         "紧凑": ("コンパクト", "Compact"),
         // 用量统计
-        "用量统计…": ("使用量の統計…", "Usage Statistics…"),
+        "打开 UsageBar…": ("UsageBar を開く…", "Open UsageBar…"),
+        "卡片设置…": ("カードの設定…", "Card Settings…"),
         "用量统计": ("使用量の統計", "Usage Statistics"),
         "今天": ("今日", "Today"),
         "重置以来": ("リセット以降", "Since Reset"),
@@ -765,7 +765,7 @@ struct MenuBarSettings: View {
                             MenuUsageBlock(u: u, used: used).padding(.horizontal, -2)
                             Divider().padding(.vertical, 3)
                         }
-                        ForEach([L("立即刷新"), L("显示桌面卡片"), L("用量统计…"), L("设置…"), L("退出")], id: \.self) {
+                        ForEach([L("立即刷新"), L("显示桌面卡片"), L("打开 UsageBar…"), L("退出")], id: \.self) {
                             Text($0).font(.system(size: 13)).padding(.vertical, 1).padding(.leading, 12)
                         }
                     }
@@ -826,7 +826,10 @@ enum MainTab: String, CaseIterable, Identifiable {
 }
 
 final class MainNav: ObservableObject {
-    @Published var tab: MainTab = .stats
+    /// 记住上次看的页，下次「打开 UsageBar」回到这里
+    @Published var tab: MainTab = MainTab(rawValue: UserDefaults.standard.string(forKey: "mainTab") ?? "") ?? .stats {
+        didSet { UserDefaults.standard.set(tab.rawValue, forKey: "mainTab") }
+    }
 }
 
 struct MainView: View {
@@ -872,8 +875,8 @@ final class UsageModel: ObservableObject {
     @Published var lastUpdate: Date?
     var onRefresh: () -> Void = {}
     var onHide: () -> Void = {}
-    var onSettings: () -> Void = {}
-    var onStats: () -> Void = {}
+    var onOpen: () -> Void = {}
+    var onCardSettings: () -> Void = {}
 }
 
 /// 毛玻璃背景（透出壁纸）
@@ -971,8 +974,8 @@ struct CardView: View {
         .opacity(opacity)
         .contextMenu {
             Button(L("立即刷新")) { model.onRefresh() }
-            Button(L("用量统计…")) { model.onStats() }
-            Button(L("设置…")) { model.onSettings() }
+            Button(L("打开 UsageBar…")) { model.onOpen() }
+            Button(L("卡片设置…")) { model.onCardSettings() }
             Button(L("隐藏桌面卡片")) { model.onHide() }
         }
     }
@@ -1110,8 +1113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "Cc …  Cx …"
         model.onRefresh = { [weak self] in self?.refresh() }
         model.onHide = { [weak self] in self?.toggleCard() }
-        model.onSettings = { [weak self] in self?.openSettings() }
-        model.onStats = { [weak self] in self?.openStats() }
+        model.onOpen = { [weak self] in self?.openApp() }
+        model.onCardSettings = { [weak self] in self?.openMain(.card) }
         if showCard { setCardVisible(true) }
         rebuildMenu()
         refresh()
@@ -1208,12 +1211,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    @objc func openSettings() { openMain(.general) }
-    @objc func openStats() { openMain(.stats) }
+    /// 统计和设置都在主窗口里，菜单只留一个入口，打开时回到上次看的页
+    @objc func openApp() { openMain(nil) }
 
     /// 主窗口：统计和设置都在这里，左侧边栏切换
-    func openMain(_ tab: MainTab) {
-        nav.tab = tab
+    func openMain(_ tab: MainTab?) {
+        if let tab { nav.tab = tab }
         if mainWindow == nil {
             let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model))
             host.sizingOptions = .minSize
@@ -1301,10 +1304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.target = self
         c.state = showCard ? .on : .off
         menu.addItem(c)
-        let sts = NSMenuItem(title: L("用量统计…"), action: #selector(openStats), keyEquivalent: "u"); sts.target = self
-        menu.addItem(sts)
-        let st = NSMenuItem(title: L("设置…"), action: #selector(openSettings), keyEquivalent: ","); st.target = self
-        menu.addItem(st)
+        let open = NSMenuItem(title: L("打开 UsageBar…"), action: #selector(openApp), keyEquivalent: "o"); open.target = self
+        menu.addItem(open)
         let q = NSMenuItem(title: L("退出"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(q)
         item.menu = menu
