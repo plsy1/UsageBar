@@ -5,6 +5,7 @@
 
 import AppKit
 import SwiftUI
+import ServiceManagement
 
 // MARK: - 数据模型
 
@@ -65,6 +66,8 @@ enum I18n {
         "退出": ("終了", "Quit"),
         // 设置窗口
         "通用": ("一般", "General"),
+        "开机启动": ("ログイン時に起動", "Launch at Login"),
+        "需要在 系统设置 → 通用 → 登录项 中允许 UsageBar": ("システム設定 → 一般 → ログイン項目 で UsageBar を許可してください", "Allow UsageBar in System Settings → General → Login Items"),
         "关于": ("情報", "About"),
         "预览": ("プレビュー", "Preview"),
         "版本 %@": ("バージョン %@", "Version %@"),
@@ -364,15 +367,34 @@ struct PercentSlider: View {
     }
 }
 
+/// 开机启动（系统设置 → 通用 → 登录项）
+enum LoginItem {
+    static var status: SMAppService.Status { SMAppService.mainApp.status }
+    static func set(_ on: Bool) {
+        try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+    }
+}
+
 struct GeneralSettings: View {
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
+    @State var launchAtLogin = LoginItem.status == .enabled
+    @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
         Form {
             Section {
+                Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
+                    LoginItem.set(on)
+                    launchAtLogin = LoginItem.status == .enabled
+                    needsApproval = LoginItem.status == .requiresApproval
+                }))
+                if needsApproval {
+                    Text(L("需要在 系统设置 → 通用 → 登录项 中允许 UsageBar"))
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 Picker(L("语言"), selection: $language) {
                     Text(L("跟随系统")).tag("auto")
                     Divider()
@@ -676,6 +698,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         Pref.register()
+        // install.sh 从旧版（LaunchAgent 自启）升级时会带上这个参数
+        if CommandLine.arguments.contains("--enable-login-item") { LoginItem.set(true) }
         lastLang = I18n.lang
         item.button?.title = "Cc …  Cx …"
         model.onRefresh = { [weak self] in self?.refresh() }
