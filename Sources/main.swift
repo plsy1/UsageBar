@@ -154,6 +154,9 @@ enum I18n {
         "显示额度卡片": ("上限カードを表示", "Show Limits Card"),
         "隐藏额度卡片": ("上限カードを隠す", "Hide Limits Card"),
         "额度": ("上限", "Limits"),
+        "数据从哪里来，见「关于」": ("データの取得元は「情報」を参照", "See About for where the data comes from"),
+        "版本、更新和数据说明": ("バージョン、アップデート、データについて", "Version, updates and where the data comes from"),
+        "数据说明": ("データについて", "About the Data"),
         "开机启动、外观、额度显示和数据来源": ("ログイン時の起動、外観、上限の表示、データソース", "Launch at login, appearance, limits and data sources"),
         "菜单栏和两张卡片都按这里显示": ("メニューバーと 2 枚のカードはここの設定で表示します", "The menu bar and both cards follow these settings"),
         "菜单栏上显示的文字，右边是点开后的菜单": ("メニューバーに表示する文字。右はクリックしたときのメニューです", "What the menu bar shows; the menu it opens is on the right"),
@@ -642,7 +645,7 @@ struct SidePanel<Content: View>: View {
     }
 }
 
-/// 「通用」：开机启动、外观；额度怎么显示（菜单栏和两张卡片共用）；用量统计和数据来源
+/// 「通用」：左栏开机启动、外观和额度怎么显示（菜单栏和两张卡片共用），右栏用量统计和数据来源
 struct GeneralSettings: View {
     let updater: Updater
     @ObservedObject var model: UsageModel
@@ -715,6 +718,12 @@ struct GeneralSettings: View {
                 } footer: {
                     Text(L("菜单栏和两张卡片都按这里显示")).font(.callout).foregroundStyle(.secondary)
                 }
+            }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+        } side: {
+            // 右栏：用量统计和数据来源（「关于」单独一页）
+            Form {
                 Section(L("用量统计")) {
                     LabeledContent(L("价格表")) {
                         HStack(spacing: 10) {
@@ -747,15 +756,12 @@ struct GeneralSettings: View {
                 } header: {
                     Text(L("数据来源"))
                 } footer: {
-                    Text(L("额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。"))
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L("数据从哪里来，见「关于」")).font(.callout).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
-        } side: {
-            SidePanel(L("关于")) { AboutCard(updater: updater) }
+            .padding(.trailing, 10)
         }
     }
 
@@ -1051,7 +1057,29 @@ struct CardPreview: View {
     }
 }
 
-/// 通用页右栏的「关于」
+/// 「关于」：版本和更新，右边说明数据从哪里来
+struct AboutSettings: View {
+    let updater: Updater
+
+    var body: some View {
+        SettingsPage(.about, L("版本、更新和数据说明")) {
+            AboutCard(updater: updater)
+                .padding(.horizontal, 20).padding(.top, 20)
+        } side: {
+            SidePanel(L("数据说明")) {
+                Text(L("额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。"))
+                    .font(.callout).foregroundStyle(.secondary)
+                    // 宽度可以收缩但有下限，否则会按最窄宽度算出极高的最小高度
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minWidth: 300, maxWidth: 460, alignment: .leading)
+                    .padding(16)
+                    .modifier(Panel())
+            }
+        }
+    }
+}
+
+/// 「关于」页的版本和更新
 struct AboutCard: View {
     @ObservedObject var updater: Updater
 
@@ -1140,7 +1168,7 @@ struct HideSidebarToggle: ViewModifier {
 }
 
 enum MainTab: String, CaseIterable, Identifiable {
-    case stats, general, menuBar, card
+    case stats, general, menuBar, card, about
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -1148,6 +1176,7 @@ enum MainTab: String, CaseIterable, Identifiable {
         case .general: return L("通用")
         case .menuBar: return L("菜单栏")
         case .card: return L("卡片")
+        case .about: return L("关于")
         }
     }
     var symbol: String {
@@ -1156,6 +1185,7 @@ enum MainTab: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .menuBar: return "menubar.rectangle"
         case .card: return "rectangle.on.rectangle"
+        case .about: return "info.circle"
         }
     }
 }
@@ -1184,7 +1214,7 @@ struct MainView: View {
                     row(.stats)
                     Text(L("设置")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .padding(.leading, 10).padding(.top, 14).padding(.bottom, 4)
-                    ForEach([MainTab.general, .menuBar, .card]) { row($0) }
+                    ForEach([MainTab.general, .menuBar, .card, .about]) { row($0) }
                 }
                 .padding(.horizontal, 10).padding(.top, 6)
             }
@@ -1197,6 +1227,7 @@ struct MainView: View {
                 case .general: GeneralSettings(updater: updater, model: model, stats: stats)
                 case .menuBar: MenuBarSettings(model: model)
                 case .card: CardSettings(model: model, stats: stats)
+                case .about: AboutSettings(updater: updater)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1651,7 +1682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openApp()
         return false
     }
-    @objc func openUpdate() { openMain(.general) }
+    @objc func openUpdate() { openMain(.about) }
 
     /// 主窗口：统计和设置都在这里，左侧边栏切换
     func openMain(_ tab: MainTab?) {
