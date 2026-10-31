@@ -246,6 +246,7 @@ enum Pref {
     static let textColor = "cardText"          // white / black
     static let scale = "cardScale"
     static let opacity = "cardOpacity"
+    static let bgOpacity = "cardBgOpacity"     // 毛玻璃背景单独的不透明度
     static let showReset = "showReset"
     static let showClaude = "showClaude"
     static let showCodex = "showCodex"
@@ -254,7 +255,7 @@ enum Pref {
 
     static func register() {
         UserDefaults.standard.register(defaults: [
-            showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0,
+            showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
             showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, menuLabel: "short",
         ])
     }
@@ -269,6 +270,7 @@ struct SettingsView: View {
     @AppStorage(Pref.textColor) var textColor = "white"
     @AppStorage(Pref.scale) var scale = 1.0
     @AppStorage(Pref.opacity) var opacity = 1.0
+    @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.showReset) var showReset = true
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
@@ -288,11 +290,16 @@ struct SettingsView: View {
                     Text("白色").tag("white")
                     Text("黑色").tag("black")
                 }
+                LabeledContent("毛玻璃浓度") {
+                    Slider(value: $bgOpacity, in: 0.1...1.0, step: 0.05) { EmptyView() }
+                    Text("\(Int((bgOpacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+                }
+                .disabled(background == "none")
                 LabeledContent("大小") {
                     Slider(value: $scale, in: 0.8...1.6, step: 0.1) { EmptyView() }
                     Text("\(Int((scale * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
                 }
-                LabeledContent("不透明度") {
+                LabeledContent("整体不透明度") {
                     Slider(value: $opacity, in: 0.3...1.0, step: 0.05) { EmptyView() }
                     Text("\(Int((opacity * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
                 }
@@ -377,6 +384,7 @@ struct CardView: View {
     @AppStorage(Pref.textColor) var textColor = "white"
     @AppStorage(Pref.scale) var scale = 1.0
     @AppStorage(Pref.opacity) var opacity = 1.0
+    @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.showReset) var showReset = true
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
@@ -422,6 +430,7 @@ struct CardView: View {
             if background != "none" {
                 Blur(dark: background == "dark")
                     .clipShape(RoundedRectangle(cornerRadius: 20 * s, style: .continuous))
+                    .opacity(bgOpacity)
             }
         }
         .opacity(opacity)
