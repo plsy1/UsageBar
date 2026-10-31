@@ -216,6 +216,14 @@ func run(_ path: String, _ args: [String]) -> (status: Int32, out: String) {
     return (p.terminationStatus, String(decoding: data, as: UTF8.self))
 }
 
+/// 接口给的套餐名是小写的（team、plus、max），显示成 Team、Plus、Max
+func planName(_ raw: String?) -> String? {
+    guard let raw, !raw.isEmpty else { return nil }
+    return raw.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == " " })
+        .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        .joined(separator: " ")
+}
+
 func parseISODate(_ s: String) -> Date? {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -284,7 +292,7 @@ enum Claude {
         guard var creds = readCreds(), let oauth = creds["claudeAiOauth"] as? [String: Any] else {
             u.error = L("读不到 Claude Code 登录信息 · %@", loginHint); return u
         }
-        u.plan = oauth["subscriptionType"] as? String
+        u.plan = planName(oauth["subscriptionType"] as? String)
 
         let expiresAt = (oauth["expiresAt"] as? Double ?? 0) / 1000
         var refreshed = false
@@ -344,7 +352,7 @@ enum Codex {
             req.setValue("codex-cli", forHTTPHeaderField: "User-Agent")
             let (status, json) = await httpJSON(req)
             if status == 200, let json, let rl = json["rate_limit"] as? [String: Any] {
-                u.plan = json["plan_type"] as? String
+                u.plan = planName(json["plan_type"] as? String)
                 for key in ["primary_window", "secondary_window"] {
                     guard let w = rl[key] as? [String: Any], let used = w["used_percent"] as? Double else { continue }
                     let seconds = w["limit_window_seconds"] as? Double ?? 0
@@ -361,7 +369,7 @@ enum Codex {
         }
         // 退回：最近一次会话日志里的 rate_limits
         if let (rl, mtime) = latestLocalRateLimits() {
-            u.plan = u.plan ?? rl["plan_type"] as? String
+            u.plan = u.plan ?? planName(rl["plan_type"] as? String)
             for key in ["primary", "secondary"] {
                 guard let w = rl[key] as? [String: Any], let used = w["used_percent"] as? Double else { continue }
                 let reset = (w["resets_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
