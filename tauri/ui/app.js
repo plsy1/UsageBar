@@ -82,6 +82,8 @@ let page = 'usage';
 // 托盘点开的小面板（Windows）和桌面卡片：同一个页面，地址带 #flyout / #card
 const FLYOUT = location.hash === '#flyout';
 const CARD = location.hash === '#card';
+// 拖卡片时画对齐线的透明窗口
+const GUIDES = location.hash === '#guides';
 let autostart = false;
 
 const L = () => ({ zh: 0, ja: 1, en: 2 })[state?.lang] ?? 2;
@@ -322,15 +324,46 @@ document.addEventListener('input', (e) => {
   if (el.dataset.num) el.nextElementSibling.textContent = `${Math.round(el.value * 100)}%`;
 });
 
-// 桌面卡片：按住拖动，右键弹出菜单
+// 桌面卡片：按住拖动（位置由 Rust 按光标算，好做吸附对齐），右键弹出菜单
 if (CARD) {
-  document.addEventListener('mousedown', (e) => {
-    if (e.button === 0) window.__TAURI__.window.getCurrentWindow().startDragging().catch(() => {});
+  let dragging = false, busy = false;
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    invoke('card_drag_end');
+  };
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    e.target.setPointerCapture?.(e.pointerId);  // 窗口跟着挪时光标不会「掉出去」
+    invoke('card_drag_start');
   });
+  document.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    if (!(e.buttons & 1)) { end(); return; }
+    if (busy) return;  // 上一步还没挪完就不发，免得排队
+    busy = true;
+    invoke('card_drag_move').finally(() => { busy = false; });
+  });
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
   document.addEventListener('contextmenu', (e) => { e.preventDefault(); invoke('card_menu'); });
 }
 
+// 对齐线：收到「竖线 x、横线 y」（逻辑像素，可能为空）就画出来
+function drawGuides([x, y]) {
+  document.body.innerHTML =
+    (x != null ? `<div class="guide v" style="left:${x - 0.5}px"></div>` : '') +
+    (y != null ? `<div class="guide h" style="top:${y - 0.5}px"></div>` : '');
+}
+
 (async () => {
+  if (GUIDES) {
+    document.documentElement.classList.add('guides');
+    document.body.className = 'guides';
+    await listen('guides', (e) => drawGuides(e.payload));
+    return;
+  }
   if (FLYOUT) document.body.classList.add('flyout');
   if (CARD) { document.documentElement.classList.add('card'); document.body.classList.add('card'); }
   document.getElementById('version').textContent = await window.__TAURI__.app.getVersion().catch(() => '');

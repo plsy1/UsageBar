@@ -194,3 +194,9 @@ body.card main { padding: 0; overflow: hidden; }
 .c-lab { font-size: calc(11 * var(--u)); color: var(--c2); }
 .c-num { font-size: calc(12 * var(--u)); }
 .card-box:has(.c-lines) .c-updated { margin-top: calc(10 * var(--u)); }
+
+/* 拖卡片时的对齐线（铺满屏幕的透明窗口） */
+html.guides, body.guides { background: transparent; margin: 0; overflow: hidden; }
+.guide { position: fixed; background: var(--accent); opacity: 0.9; pointer-events: none; }
+.guide.v { top: 0; bottom: 0; width: 1px; }
+.guide.h { left: 0; right: 0; height: 1px; }

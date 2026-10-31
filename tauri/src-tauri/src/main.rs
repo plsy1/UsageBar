@@ -1,14 +1,16 @@
 // UsageBar（Windows / Linux 版）：托盘显示 Claude / Codex 剩余用量
 //   托盘：Linux 顶栏直接显示「Cc 56%  Cx 47%」；Windows 托盘只有图标，悬停看用量，左键点开小面板（flyout）
-//   桌面卡片：跟 macOS 版一样的悬浮卡片，可拖动、位置记住，右键菜单
+//   桌面卡片：跟 macOS 版一样的悬浮卡片，右键菜单；位置和拖动吸附见 cards.rs
 //   窗口：「额度」「桌面卡片」「设置」三页（ui/）
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cards;
 mod i18n;
 mod usage;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -34,7 +36,9 @@ struct Settings {
     card_opacity: f64,
     card_bg_opacity: f64,
     card_reset: String,      // hidden / relative（多久后）/ absolute（几点）
-    card_x: Option<i32>,     // 拖动后的位置（物理像素），界面不改这两个
+    /// 各张卡片按显示器记的位置（界面不改，只由拖动来改）
+    card_places: HashMap<String, cards::Placement>,
+    card_x: Option<i32>,     // 旧版存的位置（物理像素），启动时迁移到 card_places
     card_y: Option<i32>,
 }
 
@@ -56,6 +60,7 @@ impl Default for Settings {
             card_opacity: 1.0,
             card_bg_opacity: 1.0,
             card_reset: "relative".into(),
+            card_places: HashMap::new(),
             card_x: None,
             card_y: None,
         }
@@ -71,6 +76,8 @@ struct AppState {
     trays: Mutex<Vec<TrayIcon>>,
     /// 小面板因失去焦点收起的时间：紧接着的那次托盘点击是「关掉」，不要再打开
     flyout_hidden_at: Mutex<Option<Instant>>,
+    /// 正在拖的卡片
+    drag: Mutex<Option<cards::Drag>>,
 }
 
 /// 给界面的完整状态
@@ -126,6 +133,7 @@ fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
         // 卡片位置只由拖动来改，界面传来的旧值不算
         let st = app.state::<AppState>();
         let mut cur = st.settings.lock().unwrap();
+        settings.card_places = cur.card_places.clone();
         settings.card_x = cur.card_x;
         settings.card_y = cur.card_y;
         *cur = settings.clone();
@@ -160,6 +168,38 @@ fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
     #[cfg(target_os = "linux")]
     let _ = window.set_resizable(true);
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    // 变大后可能超出屏幕，挪回来
+    let app = window.app_handle();
+    let place = app.state::<AppState>().settings.lock().unwrap().card_places.get(window.label()).cloned().unwrap_or_default();
+    cards::keep_on_screen(app, &window, &place);
+}
+
+/// 卡片的拖动：按下、拖动中、松开（每一步由这边按光标位置算，好做吸附）
+#[tauri::command]
+fn card_drag_start(app: AppHandle, window: tauri::WebviewWindow) {
+    *app.state::<AppState>().drag.lock().unwrap() = cards::drag_start(&app, &window);
+}
+
+#[tauri::command]
+fn card_drag_move(app: AppHandle, window: tauri::WebviewWindow) {
+    let st = app.state::<AppState>();
+    let mut drag = st.drag.lock().unwrap();
+    if let Some(d) = drag.as_mut().filter(|d| d.label == window.label()) {
+        cards::drag_move(&app, &window, d);
+    }
+}
+
+/// 拖完才记位置：系统或程序自己挪窗口都不算
+#[tauri::command]
+fn card_drag_end(app: AppHandle, window: tauri::WebviewWindow) {
+    let st = app.state::<AppState>();
+    let Some(d) = st.drag.lock().unwrap().take() else { return };
+    cards::drag_end(&app);
+    let Ok(size) = window.outer_size() else { return };
+    let mut s = st.settings.lock().unwrap();
+    let place = s.card_places.entry(window.label().to_string()).or_default();
+    cards::record_at(&app, d.last, size, place);
+    save_settings(&app, &s);
 }
 
 /// 卡片上右键：弹出原生菜单
@@ -328,7 +368,7 @@ fn apply_card(app: &AppHandle) {
         // GNOME 会给刚显示的普通窗口自动安排位置（覆盖掉我们设的），等它摆完再挪回去；
         // 要去的位置得在显示前取好，它摆放时触发的 Moved 会改掉保存的位置
         #[cfg(target_os = "linux")]
-        let target = card_target(app, &w);
+        let target = s.card_places.get(w.label()).and_then(|p| cards::target(app, &w, p));
         let _ = w.show();
         #[cfg(target_os = "linux")]
         if let Some(p) = target {
@@ -340,32 +380,47 @@ fn apply_card(app: &AppHandle) {
     }
 }
 
-/// 启动时放到上次的位置
-fn place_card(app: &AppHandle) {
-    let Some(w) = app.get_webview_window("card") else { return };
-    if let Some(p) = card_target(app, &w) {
+/// 摆到该在的地方：有记录按记录（那块屏不在了就去主屏）；没有记录先迁移旧版的坐标，再没有就放默认位置
+fn place_card(app: &AppHandle, label: &str) {
+    let Some(w) = app.get_webview_window(label) else { return };
+    let st = app.state::<AppState>();
+    let mut s = st.settings.lock().unwrap();
+    let place = s.card_places.get(label).cloned().unwrap_or_default();
+    if let Some(p) = cards::target(app, &w, &place) {
         let _ = w.set_position(p);
+        return;
+    }
+    let old = if label == "card" { s.card_x.zip(s.card_y) } else { None };
+    let pos = match old {
+        Some((x, y)) => Some(PhysicalPosition::new(x, y)),
+        None => cards::default_position(app, &w, CARD_LABELS.iter().filter(|l| **l != label).find_map(|l| app.get_webview_window(l)).as_ref()),
+    };
+    if let (Some(p), Ok(size)) = (pos, w.outer_size()) {
+        let p = cards::clamped(app, p, size);
+        let _ = w.set_position(p);
+        let place = s.card_places.entry(label.to_string()).or_default();
+        cards::record_at(app, p, size, place);
+        s.card_x = None;
+        s.card_y = None;
+        save_settings(app, &s);
     }
 }
 
-/// 卡片该放的位置：上次拖到的地方；没有记录（或那块屏幕已经不在了）就放到主屏右上角
-fn card_target(app: &AppHandle, w: &tauri::WebviewWindow) -> Option<PhysicalPosition<i32>> {
-    let s = app.state::<AppState>().settings.lock().unwrap().clone();
-    let monitors = w.available_monitors().unwrap_or_default();
-    if let (Some(x), Some(y)) = (s.card_x, s.card_y) {
-        let on_screen = monitors.iter().any(|m| {
-            let (p, z) = (m.position(), m.size());
-            x >= p.x && y >= p.y && x < p.x + z.width as i32 - 40 && y < p.y + z.height as i32 - 40
-        });
-        if on_screen {
-            return Some(PhysicalPosition::new(x, y));
+const CARD_LABELS: [&str; 2] = cards::CARDS;
+
+/// 显示器插拔、改分辨率或排列时把卡片摆回去（Tauri 没有这个事件，隔几秒比一下）
+async fn watch_monitors(app: AppHandle) {
+    let mut last = cards::monitors_signature(&app);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let now = cards::monitors_signature(&app);
+        if now != last {
+            last = now;
+            for l in CARD_LABELS {
+                place_card(&app, l);
+            }
         }
     }
-    let m = w.primary_monitor().ok()??;
-    let sf = m.scale_factor();
-    let x = m.position().x + m.size().width as i32 - (540.0 * sf) as i32;
-    let y = m.position().y + (48.0 * sf) as i32;
-    Some(PhysicalPosition::new(x, y))
 }
 
 fn set_card_show(app: &AppHandle, show: bool) {
@@ -399,7 +454,8 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
+                                                 card_drag_start, card_drag_move, card_drag_end])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
@@ -443,8 +499,9 @@ fn main() {
                 trays.push(tray);
             }
             *app.state::<AppState>().trays.lock().unwrap() = trays;
-            place_card(&handle);
+            place_card(&handle, "card");
             apply_card(&handle);
+            tauri::async_runtime::spawn(watch_monitors(handle.clone()));
 
             // 带 --show 启动时直接打开窗口（从应用列表启动、或调试时用）
             if std::env::args().any(|a| a == "--show") {
@@ -458,17 +515,6 @@ fn main() {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
-            }
-            // 拖动卡片后记住位置
-            WindowEvent::Moved(pos) if window.label() == "card" => {
-                let app = window.app_handle();
-                let st = app.state::<AppState>();
-                let mut s = st.settings.lock().unwrap();
-                if s.card_x != Some(pos.x) || s.card_y != Some(pos.y) {
-                    s.card_x = Some(pos.x);
-                    s.card_y = Some(pos.y);
-                    save_settings(app, &s);
-                }
             }
             // 小面板点别处就收起
             WindowEvent::Focused(false) if window.label() == "flyout" => {

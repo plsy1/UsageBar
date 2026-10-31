@@ -45,6 +45,21 @@
         "resizable": false,
         "skipTaskbar": true,
         "focus": false
+      },
+      {
+        "label": "guides",
+        "title": "UsageBar",
+        "url": "index.html#guides",
+        "width": 100,
+        "height": 100,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": true,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "focus": false
       }
     ],
     "security": {

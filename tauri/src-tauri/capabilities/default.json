@@ -5,7 +5,9 @@
   "windows": [
     "main",
     "flyout",
-    "card"
+    "card",
+    "stats_card",
+    "guides"
   ],
   "permissions": [
     "core:default",
