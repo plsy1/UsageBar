@@ -182,7 +182,6 @@ enum I18n {
         "全名（Claude / Codex）": ("フルネーム（Claude / Codex）", "Full (Claude / Codex)"),
         "刷新间隔": ("更新間隔", "Refresh Interval"),
         "刷新间隔（后台增量更新）": ("更新間隔（バックグラウンドで差分更新）", "Refresh Interval (in the background)"),
-        "开机启动、语言和主题色": ("ログイン時の起動、言語、テーマカラー", "Launch at login, language and theme color"),
         "额度显示": ("上限の表示", "Limits"),
         "数据来源": ("データソース", "Data Sources"),
         "菜单栏和桌面卡片显示哪些额度、怎么显示": ("メニューバーとカードに表示する上限と表示方法", "Which limits the menu bar and card show, and how"),
@@ -194,6 +193,11 @@ enum I18n {
         "说明": ("説明", "Notes"),
         "额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。": ("上限：この Mac の Claude Code と Codex のログイン情報を使って、Anthropic と OpenAI の使用量 API に問い合わせます。\n\n使用量の統計：この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）だけを読み取り、コストは models.dev の API 価格で推定します。価格は 1 日 1 回更新されます。\n\nデータはこの Mac と上記の公式サービスの間でのみやり取りされます。", "Limits: queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this Mac.\n\nUsage statistics: read only from local session logs (~/.claude/projects and ~/.codex/sessions); cost is estimated from models.dev API prices, refreshed once a day.\n\nData only travels between this Mac and those official services."),
         "主题色": ("テーマカラー", "Theme Color"),
+        "外观": ("外観", "Appearance"),
+        "自动": ("自動", "Auto"),
+        "浅色": ("ライト", "Light"),
+        "深色": ("ダーク", "Dark"),
+        "开机启动、外观、语言和主题色": ("ログイン時の起動、外観、言語、テーマカラー", "Launch at login, appearance, language and theme color"),
         "粉色": ("ピンク", "Pink"),
         "紫色": ("パープル", "Purple"),
         "蓝色": ("ブルー", "Blue"),
@@ -476,12 +480,22 @@ enum Pref {
     static let displayMode = "displayMode"     // remaining / used
     static let cardLayout = "cardLayout"       // horizontal / vertical / compact
     static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
+    static let appearance = "appearance"       // auto / light / dark
+
+    /// 主窗口和菜单的外观；桌面卡片有自己的文字颜色和背景，不受影响
+    static func applyAppearance() {
+        switch UserDefaults.standard.string(forKey: appearance) {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: NSApp.appearance = nil  // 跟随系统
+        }
+    }
     static var showUsed: Bool { UserDefaults.standard.string(forKey: displayMode) == "used" }
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative",
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative", appearance: "auto",
         ])
         // 旧版只有「显示重置时间」开关：关掉过的人沿用为「不显示」
         // 只看用户真正保存过的值（注册的默认值不算）
@@ -569,11 +583,12 @@ struct GeneralSettings: View {
     let updater: Updater
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsChartColor") var chartColor = "pink"
+    @AppStorage(Pref.appearance) var appearance = "auto"
     @State var launchAtLogin = LoginItem.status == .enabled
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
-        SettingsPage(.general, L("开机启动、语言和主题色")) {
+        SettingsPage(.general, L("开机启动、外观、语言和主题色")) {
             Form {
                 Section {
                     Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
@@ -592,6 +607,12 @@ struct GeneralSettings: View {
                         Text("日本語").tag("ja")
                         Text("English").tag("en")
                     }
+                    Picker(L("外观"), selection: $appearance) {
+                        Text(L("自动")).tag("auto")
+                        Text(L("浅色")).tag("light")
+                        Text(L("深色")).tag("dark")
+                    }
+                    .pickerStyle(.segmented)
                     // 主题色：统计图、开关、侧边栏和主窗口里的选中标记都用它
                     LabeledContent(L("主题色")) {
                         HStack(spacing: 9) {
@@ -1320,6 +1341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         Pref.register()
+        Pref.applyAppearance()
         // install.sh 从旧版（LaunchAgent 自启）升级时会带上这个参数
         if CommandLine.arguments.contains("--enable-login-item") { LoginItem.set(true) }
         lastLang = I18n.lang
@@ -1419,6 +1441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func syncPrefs() {
+        Pref.applyAppearance()
         if UserDefaults.standard.integer(forKey: Pref.refreshMinutes) != timerMinutes { scheduleTimer() }
         if UserDefaults.standard.integer(forKey: Pref.statsRefreshMinutes) != statsTimerMinutes { scheduleStatsTimer() }
         if (card?.isVisible ?? false) != showCard { setCardVisible(showCard) }
