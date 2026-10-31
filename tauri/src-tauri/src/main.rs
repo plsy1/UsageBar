@@ -304,8 +304,14 @@ fn apply_card(app: &AppHandle) {
         let _ = w.hide();
         return;
     }
-    let _ = w.set_always_on_top(s.card_on_top);
-    let _ = w.set_always_on_bottom(!s.card_on_top);
+    // 先撤掉旧的、再设新的：Windows 上反过来的话，撤「贴底」那一下会把刚设的「最前」也冲掉
+    if s.card_on_top {
+        let _ = w.set_always_on_bottom(false);
+        let _ = w.set_always_on_top(true);
+    } else {
+        let _ = w.set_always_on_top(false);
+        let _ = w.set_always_on_bottom(true);
+    }
     if !w.is_visible().unwrap_or(false) {
         let _ = w.show();
     }
