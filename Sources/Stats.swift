@@ -370,7 +370,13 @@ struct ModelRow: Identifiable {
     let model: String
     let s: Summary
     let priced: Bool
+    var failed = 0
+    var speed: Double?       // 平均速度（只算估得出速度的请求）
+    var firstToken: Double?  // 平均首字
+    var successRate: Double { Double(s.requests) / Double(max(1, s.requests + failed)) }
 }
+
+func average(_ xs: [Double]) -> Double? { xs.isEmpty ? nil : xs.reduce(0, +) / Double(xs.count) }
 
 struct Bucket: Identifiable {
     let date: Date
@@ -677,8 +683,15 @@ struct StatsView: View {
     }
 
     func modelRows(_ rows: [UsageRecord]) -> [ModelRow] {
-        Dictionary(grouping: rows.filter { !$0.failed }) { "\($0.source.rawValue)|\($0.model)" }
-            .map { key, rs in ModelRow(id: key, source: rs[0].source, model: rs[0].model, s: Summary(rs), priced: rs[0].cost != nil) }
+        // 失败的请求按模型分进去，只用来算成功率
+        Dictionary(grouping: rows) { "\($0.source.rawValue)|\($0.model)" }
+            .compactMap { key, rs in
+                let ok = rs.filter { !$0.failed }
+                guard let first = ok.first else { return nil }
+                return ModelRow(id: key, source: first.source, model: first.model, s: Summary(ok), priced: first.cost != nil,
+                                failed: rs.count - ok.count, speed: average(ok.compactMap(\.speed)),
+                                firstToken: average(ok.compactMap(\.firstToken)))
+            }
             .sorted { $0.s.cost != $1.s.cost ? $0.s.cost > $1.s.cost : $0.s.tokens > $1.s.tokens }
     }
 
@@ -756,15 +769,18 @@ struct StatsView: View {
     }
 
     func modelTable(_ models: [ModelRow]) -> some View {
-        let cols: [Column] = [(L("模型"), nil), (L("应用"), 76), (L("请求数"), 76), (L("新增输入"), 90),
-                              (L("输出"), 84), (L("缓存读取"), 96), (L("缓存写入"), 96), (L("成本"), 96)]
+        // 各项 token 在上面汇总的「更多指标」里，这里和 CC Switch 一样只列总数，腾出位置给成功率、速度、首字
+        let cols: [Column] = [(L("模型"), nil), (L("应用"), 76), (L("请求数"), 76), (L("成本"), 96), ("Tokens", 84),
+                              (L("命中率"), 76), (L("成功率"), 76), (L("速度"), 84), (L("首字"), 64)]
         return VStack(spacing: 0) {
             headerRow(cols)
             if models.isEmpty { emptyRow() }
             ForEach(models) { m in
                 Divider()
-                dataRow(cols, [m.model, m.source.rawValue, m.s.requests.formatted(), abbrev(m.s.input), abbrev(m.s.output),
-                               abbrev(m.s.cacheRead), abbrev(m.s.cacheWrite), m.priced ? money(m.s.cost) : "—"], mono: [0])
+                dataRow(cols, [m.model, m.source.rawValue, m.s.requests.formatted(), m.priced ? money(m.s.cost) : "—",
+                               abbrev(m.s.tokens), m.s.hitRate.map(percent) ?? "—", percent(m.successRate),
+                               m.speed.map { String(format: "≈%.0f t/s", $0) } ?? "—",
+                               m.firstToken.map { "≈" + seconds($0) } ?? "—"], mono: [0])
             }
         }
     }
@@ -1023,6 +1039,132 @@ struct RequestDetail: View {
                 .font(mono ? .system(.body, design: .monospaced) : .body.monospacedDigit())
                 .fontWeight(bold ? .semibold : .regular)
                 .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+        }
+    }
+}
+
+// MARK: - 用量卡片
+
+/// 桌面上的用量卡片：各家在所选范围内的估算成本、请求数、Tokens、缓存命中率。
+/// 布局、背景、文字颜色、大小、不透明度都跟额度卡片共用，两张放在一起风格一致
+struct StatsCardView: View {
+    @ObservedObject var stats: StatsStore
+    let model: UsageModel
+    @AppStorage(Pref.background) var background = "none"
+    @AppStorage(Pref.textColor) var textColor = "white"
+    @AppStorage(Pref.scale) var scale = 1.0
+    @AppStorage(Pref.opacity) var opacity = 1.0
+    @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
+    @AppStorage(Pref.showClaude) var showClaude = true
+    @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage(Pref.language) var language = "auto"
+    @AppStorage(Pref.cardLayout) var layout = "horizontal"
+    @AppStorage(Pref.statsCardRange) var range = "today"
+
+    var s: CGFloat { CGFloat(scale) }
+    var rangeTitle: String { (StatsRange(rawValue: range) ?? .today).title }
+
+    /// 「重置以来」每家按自己的周额度重置时间算
+    func summary(_ src: Source) -> Summary {
+        let from: Date
+        switch range {
+        case "cycle": from = stats.cycleStarts[src] ?? StatsRange.week.presetStart
+        case "7d": from = StatsRange.week.presetStart
+        default: from = StatsRange.today.presetStart
+        }
+        // all 按时间倒序，取到起点为止
+        return Summary(stats.all.prefix { $0.time >= from }.filter { $0.source == src })
+    }
+
+    var body: some View {
+        let _ = language  // 切换语言时重绘
+        let white = textColor == "white"
+        let shown = [Source.claude, .codex].filter { $0 == .claude ? showClaude : showCodex }
+        VStack(alignment: .leading, spacing: (layout == "compact" ? 10 : 14) * s) {
+            if stats.updated == nil {
+                Text(L("正在读取本机会话记录…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
+            } else {
+                switch layout {
+                case "vertical":
+                    VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.self, content: column) }
+                case "compact":
+                    VStack(alignment: .leading, spacing: 6 * s) { ForEach(shown, id: \.self, content: compactRow) }
+                default:
+                    HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.self, content: column) }
+                }
+            }
+            if let t = stats.updated {
+                Text(rangeTitle + " · " + L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
+                    .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(16 * s)
+        .fixedSize()
+        .environment(\.colorScheme, white ? .dark : .light)
+        // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
+        .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
+        .background {
+            if background != "none" {
+                Blur(dark: background == "dark")
+                    .clipShape(RoundedRectangle(cornerRadius: 20 * s, style: .continuous))
+                    .opacity(bgOpacity)
+            }
+        }
+        .opacity(opacity)
+        .contextMenu {
+            Button { model.onRefreshStats() } label: { Label(L("立即刷新"), systemImage: "arrow.clockwise") }
+            Picker(L("统计范围"), selection: $range) {
+                Text(L("今天")).tag("today")
+                Text(L("重置以来")).tag("cycle")
+                Text(L("近 7 天")).tag("7d")
+            }
+            Divider()
+            Button { model.onOpenStats() } label: { Label(L("打开用量统计…"), systemImage: "chart.bar") }
+            Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
+            Divider()
+            Button { model.onHideStats() } label: { Label(L("隐藏用量卡片"), systemImage: "eye.slash") }
+        }
+    }
+
+    /// 一家一栏：名称、成本（大字），下面是请求数、Tokens、命中率
+    func column(_ src: Source) -> some View {
+        let sum = summary(src)
+        return VStack(alignment: .leading, spacing: 8 * s) {
+            Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
+            Text(money(sum.cost)).font(.system(size: 22 * s, weight: .semibold, design: .rounded).monospacedDigit())
+            VStack(spacing: 4 * s) {
+                row(L("请求数"), sum.requests.formatted())
+                row("Tokens", abbrev(sum.tokens))
+                row(L("缓存命中率"), sum.hitRate.map(percent) ?? "—")
+            }
+        }
+        .frame(width: (layout == "vertical" ? CardWindow.wideColumn : CardWindow.column) * s, alignment: .topLeading)
+    }
+
+    func row(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 12 * s)).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+        }
+    }
+
+    /// 紧凑：一家一行
+    func compactRow(_ src: Source) -> some View {
+        let sum = summary(src)
+        return HStack(alignment: .firstTextBaseline, spacing: 14 * s) {
+            Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
+                .frame(width: 54 * s, alignment: .leading)
+            Text(money(sum.cost)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+            pair(L("请求数"), sum.requests.formatted())
+            pair("Tokens", abbrev(sum.tokens))
+        }
+    }
+
+    func pair(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
+            Text(title).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
         }
     }
 }
