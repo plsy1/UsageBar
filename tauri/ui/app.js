@@ -218,7 +218,7 @@ function cardPage() {
 // 卡片窗口的大小跟着内容走
 function fitCard() {
   const r = document.querySelector('.card-box').getBoundingClientRect();
-  window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(Math.ceil(r.width), Math.ceil(r.height))).catch(() => {});
+  invoke('fit_card', { width: Math.ceil(r.width), height: Math.ceil(r.height) });
 }
 
 function seg(key, options) {

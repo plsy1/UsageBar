@@ -152,6 +152,16 @@ fn open_main(app: AppHandle) {
     show_main(&app);
 }
 
+/// 卡片窗口跟着内容改大小（逻辑像素）
+#[tauri::command]
+fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
+    // GTK 会忽略「不可调整大小」窗口的改大小请求；tao 在窗口第一次显示时又会按配置把它设回不可调整，
+    // 所以每次改大小前再设一次。卡片没有边框，用户拖不了边
+    #[cfg(target_os = "linux")]
+    let _ = window.set_resizable(true);
+    let _ = window.set_size(tauri::LogicalSize::new(width, height));
+}
+
 /// 卡片上右键：弹出原生菜单
 #[tauri::command]
 fn card_menu(app: AppHandle, window: tauri::Window) {
@@ -310,16 +320,36 @@ fn apply_card(app: &AppHandle) {
         let _ = w.set_always_on_top(true);
     } else {
         let _ = w.set_always_on_top(false);
+        // Linux 不贴底：GNOME 的桌面图标是一层铺满全屏的透明窗口，贴底的卡片会被它盖住，点不到也拖不动
+        #[cfg(not(target_os = "linux"))]
         let _ = w.set_always_on_bottom(true);
     }
     if !w.is_visible().unwrap_or(false) {
+        // GNOME 会给刚显示的普通窗口自动安排位置（覆盖掉我们设的），等它摆完再挪回去；
+        // 要去的位置得在显示前取好，它摆放时触发的 Moved 会改掉保存的位置
+        #[cfg(target_os = "linux")]
+        let target = card_target(app, &w);
         let _ = w.show();
+        #[cfg(target_os = "linux")]
+        if let Some(p) = target {
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let _ = w.set_position(p);
+            });
+        }
     }
 }
 
-/// 启动时放到上次的位置；没有记录（或那块屏幕已经不在了）就放到主屏右上角
+/// 启动时放到上次的位置
 fn place_card(app: &AppHandle) {
     let Some(w) = app.get_webview_window("card") else { return };
+    if let Some(p) = card_target(app, &w) {
+        let _ = w.set_position(p);
+    }
+}
+
+/// 卡片该放的位置：上次拖到的地方；没有记录（或那块屏幕已经不在了）就放到主屏右上角
+fn card_target(app: &AppHandle, w: &tauri::WebviewWindow) -> Option<PhysicalPosition<i32>> {
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
     let monitors = w.available_monitors().unwrap_or_default();
     if let (Some(x), Some(y)) = (s.card_x, s.card_y) {
@@ -328,16 +358,14 @@ fn place_card(app: &AppHandle) {
             x >= p.x && y >= p.y && x < p.x + z.width as i32 - 40 && y < p.y + z.height as i32 - 40
         });
         if on_screen {
-            let _ = w.set_position(PhysicalPosition::new(x, y));
-            return;
+            return Some(PhysicalPosition::new(x, y));
         }
     }
-    if let Ok(Some(m)) = w.primary_monitor() {
-        let sf = m.scale_factor();
-        let x = m.position().x + m.size().width as i32 - (540.0 * sf) as i32;
-        let y = m.position().y + (48.0 * sf) as i32;
-        let _ = w.set_position(PhysicalPosition::new(x, y));
-    }
+    let m = w.primary_monitor().ok()??;
+    let sf = m.scale_factor();
+    let x = m.position().x + m.size().width as i32 - (540.0 * sf) as i32;
+    let y = m.position().y + (48.0 * sf) as i32;
+    Some(PhysicalPosition::new(x, y))
 }
 
 fn set_card_show(app: &AppHandle, show: bool) {
@@ -371,7 +399,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
