@@ -11,9 +11,9 @@ import Charts
 
 // MARK: - 数据
 
-enum Source: String { case claude = "Claude", codex = "Codex" }
+enum Source: String, Codable { case claude = "Claude", codex = "Codex" }
 
-struct UsageRecord: Identifiable {
+struct UsageRecord: Identifiable, Codable {
     let id: String
     let time: Date
     let source: Source
@@ -63,10 +63,11 @@ enum Pricing {
     static var downloadFailed = false
 
     /// 读缓存；没有缓存、超过一天或 force 时重新下载
-    static func load(force: Bool = false) async {
+    /// download：false 时只读本地缓存（启动时先出数，不等网络）
+    static func load(force: Bool = false, download allowDownload: Bool = true) async {
         let fm = FileManager.default
         let mtime = (try? fm.attributesOfItem(atPath: cacheURL.path))?[.modificationDate] as? Date
-        if force || mtime.map({ Date().timeIntervalSince($0) > 86400 }) ?? true {
+        if allowDownload, force || mtime.map({ Date().timeIntervalSince($0) > 86400 }) ?? true {
             if let fresh = await download() {
                 try? fm.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? fresh.write(to: cacheURL)
@@ -134,9 +135,49 @@ enum Pricing {
 // MARK: - 读会话记录
 
 enum LogReader {
-    /// 按文件缓存解析结果，刷新时只重读改动过的文件
-    private static var cache: [String: (mtime: Date, size: Int, records: [UsageRecord])] = [:]
+    /// 每个文件的解析结果。存到磁盘上，下次启动直接用，只重新解析改动过的文件（全部重读要好几秒）
+    struct Entry: Codable {
+        var mtime: Date
+        var size: Int
+        var records: [UsageRecord]
+    }
+    struct DiskCache: Codable {
+        var version: Int
+        var files: [String: Entry]
+    }
+    /// 解析规则改了就加一，旧缓存作废
+    static let cacheVersion = 2
+    static var diskURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("local.usagebar/records.plist")
+    }
+    private static var cache: [String: Entry] = [:]
+    private static var diskLoaded = false
     private static let lock = NSLock()
+
+    private static func loadDisk() {
+        guard !diskLoaded else { return }
+        diskLoaded = true
+        guard let data = try? Data(contentsOf: diskURL),
+              let disk = try? PropertyListDecoder().decode(DiskCache.self, from: data),
+              disk.version == cacheVersion else { return }
+        cache = disk.files
+    }
+
+    private static func saveDisk() {
+        let enc = PropertyListEncoder()
+        enc.outputFormat = .binary
+        guard let data = try? enc.encode(DiskCache(version: cacheVersion, files: cache)) else { return }
+        try? FileManager.default.createDirectory(at: diskURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: diskURL, options: .atomic)
+    }
+
+    /// 上次存下的结果，不碰日志文件（启动时先拿它出数）
+    static func cached() -> [UsageRecord] {
+        lock.lock(); defer { lock.unlock() }
+        loadDisk()
+        return dedupe(cache.values.flatMap(\.records), since: .distantPast)
+    }
 
     static func read(since: Date) -> [UsageRecord] {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -144,6 +185,8 @@ enum LogReader {
                                         (".codex/archived_sessions", .codex)]
         var all: [UsageRecord] = []
         lock.lock(); defer { lock.unlock() }
+        loadDisk()
+        var seen = Set<String>(), changed = false
         for (dir, src) in dirs {
             let root = home.appendingPathComponent(dir)
             guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
@@ -151,14 +194,23 @@ enum LogReader {
             for case let url as URL in e where url.pathExtension == "jsonl" {
                 let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
                 let mtime = v?.contentModificationDate ?? .distantPast, size = v?.fileSize ?? 0
+                seen.insert(url.path)
                 guard mtime >= since else { continue }
                 if let c = cache[url.path], c.mtime == mtime, c.size == size { all += c.records; continue }
                 let recs = src == .claude ? parseClaude(url) : parseCodex(url)
-                cache[url.path] = (mtime, size, recs)
+                cache[url.path] = Entry(mtime: mtime, size: size, records: recs)
+                changed = true
                 all += recs
             }
         }
-        // 同一请求可能出现在多个文件里（续接的会话会带上旧记录），按 id 去重，留输出最多的那条
+        // 删掉的日志也从缓存里去掉
+        for path in cache.keys where !seen.contains(path) { cache[path] = nil; changed = true }
+        if changed { saveDisk() }
+        return dedupe(all, since: since)
+    }
+
+    /// 同一请求可能出现在多个文件里（续接的会话会带上旧记录），按 id 去重，留输出最多的那条
+    static func dedupe(_ all: [UsageRecord], since: Date) -> [UsageRecord] {
         var byID: [String: UsageRecord] = [:]
         for r in all where r.time >= since {
             if let old = byID[r.id], old.output >= r.output { continue }
@@ -172,15 +224,6 @@ enum LogReader {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
-
-    /// 逐行读，先按字节粗筛再解析 JSON（日志里大部分行是对话内容，用不上）
-    static func lines(_ url: URL, containing needles: [String], _ body: ([String: Any]) -> Void) {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
-        let keys = needles.map { Data($0.utf8) }
-        for line in data.split(separator: UInt8(ascii: "\n")) where keys.contains(where: { line.range(of: $0) != nil }) {
-            if let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] { body(obj) }
-        }
-    }
 
     /// 一行里第一个 "timestamp"（顶层那个，在消息内容之前），不用解析整行 JSON
     static func timestamp(in line: Data.SubSequence) -> Date? {
@@ -372,11 +415,16 @@ struct ModelRow: Identifiable {
     let priced: Bool
     var failed = 0
     var speed: Double?       // 平均速度（只算估得出速度的请求）
-    var firstToken: Double?  // 平均首字
+    var firstToken: Double?  // 首字的中位数
     var successRate: Double { Double(s.requests) / Double(max(1, s.requests + failed)) }
 }
 
-func average(_ xs: [Double]) -> Double? { xs.isEmpty ? nil : xs.reduce(0, +) / Double(xs.count) }
+/// 中位数：首字偶尔会因为等确认、长时间思考到几分钟，平均数会被这几次拉高
+func median(_ xs: [Double]) -> Double? {
+    guard !xs.isEmpty else { return nil }
+    let v = xs.sorted(), m = v.count / 2
+    return v.count % 2 == 1 ? v[m] : (v[m - 1] + v[m]) / 2
+}
 
 struct Bucket: Identifiable {
     let date: Date
@@ -395,12 +443,23 @@ final class StatsStore: ObservableObject {
     func reload(forcePrices: Bool = false) {
         guard !loading else { return }
         loading = true
+        let first = all.isEmpty
         Task.detached(priority: .userInitiated) {
+            func priced(_ rs: [UsageRecord]) -> [UsageRecord] {
+                var rs = rs
+                for i in rs.indices { rs[i].cost = Pricing.cost(rs[i]) }
+                return rs.sorted { $0.time > $1.time }
+            }
+            // 刚启动：先用上次存下的结果马上出数，再去读改动过的日志
+            if first {
+                await Pricing.load(download: false)
+                let cached = priced(LogReader.cached())
+                if !cached.isEmpty {
+                    await MainActor.run { self.all = cached; self.updated = Date() }
+                }
+            }
             await Pricing.load(force: forcePrices)
-            var recs = LogReader.read(since: .distantPast)  // 全部历史，「全部时间」和自定义范围都要用
-            for i in recs.indices { recs[i].cost = Pricing.cost(recs[i]) }
-            recs.sort { $0.time > $1.time }
-            let result = recs
+            let result = priced(LogReader.read(since: .distantPast))  // 全部历史，「全部时间」和自定义范围都要用
             await MainActor.run {
                 self.all = result
                 self.loading = false
@@ -682,24 +741,33 @@ struct StatsView: View {
         .modifier(Panel())
     }
 
-    func modelRows(_ rows: [UsageRecord]) -> [ModelRow] {
-        // 失败的请求按模型分进去，只用来算成功率
-        Dictionary(grouping: rows) { "\($0.source.rawValue)|\($0.model)" }
+    func modelRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { "\($0.source.rawValue)|\($0.model)" } }
+    /// 按应用（CC Switch 叫「供应商」）：Claude Code、Codex 各一行
+    func appRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { $0.source.rawValue } }
+
+    /// 按 key 分组汇总。失败的请求也分进去，只用来算成功率
+    func grouped(_ rows: [UsageRecord], by key: (UsageRecord) -> String) -> [ModelRow] {
+        Dictionary(grouping: rows, by: key)
             .compactMap { key, rs in
                 let ok = rs.filter { !$0.failed }
                 guard let first = ok.first else { return nil }
-                return ModelRow(id: key, source: first.source, model: first.model, s: Summary(ok), priced: first.cost != nil,
-                                failed: rs.count - ok.count, speed: average(ok.compactMap(\.speed)),
-                                firstToken: average(ok.compactMap(\.firstToken)))
+                // 速度按总输出 ÷ 总耗时算，不是各请求速度的平均（那样会被几个输出少却很快的请求拉高）
+                let timed = ok.filter { $0.speed != nil }
+                let time = timed.reduce(0) { $0 + ($1.duration ?? 0) }
+                return ModelRow(id: key, source: first.source, model: first.model, s: Summary(ok),
+                                priced: ok.contains { $0.cost != nil }, failed: rs.count - ok.count,
+                                speed: time > 0 ? Double(timed.reduce(0) { $0 + $1.output }) / time : nil,
+                                firstToken: median(ok.compactMap(\.firstToken)))
             }
             .sorted { $0.s.cost != $1.s.cost ? $0.s.cost > $1.s.cost : $0.s.tokens > $1.s.tokens }
     }
 
     /// 下方的明细面板：顶部是带数量的下划线标签，下面是表格
     func tables(_ rows: [UsageRecord]) -> some View {
-        let models = modelRows(rows)
+        let models = modelRows(rows), apps = appRows(rows)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 26) {
+                tabButton(L("按应用"), count: apps.count, tag: "apps")
                 tabButton(L("按模型"), count: models.count, tag: "models")
                 tabButton(L("请求明细"), count: rows.count, tag: "log")
                 Spacer()
@@ -711,7 +779,11 @@ struct StatsView: View {
             }
             .padding(.horizontal, 20).padding(.top, 12)
             Divider()
-            if tab == "models" { modelTable(models) } else { logTable(rows) }
+            switch tab {
+            case "apps": appTable(apps)
+            case "models": modelTable(models)
+            default: logTable(rows)
+            }
         }
         .modifier(Panel())
     }
@@ -781,6 +853,22 @@ struct StatsView: View {
                                abbrev(m.s.tokens), m.s.hitRate.map(percent) ?? "—", percent(m.successRate),
                                m.speed.map { String(format: "≈%.0f t/s", $0) } ?? "—",
                                m.firstToken.map { "≈" + seconds($0) } ?? "—"], mono: [0])
+            }
+        }
+    }
+
+    func appTable(_ apps: [ModelRow]) -> some View {
+        let cols: [Column] = [(L("应用"), nil), (L("请求数"), 76), (L("成本"), 96), ("Tokens", 84),
+                              (L("命中率"), 76), (L("成功率"), 76), (L("速度"), 84), (L("首字"), 64)]
+        return VStack(spacing: 0) {
+            headerRow(cols)
+            if apps.isEmpty { emptyRow() }
+            ForEach(apps) { a in
+                Divider()
+                dataRow(cols, [a.source == .claude ? "Claude Code" : "Codex", a.s.requests.formatted(),
+                               a.priced ? money(a.s.cost) : "—", abbrev(a.s.tokens), a.s.hitRate.map(percent) ?? "—",
+                               percent(a.successRate), a.speed.map { String(format: "≈%.0f t/s", $0) } ?? "—",
+                               a.firstToken.map { "≈" + seconds($0) } ?? "—"])
             }
         }
     }

@@ -136,6 +136,7 @@ enum I18n {
         "缓存命中率": ("キャッシュヒット率", "Cache Hit Rate"),
         "Tokens · 按小时": ("Tokens · 時間別", "Tokens · Hourly"),
         "Tokens · 按天": ("Tokens · 日別", "Tokens · Daily"),
+        "按应用": ("アプリ別", "By App"),
         "按模型": ("モデル別", "By Model"),
         "请求明细": ("リクエスト履歴", "Request Log"),
         "模型": ("モデル", "Model"),
@@ -1429,7 +1430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
         scheduleTimer()
         // 统计在后台先读好，打开窗口时不用等；之后按自己的间隔增量更新
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.stats.reload() }
+        stats.reload()  // 先用磁盘缓存马上出数，改动过的日志在后台再读
         scheduleStatsTimer()
         // 自动检查更新：启动 10 秒后查一次，之后每天一次；有新版时菜单里会出现提示
         updaterWatch = updater.$state.receive(on: RunLoop.main).sink { [weak self] _ in self?.scheduleSync() }
