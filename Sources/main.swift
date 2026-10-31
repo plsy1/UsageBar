@@ -30,6 +30,8 @@ struct ProviderUsage {
     var windows: [LimitWindow] = []
     var note: String?
     var error: String?
+    /// Codex 的额度重置次数（OpenAI 送的「立即重置 5 小时和本周额度」）和最早一次的到期时间
+    var resetCredits: ResetCredits?
     /// 各窗口里最紧的那个（剩余最少）
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
     var session: LimitWindow? { windows.first { !$0.weekly } }  // 5 小时（两家都排在第一个）
@@ -48,6 +50,18 @@ struct ProviderUsage {
             default: return nil
             }
         }
+    }
+}
+
+struct ResetCredits {
+    let count: Int
+    let expires: Date?
+    /// 「可用重置 1 次」（英文单复数不同，1 次单独一条）
+    var countText: String { count == 1 ? L("可用重置 1 次") : L("可用重置 %d 次", count) }
+    /// 「可用重置 1 次 · 11/7 06:50 到期」
+    var text: String {
+        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
+        return countText + (expires.map { " · " + L("%@ 到期", f.string(from: $0)) } ?? "")
     }
 }
 
@@ -165,6 +179,9 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "可用重置 1 次": ("リセット 1 回分", "1 reset available"),
+        "可用重置 %d 次": ("リセット %d 回分", "%d resets available"),
+        "%@ 到期": ("%@ まで", "expires %@"),
         "保持在最前": ("常に手前に表示", "Keep on Top"),
         "关掉时贴在桌面上，会被其他窗口盖住": ("オフのときはデスクトップに置かれ、他のウインドウに隠れます", "When off, the card sits on the desktop behind other windows"),
         "开机启动、外观、刷新频率和数据来源": ("ログイン時の起動、外観、更新頻度、データソース", "Launch at login, appearance, refresh and data sources"),
@@ -471,6 +488,16 @@ enum Codex {
                         usedPercent: used,
                         resetsAt: (w["reset_at"] as? Double).map { Date(timeIntervalSince1970: $0) },
                         weekly: seconds == 7 * 86400))
+                }
+                // 有可用的重置次数才去查详情（只读，拿最早到期的时间）
+                if let rc = json["rate_limit_reset_credits"] as? [String: Any], let n = rc["available_count"] as? Int, n > 0 {
+                    var detail = req
+                    detail.url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+                    let (st, dj) = await httpJSON(detail)
+                    let expires = st == 200 ? (dj?["credits"] as? [[String: Any]] ?? [])
+                        .filter { $0["status"] as? String == "available" }
+                        .compactMap { ($0["expires_at"] as? String).flatMap(parseISODate) }.min() : nil
+                    u.resetCredits = ResetCredits(count: n, expires: expires)
                 }
                 return u
             }
@@ -1679,6 +1706,9 @@ extension CardView {
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
                 UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, keepResetSpace: true)
             }
+            if let rc = u.resetCredits {
+                Label(rc.text, systemImage: "arrow.counterclockwise.circle").font(.system(size: 10 * s)).foregroundStyle(.secondary)
+            }
             if let n = u.note {
                 Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1703,6 +1733,9 @@ extension CardView {
                     Text(w.shownText(used)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
                 }
             }
+            if let rc = u.resetCredits {
+                Text(rc.countText).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -1723,6 +1756,9 @@ struct MenuUsageBlock: View {
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
                 UsageRow(w: w, s: 1.08, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle)
+            }
+            if let rc = u.resetCredits {
+                Label(rc.text, systemImage: "arrow.counterclockwise.circle").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             if let n = u.note {
                 Text(n).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
