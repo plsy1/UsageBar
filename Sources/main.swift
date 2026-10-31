@@ -76,6 +76,32 @@ enum I18n {
         "退出": ("終了", "Quit"),
         // 设置窗口
         "通用": ("一般", "General"),
+        // 用量统计
+        "用量统计…": ("使用量の統計…", "Usage Statistics…"),
+        "用量统计": ("使用量の統計", "Usage Statistics"),
+        "今天": ("今日", "Today"),
+        "7 天": ("7 日間", "7 Days"),
+        "30 天": ("30 日間", "30 Days"),
+        "全部": ("すべて", "All"),
+        "估算成本": ("推定コスト", "Est. Cost"),
+        "请求数": ("リクエスト数", "Requests"),
+        "缓存命中率": ("キャッシュヒット率", "Cache Hit Rate"),
+        "Tokens · 按小时": ("Tokens · 時間別", "Tokens · Hourly"),
+        "Tokens · 按天": ("Tokens · 日別", "Tokens · Daily"),
+        "按模型": ("モデル別", "By Model"),
+        "请求明细": ("リクエスト履歴", "Request Log"),
+        "模型": ("モデル", "Model"),
+        "应用": ("アプリ", "App"),
+        "时间": ("時刻", "Time"),
+        "成本": ("コスト", "Cost"),
+        "输入": ("入力", "Input"),
+        "输出": ("出力", "Output"),
+        "缓存读取": ("キャッシュ読取", "Cache Read"),
+        "缓存写入": ("キャッシュ書込", "Cache Write"),
+        "正在读取本机会话记录…": ("ローカルのセッション記録を読み込み中…", "Reading local session logs…"),
+        "该时间段内没有记录": ("この期間の記録はありません", "No usage in this period"),
+        "成本按 models.dev 的 API 价格估算，仅统计本机会话记录": ("コストは models.dev の API 価格による推定で、この Mac のセッション記録のみを集計しています", "Cost is estimated from models.dev API prices and covers only session logs on this Mac"),
+        "仅显示最近 %d 条": ("最新 %d 件のみ表示", "Showing the latest %d"),
         "开机启动": ("ログイン時に起動", "Launch at Login"),
         "需要在 系统设置 → 通用 → 登录项 中允许 UsageBar": ("システム設定 → 一般 → ログイン項目 で UsageBar を許可してください", "Allow UsageBar in System Settings → General → Login Items"),
         "关于": ("情報", "About"),
@@ -558,6 +584,7 @@ final class UsageModel: ObservableObject {
     var onRefresh: () -> Void = {}
     var onHide: () -> Void = {}
     var onSettings: () -> Void = {}
+    var onStats: () -> Void = {}
 }
 
 /// 毛玻璃背景（透出壁纸）
@@ -663,6 +690,7 @@ struct CardView: View {
         .opacity(opacity)
         .contextMenu {
             Button(L("立即刷新")) { model.onRefresh() }
+            Button(L("用量统计…")) { model.onStats() }
             Button(L("设置…")) { model.onSettings() }
             Button(L("隐藏桌面卡片")) { model.onHide() }
         }
@@ -712,6 +740,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var timerMinutes = 0
     var settingsWindow: NSWindow?
+    var statsWindow: NSWindow?
+    let stats = StatsStore()
     var lastLang = ""
     var showCard: Bool {
         get { UserDefaults.standard.bool(forKey: Pref.showCard) }
@@ -727,6 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onRefresh = { [weak self] in self?.refresh() }
         model.onHide = { [weak self] in self?.toggleCard() }
         model.onSettings = { [weak self] in self?.openSettings() }
+        model.onStats = { [weak self] in self?.openStats() }
         if showCard { setCardVisible(true) }
         rebuildMenu()
         refresh()
@@ -785,6 +816,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if I18n.lang != lastLang {
             // 错误提示、额度名称是取数时生成的，换语言后重新取一次
             lastLang = I18n.lang
+            statsWindow?.title = L("用量统计")
             refresh()
             // 设置窗口开着的话，按新语言重建（保留当前页和位置）
             if let old = settingsWindow, old.isVisible {
@@ -813,6 +845,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func openStats() {
+        if statsWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: StatsView(store: stats)))
+            w.title = L("用量统计")
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            w.isReleasedWhenClosed = false
+            w.setContentSize(NSSize(width: 880, height: 720))
+            w.center()
+            w.setFrameAutosaveName("StatsWindow")
+            statsWindow = w
+        }
+        stats.reload()
+        NSApp.activate(ignoringOtherApps: true)
+        statsWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc func toggleCard() {
@@ -902,12 +950,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.target = self
         c.state = showCard ? .on : .off
         menu.addItem(c)
+        let sts = NSMenuItem(title: L("用量统计…"), action: #selector(openStats), keyEquivalent: "u"); sts.target = self
+        menu.addItem(sts)
         let st = NSMenuItem(title: L("设置…"), action: #selector(openSettings), keyEquivalent: ","); st.target = self
         menu.addItem(st)
         let q = NSMenuItem(title: L("退出"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(q)
         item.menu = menu
     }
+}
+
+// 命令行模式：UsageBar --stats，打印本机会话记录的用量统计
+if CommandLine.arguments.contains("--stats") {
+    let sem = DispatchSemaphore(value: 0)
+    Task { await printStats(); sem.signal() }
+    sem.wait()
+    exit(0)
 }
 
 // 命令行模式：UsageBar --print，直接在终端打印用量

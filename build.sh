@@ -15,11 +15,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build
 
 if [[ "${2:-}" == "--universal" ]]; then
   for arch in arm64 x86_64; do
-    swiftc -O -target "$arch-apple-macos$MIN_OS" -o "build/UsageBar-$arch" UsageBar.swift
+    swiftc -O -target "$arch-apple-macos$MIN_OS" -o "build/UsageBar-$arch" Sources/*.swift
   done
   lipo -create -output "$APP/Contents/MacOS/UsageBar" build/UsageBar-arm64 build/UsageBar-x86_64
 else
-  swiftc -O -target "$(uname -m)-apple-macos$MIN_OS" -o "$APP/Contents/MacOS/UsageBar" UsageBar.swift
+  swiftc -O -target "$(uname -m)-apple-macos$MIN_OS" -o "$APP/Contents/MacOS/UsageBar" Sources/*.swift
 fi
 
 cp assets/AppIcon.icns "$APP/Contents/Resources/"
