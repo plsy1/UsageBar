@@ -61,6 +61,7 @@ enum I18n {
         "%d小时%d分": ("%d時間%d分", "%dh %dm"),
         "%d分钟": ("%d分", "%dm"),
         "%@后重置（%@）": ("%@後にリセット（%@）", "resets in %@ (%@)"),
+        "%@后重置": ("%@後にリセット", "resets in %@"),
         // 卡片和菜单
         "剩 %d%%": ("残り %d%%", "%d%% left"),
         "已用 %d%%": ("使用済み %d%%", "%d%% used"),
@@ -433,13 +434,15 @@ func bar(_ percent: Double, width: Int = 12) -> String {
     return String(repeating: "█", count: filled) + String(repeating: "░", count: width - filled)
 }
 
-func resetText(_ d: Date?) -> String {
+/// compact：桌面卡片用，只说还剩多久（「3小时21分后重置」），不带括号里的具体时间
+func resetText(_ d: Date?, compact: Bool = false) -> String {
     guard var d else { return "" }
     // 接口给的重置时间常是 05:59:59.x：差几秒到整分钟就进位，和统计页的「重置以来」一致
     d = Date(timeIntervalSince1970: ((d.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60)
     let s = max(0, d.timeIntervalSinceNow)
     let days = Int(s) / 86400, hours = Int(s) % 86400 / 3600, mins = Int(s) % 3600 / 60
     let rel = days > 0 ? L("%d天%d小时", days, hours) : hours > 0 ? L("%d小时%d分", hours, mins) : L("%d分钟", mins)
+    if compact { return L("%@后重置", rel) }
     let f = DateFormatter(); f.dateFormat = days > 0 ? "M/d HH:mm" : "HH:mm"
     return L("%@后重置（%@）", rel, f.string(from: d))
 }
@@ -1067,6 +1070,7 @@ struct UsageRow: View {
     let s: CGFloat
     let showReset: Bool
     let used: Bool  // 显式传进来：SwiftUI 只在输入变化时重绘这一行
+    var compact = false  // 桌面卡片用精简的重置时间
     var body: some View {
         VStack(alignment: .leading, spacing: 3 * s) {
             HStack {
@@ -1083,7 +1087,7 @@ struct UsageRow: View {
             }
             .frame(height: 4 * s)
             if showReset, w.resetsAt != nil {
-                Text(resetText(w.resetsAt)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+                Text(resetText(w.resetsAt, compact: compact)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
             }
         }
     }
@@ -1162,7 +1166,7 @@ extension CardView {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                UsageRow(w: w, s: s, showReset: showReset, used: used)
+                UsageRow(w: w, s: s, showReset: showReset, used: used, compact: true)
             }
             if let n = u.note {
                 Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
