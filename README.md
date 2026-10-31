@@ -4,11 +4,10 @@
 
 Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) in the macOS menu bar and on the desktop.
 
-- **Menu bar**: `Cc 61%  Cx 53%` (Claude Code / Codex), showing the tightest limit for each; click to see every limit's progress and reset time
-- **Desktop card**: sits on the desktop layer, draggable; side-by-side, stacked or compact layout with adjustable size; right-click to refresh, open UsageBar or the card settings, or hide it
-- **Main window**: usage statistics and settings in one window with a sidebar
-- **Usage statistics**: like CC Switch's — estimated cost, requests, tokens and cache hit rate for today, since the weekly limit last reset, the last 24 hours / 7 / 14 / 30 days, all time or a custom start and end, an hourly or daily chart, and per-model and per-request tables. Built from local Claude Code and Codex session logs; cost uses [models.dev](https://models.dev) API prices
-- **Settings**: launch at login, appearance (auto / light / dark), language, theme color, show remaining or used, separate refresh intervals for limits and statistics; card background (none / dark / light frosted glass), glass strength, text color, size, opacity; short or full names in the menu bar
+- **Menu bar**: `Claude 68/79%  Codex 0/47%` — the 5-hour limit, the weekly limit, or both; click to see every limit's progress and reset time
+- **Two desktop cards**: a limits card (each limit with a progress bar and reset time) and a usage card (estimated cost, requests, tokens and cache hit rate for today, since reset or the last 7 days). Both sit on the desktop layer or stay on top, are draggable, and remember their place on each display — if a display goes away the card moves to the main one and comes back when it returns
+- **Usage statistics**: like CC Switch's — cost, requests, tokens and cache hit rate for any period, an hourly or daily chart, and tables by app, by model and per request (hit rate, speed, time to first token, duration, status code; resizable, reorderable columns; click a request for its details). Built from local Claude Code and Codex session logs, read incrementally; cost uses [models.dev](https://models.dev) API prices
+- **Settings**: the menu bar and each card have their own options (which services, remaining or used, layout, size up to 250%, background, text color, opacity); plus launch at login, appearance, language, theme color and refresh intervals
 - **In-app updates**: checks GitHub Releases daily; one click downloads the new version, verifies its SHA-256, replaces the app and restarts
 - **Languages**: English / 简体中文 / 日本語, following the system by default
 - Requires macOS 13 or later, Apple silicon and Intel
@@ -23,7 +22,7 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
      ```bash
      xattr -dr com.apple.quarantine /Applications/UsageBar.app
      ```
-3. Click UsageBar in the menu bar → **Open UsageBar…** → General to turn on **Launch at Login**.
+3. Click UsageBar in the menu bar → **Open UsageBar…** → General to turn on **Launch at Login**. Updates are under **About**.
 
 ## Requirements for reading usage
 

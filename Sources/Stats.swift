@@ -1367,7 +1367,9 @@ struct RequestDetail: View {
 /// 布局和外观有自己的一套设置（一开始沿用额度卡片的）
 struct StatsCardView: View {
     @ObservedObject var stats: StatsStore
-    let model: UsageModel
+    @ObservedObject var model: UsageModel
+    var report = true  // 设置页的预览传 false
+    @AppStorage(Pref.showStatsCard) var visible = false
     @AppStorage(Pref.statsCardBackground) var background = "none"
     @AppStorage(Pref.statsCardText) var textColor = "white"
     @AppStorage(Pref.statsCardScale) var scale = 1.0
@@ -1402,14 +1404,20 @@ struct StatsCardView: View {
             if stats.updated == nil {
                 Text(L("正在读取本机会话记录…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             } else {
-                switch layout {
-                case "vertical":
-                    VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.self, content: column) }
-                case "compact":
-                    VStack(alignment: .leading, spacing: 6 * s) { ForEach(shown, id: \.self, content: compactRow) }
-                default:
-                    HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.self, content: column) }
+                Group {
+                    switch layout {
+                    case "vertical":
+                        VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.self, content: column) }
+                    case "compact":
+                        VStack(alignment: .leading, spacing: 6 * s) { ForEach(shown, id: \.self, content: compactRow) }
+                    default:
+                        HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.self, content: column) }
+                    }
                 }
+                // 和额度卡片布局、大小、家数一样时，高度对齐到较高的那张
+                .modifier(CardHeightSync(kind: "stats",
+                                         shape: visible && layout != "compact" && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
+                                         scale: s, model: model, report: report))
             }
             if let t = stats.updated {
                 Text(rangeTitle + " · " + L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
