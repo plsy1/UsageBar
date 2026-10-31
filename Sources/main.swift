@@ -79,7 +79,6 @@ enum I18n {
         // 设置窗口
         "通用": ("一般", "General"),
         "设置": ("設定", "Settings"),
-        "语言、显示方式和刷新频率": ("言語、表示方法、更新頻度", "Language, display and refresh frequency"),
         "布局、外观和大小，改动会实时显示在右边的预览里": ("レイアウト、外観、サイズ。変更は右のプレビューにすぐ反映されます", "Layout, look and size. Changes show up in the preview on the right"),
         "菜单栏上显示的内容，以及点开后的菜单": ("メニューバーの表示と、クリックしたときのメニュー", "What the menu bar shows, and the menu that opens from it"),
         "每家显示最紧的那个额度；显示剩余还是已使用、显示哪几家在「通用」里设置": ("各サービスで最も残りが少ない上限を表示します。残り / 使用済みや表示するサービスは「一般」で設定します", "Each shows its tightest limit. Remaining vs. used and which services to show are set in General"),
@@ -163,7 +162,10 @@ enum I18n {
         "名称": ("表示名", "Labels"),
         "简写（Cc / Cx）": ("略称（Cc / Cx）", "Short (Cc / Cx)"),
         "全名（Claude / Codex）": ("フルネーム（Claude / Codex）", "Full (Claude / Codex)"),
-        "显示（卡片和菜单栏）": ("表示（カードとメニューバー）", "Display (Card and Menu Bar)"),
+        "额度（卡片和菜单栏）": ("上限（カードとメニューバー）", "Limits (Card and Menu Bar)"),
+        "刷新间隔": ("更新間隔", "Refresh Interval"),
+        "刷新间隔（后台增量更新）": ("更新間隔（バックグラウンドで差分更新）", "Refresh Interval (in the background)"),
+        "语言、额度显示和用量统计": ("言語、上限の表示、使用量の統計", "Language, limits display and usage statistics"),
         "图表颜色": ("グラフの色", "Chart Color"),
         "粉色": ("ピンク", "Pink"),
         "紫色": ("パープル", "Purple"),
@@ -173,8 +175,6 @@ enum I18n {
         "橙色": ("オレンジ", "Orange"),
         "灰色": ("グレー", "Gray"),
         "刷新": ("更新", "Refresh"),
-        "额度": ("上限", "Limits"),
-        "用量统计（后台增量更新）": ("使用量の統計（バックグラウンドで差分更新）", "Usage statistics (updated in the background)"),
         "%d 分钟": ("%d 分", "%d min"),
     ]
 
@@ -522,11 +522,12 @@ struct GeneralSettings: View {
     @AppStorage(Pref.displayMode) var displayMode = "remaining"
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
+    @AppStorage("statsChartColor") var chartColor = "pink"
     @State var launchAtLogin = LoginItem.status == .enabled
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
-        SettingsPage(.general, L("语言、显示方式和刷新频率")) {
+        SettingsPage(.general, L("语言、额度显示和用量统计")) {
             Form {
                 Section {
                     Toggle(L("开机启动"), isOn: Binding(get: { launchAtLogin }, set: { on in
@@ -546,7 +547,8 @@ struct GeneralSettings: View {
                         Text("English").tag("en")
                     }
                 }
-                Section(L("显示（卡片和菜单栏）")) {
+                // 按功能分组：额度（卡片和菜单栏）/ 用量统计
+                Section(L("额度（卡片和菜单栏）")) {
                     Picker(L("显示数值"), selection: $displayMode) {
                         Text(L("剩余")).tag("remaining")
                         Text(L("已使用")).tag("used")
@@ -554,12 +556,25 @@ struct GeneralSettings: View {
                     .pickerStyle(.segmented)
                     Toggle("Claude", isOn: $showClaude)
                     Toggle("Codex", isOn: $showCodex)
-                }
-                Section(L("刷新")) {
-                    Picker(L("额度"), selection: $refreshMinutes) {
+                    Picker(L("刷新间隔"), selection: $refreshMinutes) {
                         ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                     }
-                    Picker(L("用量统计（后台增量更新）"), selection: $statsRefreshMinutes) {
+                }
+                Section(L("用量统计")) {
+                    LabeledContent(L("图表颜色")) {
+                        HStack(spacing: 9) {
+                            ForEach(ChartColor.all, id: \.key) { c in
+                                Button { chartColor = c.key } label: {
+                                    Circle().fill(c.color).frame(width: 16, height: 16)
+                                        .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.7 : 0), lineWidth: 1.5).padding(-3))
+                                        .padding(3)
+                                }
+                                .buttonStyle(.plain)
+                                .help(L(c.name))
+                            }
+                        }
+                    }
+                    Picker(L("刷新间隔（后台增量更新）"), selection: $statsRefreshMinutes) {
                         ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                     }
                 }

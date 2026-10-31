@@ -321,8 +321,7 @@ struct StatsView: View {
     static let pageSize = 50
     @State var showRange = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
-    @AppStorage("statsChartColor") var chartColor = "pink"
-    @State var showColors = false
+    @AppStorage("statsChartColor") var chartColor = "pink"  // 在 设置 → 通用 里选
 
     var range: StatsRange { StatsRange(rawValue: rangeRaw) ?? .today }
     var sources: [Source] { source == "all" ? [.claude, .codex] : [Source(rawValue: source) ?? .claude] }
@@ -478,26 +477,6 @@ struct StatsView: View {
                     Image(systemName: "chart.bar").help(L("柱状图")).tag("bar")
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
-                // 图表颜色：点开一排色块
-                Button { showColors.toggle() } label: {
-                    Circle().fill(ChartColor.color(chartColor)).frame(width: 14, height: 14)
-                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.2)))
-                        .padding(4)
-                }
-                .help(L("图表颜色"))
-                .popover(isPresented: $showColors, arrowEdge: .bottom) {
-                    HStack(spacing: 10) {
-                        ForEach(ChartColor.all, id: \.key) { c in
-                            Button { chartColor = c.key; showColors = false } label: {
-                                Circle().fill(c.color).frame(width: 20, height: 20)
-                                    .overlay(Circle().strokeBorder(Color.primary.opacity(chartColor == c.key ? 0.8 : 0), lineWidth: 2).padding(-3))
-                            }
-                            .buttonStyle(.plain)
-                            .help(L(c.name))
-                        }
-                    }
-                    .padding(14)
-                }
             }
             if store.loading && store.all.isEmpty {
                 Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
