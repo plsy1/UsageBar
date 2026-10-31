@@ -71,7 +71,6 @@ enum I18n {
         "正在获取用量…": ("使用量を取得中…", "Fetching usage…"),
         "更新于 %@": ("更新 %@", "Updated %@"),
         "正在刷新…": ("更新中…", "Refreshing…"),
-        "更新于 %@ · 每 %d 分钟自动刷新": ("更新 %@ · %d 分ごとに自動更新", "Updated %@ · auto-refresh every %d min"),
         "立即刷新": ("今すぐ更新", "Refresh Now"),
         "隐藏桌面卡片": ("デスクトップカードを隠す", "Hide Desktop Card"),
         "显示桌面卡片": ("デスクトップカードを表示", "Show Desktop Card"),
@@ -172,7 +171,11 @@ enum I18n {
         "毛玻璃浓度": ("すりガラスの濃さ", "Frosted Strength"),
         "大小": ("サイズ", "Size"),
         "整体不透明度": ("全体の不透明度", "Overall Opacity"),
-        "显示重置时间": ("リセット時刻を表示", "Show Reset Time"),
+        "重置时间": ("リセット時刻", "Reset Time"),
+        "不显示": ("表示しない", "Hidden"),
+        "剩余时间": ("残り時間", "Time Left"),
+        "具体时间": ("時刻", "Clock Time"),
+        "%@ 重置": ("%@ にリセット", "resets %@"),
         "菜单栏": ("メニューバー", "Menu Bar"),
         "名称": ("表示名", "Labels"),
         "简写（Cc / Cx）": ("略称（Cc / Cx）", "Short (Cc / Cx)"),
@@ -434,15 +437,22 @@ func bar(_ percent: Double, width: Int = 12) -> String {
     return String(repeating: "█", count: filled) + String(repeating: "░", count: width - filled)
 }
 
-/// compact：桌面卡片用，只说还剩多久（「3小时21分后重置」），不带括号里的具体时间
-func resetText(_ d: Date?, compact: Bool = false) -> String {
+/// style：full（菜单，「3小时21分后重置（03:30）」）/ relative（「3小时21分后重置」）/ absolute（「03:30 重置」「周一 06:00 重置」）
+func resetText(_ d: Date?, style: String = "full") -> String {
     guard var d else { return "" }
     // 接口给的重置时间常是 05:59:59.x：差几秒到整分钟就进位，和统计页的「重置以来」一致
     d = Date(timeIntervalSince1970: ((d.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60)
     let s = max(0, d.timeIntervalSinceNow)
     let days = Int(s) / 86400, hours = Int(s) % 86400 / 3600, mins = Int(s) % 3600 / 60
     let rel = days > 0 ? L("%d天%d小时", days, hours) : hours > 0 ? L("%d小时%d分", hours, mins) : L("%d分钟", mins)
-    if compact { return L("%@后重置", rel) }
+    if style == "relative" { return L("%@后重置", rel) }
+    if style == "absolute" {
+        // 今天内只写几点，否则带上星期几
+        let f = DateFormatter()
+        f.locale = Locale(identifier: ["zh": "zh_CN", "ja": "ja_JP"][I18n.lang] ?? "en_US")
+        f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : (I18n.lang == "ja" ? "EEEE HH:mm" : "EEE HH:mm")
+        return L("%@ 重置", f.string(from: d))
+    }
     let f = DateFormatter(); f.dateFormat = days > 0 ? "M/d HH:mm" : "HH:mm"
     return L("%@后重置（%@）", rel, f.string(from: d))
 }
@@ -465,13 +475,19 @@ enum Pref {
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
     static let cardLayout = "cardLayout"       // horizontal / vertical / compact
+    static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
     static var showUsed: Bool { UserDefaults.standard.string(forKey: displayMode) == "used" }
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal",
+            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative",
         ])
+        // 旧版只有「显示重置时间」开关：关掉过的人沿用为「不显示」
+        // 只看用户真正保存过的值（注册的默认值不算）
+        let d = UserDefaults.standard
+        let saved = d.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "local.usagebar") ?? [:]
+        if saved[resetStyle] == nil, saved[showReset] as? Bool == false { d.set("hidden", forKey: resetStyle) }
     }
     static func visible(_ name: String) -> Bool {
         UserDefaults.standard.bool(forKey: name == "Claude" ? showClaude : showCodex)
@@ -674,8 +690,16 @@ struct LimitsSettings: View {
                             MenuUsageBlock(u: u, used: used).padding(.horizontal, -2)
                             Divider().padding(.vertical, 3)
                         }
-                        ForEach([L("立即刷新"), L("显示桌面卡片"), L("打开 UsageBar…"), L("退出")], id: \.self) {
-                            Text($0).font(.system(size: 13)).padding(.vertical, 1).padding(.leading, 12)
+                        Text(L("更新于 %@", Date().formatted(.dateTime.hour().minute())))
+                            .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 12)
+                        ForEach([("arrow.clockwise", L("立即刷新")), ("eye.slash", L("隐藏桌面卡片")),
+                                 ("macwindow", L("打开 UsageBar…")), ("power", L("退出"))], id: \.1) { icon, title in
+                            if icon == "power" { Divider().padding(.vertical, 3) }
+                            HStack(spacing: 8) {
+                                Image(systemName: icon).frame(width: 18)  // 固定图标宽度，文字才对齐
+                                Text(title)
+                            }
+                            .font(.system(size: 13)).padding(.vertical, 1).padding(.leading, 12)
                         }
                     }
                     .padding(.vertical, 10)
@@ -775,7 +799,7 @@ struct CardSettings: View {
     @AppStorage(Pref.scale) var scale = 1.0
     @AppStorage(Pref.opacity) var opacity = 1.0
     @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
-    @AppStorage(Pref.showReset) var showReset = true
+    @AppStorage(Pref.resetStyle) var resetStyle = "relative"
     @AppStorage(Pref.cardLayout) var layout = "horizontal"
 
     /// 卡片实际尺寸：卡片显示着就用桌面上那张的窗口尺寸，否则按布局估算
@@ -819,7 +843,12 @@ struct CardSettings: View {
                 .disabled(!showCard)
                 Section {
                     PercentSlider(title: L("整体不透明度"), value: $opacity, range: 0.3...1.0, step: 0.05)
-                    Toggle(L("显示重置时间"), isOn: $showReset)
+                    Picker(L("重置时间"), selection: $resetStyle) {
+                        Text(L("不显示")).tag("hidden")
+                        Text(L("剩余时间")).tag("relative")
+                        Text(L("具体时间")).tag("absolute")
+                    }
+                    .pickerStyle(.segmented)
                 }
                 .disabled(!showCard)
             }
@@ -1070,7 +1099,7 @@ struct UsageRow: View {
     let s: CGFloat
     let showReset: Bool
     let used: Bool  // 显式传进来：SwiftUI 只在输入变化时重绘这一行
-    var compact = false  // 桌面卡片用精简的重置时间
+    var resetStyle = "full"  // 菜单用完整的；桌面卡片按设置用 relative / absolute
     var body: some View {
         VStack(alignment: .leading, spacing: 3 * s) {
             HStack {
@@ -1087,7 +1116,7 @@ struct UsageRow: View {
             }
             .frame(height: 4 * s)
             if showReset, w.resetsAt != nil {
-                Text(resetText(w.resetsAt, compact: compact)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+                Text(resetText(w.resetsAt, style: resetStyle)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
             }
         }
     }
@@ -1100,7 +1129,7 @@ struct CardView: View {
     @AppStorage(Pref.scale) var scale = 1.0
     @AppStorage(Pref.opacity) var opacity = 1.0
     @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
-    @AppStorage(Pref.showReset) var showReset = true
+    @AppStorage(Pref.resetStyle) var resetStyle = "relative"
     @AppStorage(Pref.showClaude) var showClaude = true
     @AppStorage(Pref.showCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
@@ -1145,10 +1174,11 @@ struct CardView: View {
         }
         .opacity(opacity)
         .contextMenu {
-            Button(L("立即刷新")) { model.onRefresh() }
-            Button(L("打开 UsageBar…")) { model.onOpen() }
-            Button(L("卡片设置…")) { model.onCardSettings() }
-            Button(L("隐藏桌面卡片")) { model.onHide() }
+            Button { model.onRefresh() } label: { Label(L("立即刷新"), systemImage: "arrow.clockwise") }
+            Button { model.onOpen() } label: { Label(L("打开 UsageBar…"), systemImage: "macwindow") }
+            Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
+            Divider()
+            Button { model.onHide() } label: { Label(L("隐藏桌面卡片"), systemImage: "eye.slash") }
         }
     }
 }
@@ -1166,7 +1196,7 @@ extension CardView {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                UsageRow(w: w, s: s, showReset: showReset, used: used, compact: true)
+                UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle)
             }
             if let n = u.note {
                 Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
@@ -1490,24 +1520,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let status: String
         if loading { status = L("正在刷新…") }
         else if let t = lastUpdate {
-            let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-            status = L("更新于 %@ · 每 %d 分钟自动刷新", f.string(from: t), timerMinutes)
+            let f = DateFormatter(); f.dateFormat = "HH:mm"
+            status = L("更新于 %@", f.string(from: t))
         } else { status = "" }
         if !status.isEmpty { info(NSAttributedString(string: status, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor])) }
 
-        let r = NSMenuItem(title: L("立即刷新"), action: #selector(refresh), keyEquivalent: "r"); r.target = self
-        menu.addItem(r)
-        let c = NSMenuItem(title: L("显示桌面卡片"), action: #selector(toggleCard), keyEquivalent: "")
-        c.target = self
-        c.state = showCard ? .on : .off
-        menu.addItem(c)
-        if case .available(let v) = updater.state {
-            let up = NSMenuItem(title: L("有新版本 %@…", v), action: #selector(openUpdate), keyEquivalent: ""); up.target = self
-            menu.addItem(up)
+        /// 每一项都配 SF Symbol 图标，和系统自动给「退出」加的图标对齐
+        func add(_ title: String, _ symbol: String, _ action: Selector, key: String = "") {
+            let mi = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            mi.target = self
+            mi.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            menu.addItem(mi)
         }
-        let open = NSMenuItem(title: L("打开 UsageBar…"), action: #selector(openApp), keyEquivalent: "o"); open.target = self
-        menu.addItem(open)
+        add(L("立即刷新"), "arrow.clockwise", #selector(refresh), key: "r")
+        // 不用勾号：卡片显示时叫「隐藏」，隐藏时叫「显示」，和卡片右键菜单一致
+        add(showCard ? L("隐藏桌面卡片") : L("显示桌面卡片"), showCard ? "eye.slash" : "eye", #selector(toggleCard))
+        if case .available(let v) = updater.state {
+            add(L("有新版本 %@…", v), "arrow.down.circle", #selector(openUpdate))
+        }
+        add(L("打开 UsageBar…"), "macwindow", #selector(openApp), key: "o")
+        menu.addItem(.separator())
         let q = NSMenuItem(title: L("退出"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        q.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(q)
         item.menu = menu
     }
