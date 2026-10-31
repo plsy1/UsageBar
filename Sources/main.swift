@@ -55,13 +55,22 @@ struct ProviderUsage {
 
 struct ResetCredits {
     let count: Int
-    let expires: Date?
+    /// 每一次的到期时间，从早到晚（详情接口没拿到时为空）
+    let expiries: [Date]
+    var earliest: Date? { expiries.first }
+
     /// 「可用重置 1 次」（英文单复数不同，1 次单独一条）
     var countText: String { count == 1 ? L("可用重置 1 次") : L("可用重置 %d 次", count) }
-    /// 「可用重置 1 次 · 11/7 06:50 到期」
+    /// 「可用重置 1 次 · 11/7 06:50 到期」；多次时只写最早那次：「可用重置 3 次 · 最早 11/7 06:50 到期」
     var text: String {
-        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
-        return countText + (expires.map { " · " + L("%@ 到期", f.string(from: $0)) } ?? "")
+        guard let e = earliest else { return countText }
+        return countText + " · " + (count > 1 ? L("最早 %@ 到期", Self.date(e)) : L("%@ 到期", Self.date(e)))
+    }
+    /// 菜单里逐条列出每次的到期时间（多于一次时）
+    var lines: [String] { count > 1 ? expiries.map { L("%@ 到期", Self.date($0)) } : [] }
+
+    static func date(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
     }
 }
 
@@ -182,6 +191,7 @@ enum I18n {
         "可用重置 1 次": ("リセット 1 回分", "1 reset available"),
         "可用重置 %d 次": ("リセット %d 回分", "%d resets available"),
         "%@ 到期": ("%@ まで", "expires %@"),
+        "最早 %@ 到期": ("最も早いもの %@ まで", "earliest expires %@"),
         "保持在最前": ("常に手前に表示", "Keep on Top"),
         "关掉时贴在桌面上，会被其他窗口盖住": ("オフのときはデスクトップに置かれ、他のウインドウに隠れます", "When off, the card sits on the desktop behind other windows"),
         "开机启动、外观、刷新频率和数据来源": ("ログイン時の起動、外観、更新頻度、データソース", "Launch at login, appearance, refresh and data sources"),
@@ -494,10 +504,10 @@ enum Codex {
                     var detail = req
                     detail.url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
                     let (st, dj) = await httpJSON(detail)
-                    let expires = st == 200 ? (dj?["credits"] as? [[String: Any]] ?? [])
+                    let expiries = st == 200 ? (dj?["credits"] as? [[String: Any]] ?? [])
                         .filter { $0["status"] as? String == "available" }
-                        .compactMap { ($0["expires_at"] as? String).flatMap(parseISODate) }.min() : nil
-                    u.resetCredits = ResetCredits(count: n, expires: expires)
+                        .compactMap { ($0["expires_at"] as? String).flatMap(parseISODate) }.sorted() : []
+                    u.resetCredits = ResetCredits(count: n, expiries: expiries)
                 }
                 return u
             }
@@ -1758,7 +1768,12 @@ struct MenuUsageBlock: View {
                 UsageRow(w: w, s: 1.08, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle)
             }
             if let rc = u.resetCredits {
-                Label(rc.text, systemImage: "arrow.counterclockwise.circle").font(.system(size: 11)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(rc.text, systemImage: "arrow.counterclockwise.circle")
+                    // 多次时逐条列出，图标宽度留空对齐
+                    ForEach(rc.lines, id: \.self) { Text($0).padding(.leading, 20) }
+                }
+                .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             if let n = u.note {
                 Text(n).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
