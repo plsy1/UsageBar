@@ -2752,6 +2752,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.mainWindow?.contentViewController = nil
                 self?.mainWindow = nil
                 self?.stats.release()  // 统计页取进内存的更早的记录也放掉
+                // 主窗口关了：回到只在菜单栏的样子（不占程序坞）
+                NSApp.setActivationPolicy(.accessory)
             }
         }
         if let tab { nav.tab = tab }
@@ -2780,6 +2782,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mainWindow = w
         }
         stats.reload()
+        // 主窗口开着时像普通 app 一样出现在程序坞和 ⌘Tab 里，菜单栏有应用菜单，⌘H 才能隐藏（菜单栏 app 按 ⌘H 系统不理）
+        NSApp.setActivationPolicy(.regular)
         // ⌘H 隐藏过的话先取消隐藏
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
