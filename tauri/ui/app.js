@@ -137,6 +137,36 @@ const T = {
   info_privacy: ['所有数据只在这台电脑、你添加的远程机器和上述官方服务之间传输，不经过其他服务器', 'データはこの PC、追加したリモートマシン、上記の公式サービスの間でのみやり取りされ、他のサーバーを経由しません', 'Data only travels between this computer, the remote machines you add and those official services, never through other servers'],
   all_releases: ['所有版本', 'すべてのリリース', 'All Releases'],
   report_issue: ['反馈问题', '問題を報告', 'Report an Issue'],
+  appearance_l: ['外观', '外観', 'Appearance'],
+  ap_auto: ['自动', '自動', 'Auto'],
+  ap_light: ['浅色', 'ライト', 'Light'],
+  ap_dark: ['深色', 'ダーク', 'Dark'],
+  accent_l: ['主题色', 'テーマカラー', 'Theme Color'],
+  c_pink: ['粉色', 'ピンク', 'Pink'],
+  c_purple: ['紫色', 'パープル', 'Purple'],
+  c_blue: ['蓝色', 'ブルー', 'Blue'],
+  c_teal: ['青色', 'ティール', 'Teal'],
+  c_green: ['绿色', 'グリーン', 'Green'],
+  c_orange: ['橙色', 'オレンジ', 'Orange'],
+  c_gray: ['灰色', 'グレー', 'Gray'],
+  g_refresh: ['刷新', '更新', 'Refresh'],
+  limits_detail: ['向 Anthropic 和 OpenAI 查询剩余额度', 'Anthropic と OpenAI に残りの上限を問い合わせます', 'Asks Anthropic and OpenAI for remaining limits'],
+  stats_detail: ['读取本机和远程机器的会话记录', 'この PC とリモートマシンのセッション記録を読み込みます', 'Reads session logs on this computer and remote machines'],
+  refresh_note: ['用量统计只读取新写入的日志，刷新很快', '使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります', 'Usage statistics only read newly written logs, so refreshing is quick'],
+  g_tray: ['托盘', 'トレイ', 'Tray'],
+  tray_note: ['只影响托盘、托盘菜单和「额度」页，两张卡片在「桌面卡片」里各自设置', 'トレイ、トレイメニュー、「上限」ページだけに反映されます。2 枚のカードは「デスクトップカード」で個別に設定します', 'Only affects the tray, its menu and the Limits page; each desktop card has its own settings'],
+  tray_limit: ['显示的额度', '表示する上限', 'Limit Shown'],
+  both: ['都显示', '両方', 'Both'],
+  tray_reset: ['菜单里的重置时间', 'メニューのリセット時刻', 'Reset Time in Menu'],
+  r_full: ['完整', 'すべて', 'Full'],
+  resets_full: ['%s后重置（%s）', '%s後にリセット（%s）', 'resets in %s (%s)'],
+  g_stats: ['用量统计', '使用量の統計', 'Usage Statistics'],
+  price_table: ['价格表', '価格表', 'Prices'],
+  price_updated: ['models.dev · 更新于 %s', 'models.dev · 更新 %s', 'models.dev · updated %s'],
+  not_loaded: ['未获取', '未取得', 'Not loaded'],
+  update_now: ['立即更新', '今すぐ更新', 'Update Now'],
+  session_logs: ['会话记录', 'セッション記録', 'Session Logs'],
+  records_since: ['%s 条请求，最早 %s', '%s 件、最古 %s', '%s requests since %s'],
   g_sources: ['数据来源', 'データソース', 'Data Sources'],
   src_api: ['官方接口', '公式 API', 'Official API'],
   src_local: ['仅本地', 'ローカルのみ', 'Local Only'],
@@ -175,6 +205,26 @@ let autostart = false;
 let sshHosts = [];
 let newHostDraft = '';
 
+// 主题色：浅色、深色两套（和 macOS 的系统色一样）
+const ACCENTS = {
+  pink: ['#ff2d55', '#ff375f'], purple: ['#af52de', '#bf5af2'], blue: ['#007aff', '#0a84ff'], teal: ['#30b0c7', '#40c8e0'],
+  green: ['#34c759', '#30d158'], orange: ['#ff9500', '#ff9f0a'], gray: ['#8e8e93', '#98989d'],
+};
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+// 外观：auto 跟随系统，light / dark 固定；主题色按当前深浅选一套
+function applyTheme() {
+  const s = state?.settings;
+  if (!s) return;
+  const root = document.documentElement;
+  if (s.appearance === 'light' || s.appearance === 'dark') root.dataset.theme = s.appearance;
+  else delete root.dataset.theme;
+  const dark = s.appearance === 'dark' || (s.appearance !== 'light' && systemDark.matches);
+  const pair = ACCENTS[s.accent] || ACCENTS.pink;
+  root.style.setProperty('--accent', pair[dark ? 1 : 0]);
+}
+systemDark.addEventListener?.('change', () => { applyTheme(); if (typeof render === 'function') render(); });
+
 const L = () => ({ zh: 0, ja: 1, en: 2 })[state?.lang] ?? 2;
 const t = (key, ...args) => {
   let s = (T[key] || [key, key, key])[L()];
@@ -202,6 +252,7 @@ function shortTime(sec) {
 // 用得比时间快的额度：百分比后面加个 ↑
 const fastMark = (w) => (w.fast ? `<span class="up" title="${esc(t('fast_hint'))}">↑</span>` : '');
 
+// style：relative「3小时20分后重置」/ absolute「周三 14:20 重置」/ full「3小时20分后重置（14:20）」
 function resetText(at, style = 'relative') {
   // 差几秒到整分钟就进位（接口常给 05:59:59.x）
   at = Math.floor((at + 5) / 60) * 60;
@@ -211,7 +262,9 @@ function resetText(at, style = 'relative') {
   const rel = d > 0 ? t('d_h').replace('%d', d).replace('%h', h)
     : h > 0 ? t('h_m').replace('%h', h).replace('%m', m)
     : t('m').replace('%m', m);
-  return t('resets_in', rel);
+  if (style !== 'full') return t('resets_in', rel);
+  const date = new Date(at * 1000), hm = date.toTimeString().slice(0, 5);
+  return t('resets_full', rel, d > 0 ? `${date.getMonth() + 1}/${date.getDate()} ${hm}` : hm);
 }
 
 // Codex 的额度重置：「可用重置 1 次 · 11/7 06:50 到期」；多次时写最早那次，lines 是逐条的到期时间
@@ -235,7 +288,7 @@ function providerHTML(p) {
     html += `<div class="row">
       <div class="top"><span>${esc(windowLabel(w))}</span><span class="value">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></div>
       <div class="bar"><div style="width:${v}%"></div></div>
-      ${w.resets_at ? `<div class="reset">${esc(resetText(w.resets_at) + (w.runs_out_at ? ' · ' + t('runs_out', shortTime(w.runs_out_at)) : ''))}</div>` : ''}
+      ${w.resets_at && state.settings.tray_reset !== 'hidden' ? `<div class="reset">${esc(resetText(w.resets_at, state.settings.tray_reset) + (w.runs_out_at ? ' · ' + t('runs_out', shortTime(w.runs_out_at)) : ''))}</div>` : ''}
     </div>`;
   }
   if (p.resets) {
@@ -280,10 +333,11 @@ function fitFlyout() {
 
 // MARK: 桌面卡片（布局和尺寸照 macOS 版的 CardView）
 
-const shownProviders = () => state.providers.filter((p) => (p.name === 'Claude' ? state.settings.show_claude : state.settings.show_codex));
+// 额度卡片：自己的「显示哪几家」和「剩余 / 已用」（托盘的在设置页）
+const shownProviders = () => state.providers.filter((p) => (p.name === 'Claude' ? state.settings.card_show_claude : state.settings.card_show_codex));
 
 function cardRow(w) {
-  const s = state.settings, used = s.display === 'used';
+  const s = state.settings, used = s.card_display === 'used';
   const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
   return `<div class="c-row">
     <div class="c-top"><span>${esc(windowLabel(w))}</span><span class="c-val">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></div>
@@ -306,7 +360,7 @@ function cardColumn(p) {
 
 // 紧凑：一家一行，放在网格里，各行的同一列上下对齐（cols：最多的那行有几格）
 function cardCompactRow(p, cols) {
-  const used = state.settings.display === 'used';
+  const used = state.settings.card_display === 'used';
   // 出错时这一格占满后面所有列，不用再补空格
   if (p.error && p.windows.length === 0) {
     return `<span class="c-name">${esc(p.name)}</span><span class="c-err" style="grid-column: span ${cols - 1}">${esc(errorText(p))}</span>`;
@@ -415,7 +469,10 @@ function cardSettingsPage() {
     ? `<div class="field"><span>${t('stats_range')}</span>${seg('stats_card_range', [['today', t('today')], ['cycle', t('since_reset')], ['7d', t('last_7d')]])}</div>
        <div class="field"><span>Claude</span>${toggle('stats_card_show_claude', s.stats_card_show_claude)}</div>
        <div class="field"><span>Codex</span>${toggle('stats_card_show_codex', s.stats_card_show_codex)}</div>`
-    : `<div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>`;
+    : `<div class="field"><span>${t('display')}</span>${seg('card_display', [['remaining', t('remaining')], ['used', t('used_opt')]])}</div>
+       <div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>
+       <div class="field"><span>Claude</span>${toggle('card_show_claude', s.card_show_claude)}</div>
+       <div class="field"><span>Codex</span>${toggle('card_show_codex', s.card_show_codex)}</div>`;
   return `<div class="header"><div><h1>${t('nav_card')}</h1><div class="sub">${t('card_sub')}</div></div></div>
     ${tabs}
     <div class="group-title">${t(stats ? 'usage_card' : 'limits_card')}</div>
@@ -440,6 +497,8 @@ function cardSettingsPage() {
     <div class="footnote">${t('card_hint')}</div>`;
 }
 
+const minutesSelect = (id, list) => `<select id="${id}">${list.map((m) => `<option value="${m}" ${state.settings[id] === m ? 'selected' : ''}>${t('minutes', m)}</option>`).join('')}</select>`;
+
 function settingsPage() {
   const s = state.settings;
   const langs = [['auto', t('lang_auto')], ['zh', '中文'], ['ja', '日本語'], ['en', 'English']];
@@ -449,16 +508,26 @@ function settingsPage() {
       <div class="field"><span>${t('launch')}</span>${toggle('autostart', autostart)}</div>
       <div class="field"><span>${t('language')}</span>
         <select id="language">${langs.map(([v, l]) => `<option value="${v}" ${s.language === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
-      <div class="field"><span>${t('refresh_interval')}</span>
-        <select id="refresh_minutes">${[1, 2, 5, 10, 15, 30].map((m) => `<option value="${m}" ${s.refresh_minutes === m ? 'selected' : ''}>${t('minutes', m)}</option>`).join('')}</select></div>
+      <div class="field"><span>${t('appearance_l')}</span>${seg('appearance', [['auto', t('ap_auto')], ['light', t('ap_light')], ['dark', t('ap_dark')]])}</div>
+      <div class="field"><span>${t('accent_l')}</span><span class="swatches">${Object.keys(ACCENTS).map((k) =>
+        `<button data-set="accent" data-val="${k}" class="${s.accent === k ? 'on' : ''}" title="${esc(t('c_' + k))}" style="background-color:var(--sw-${k})"></button>`).join('')}</span></div>
     </div>
-    <div class="group-title">${t('g_display')}</div>
+    <div class="group-title">${t('g_refresh')}</div>
+    <div class="panel group">
+      <div class="field"><span>${t('nav_usage')}<div class="hint">${t('limits_detail')}</div></span>${minutesSelect('refresh_minutes', [1, 2, 5, 10, 15, 30])}</div>
+      <div class="field"><span>${t('nav_stats')}<div class="hint">${t('stats_detail')}</div></span>${minutesSelect('stats_refresh_minutes', [1, 2, 5, 10, 15, 30, 60])}</div>
+    </div>
+    <div class="footnote">${t('refresh_note')}</div>
+    <div class="group-title">${t('g_tray')}</div>
     <div class="panel group">
       <div class="field"><span>${t('display')}</span>${seg('display', [['remaining', t('remaining')], ['used', t('used_opt')]])}</div>
       <div class="field"><span>${t('tray_label')}</span>${seg('menu_label', [['short', t('short')], ['full', t('full')]])}</div>
+      <div class="field"><span>${t('tray_limit')}</span>${seg('tray_limit', [['session', t('five_hour')], ['weekly', t('weekly')], ['both', t('both')]])}</div>
+      <div class="field"><span>${t('tray_reset')}</span>${seg('tray_reset', [['full', t('r_full')], ['relative', t('r_relative')], ['absolute', t('r_absolute')], ['hidden', t('r_hidden')]])}</div>
       <div class="field"><span>Claude</span>${toggle('show_claude', s.show_claude)}</div>
       <div class="field"><span>Codex</span>${toggle('show_codex', s.show_codex)}</div>
     </div>
+    <div class="footnote">${t('tray_note')}</div>
     <div class="group-title">${t('g_notify')}</div>
     <div class="panel group">
       <div class="field"><span>${t('n_threshold')}</span>
@@ -466,6 +535,13 @@ function settingsPage() {
       <div class="field"><span>${t('n_run_out')}<div class="hint">${t('n_run_out_hint')}</div></span>${toggle('notify_run_out', s.notify_run_out)}</div>
       <div class="field"><span>${t('n_reset')}<div class="hint">${t('n_reset_hint')}</div></span>${toggle('notify_reset', s.notify_reset)}</div>
       <div class="field"><span>${t('n_credits')}<div class="hint">${t('n_credits_hint')}</div></span>${toggle('notify_credits', s.notify_credits)}</div>
+    </div>
+    <div class="group-title">${t('g_stats')}</div>
+    <div class="panel group">
+      <div class="field"><span>${t('price_table')}<div class="hint">${state.pricing_updated ? t('price_updated', dateTime(state.pricing_updated)) : t('not_loaded')}</div></span>
+        ${state.stats_loading ? `<span class="sub">${t('refreshing')}</span>` : `<button class="btn" id="update-prices">${t('update_now')}</button>`}</div>
+      <div class="field"><span>${t('session_logs')}</span><span class="sub">${state.overview?.earliest
+        ? t('records_since', state.overview.count.toLocaleString(), new Date(state.overview.earliest).toLocaleDateString()) : t('reading_logs')}</span></div>
     </div>
     <div class="group-title">${t('g_sources')}</div>
     <div class="panel group">${['Claude', 'Codex'].map(sourceRow).join('')}</div>
@@ -564,6 +640,7 @@ function aboutPage() {
 function render() {
   if (!state) return;
   document.documentElement.lang = state.lang;
+  applyTheme();
   document.querySelectorAll('[data-t]').forEach((el) => (el.textContent = t(el.dataset.t)));
   document.querySelectorAll('.nav').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   if (FLYOUT) {
@@ -607,6 +684,7 @@ document.addEventListener('click', (e) => {
   if (e.target.id === 'open-main') { invoke('open_main'); return; }
   if (e.target.id === 'add-host') { addHost(); return; }
   if (e.target.id === 'check-update') { invoke('check_update_now'); return; }
+  if (e.target.id === 'update-prices') { invoke('refresh_prices'); return; }
   if (e.target.id === 'install-update') { invoke('install_update'); return; }
   const gh = e.target.closest('[data-github]');
   if (gh) { invoke('open_github', { path: gh.dataset.github }); return; }
@@ -621,11 +699,11 @@ document.addEventListener('keydown', (e) => { if (e.target.id === 'new-host' && 
 document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'language') save({ language: el.value });
-  else if (el.id === 'refresh_minutes') save({ refresh_minutes: Number(el.value) });
+  else if (el.id === 'refresh_minutes' || el.id === 'stats_refresh_minutes') save({ [el.id]: Number(el.value) });
   else if (el.id === 'notify_threshold') save({ notify_threshold: Number(el.value) });
   else if (el.id === 'ssh-pick') { if (el.value) addHost(el.value); }
   else if (['show_claude', 'show_codex', 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
-            'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset', 'notify_credits'].includes(el.id)) save({ [el.id]: el.checked });
+            'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset', 'notify_credits', 'card_show_claude', 'card_show_codex'].includes(el.id)) save({ [el.id]: el.checked });
   else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
   else if (el.id === 'autostart') {
     await invoke(el.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable').catch(() => {});

@@ -47,6 +47,11 @@ pub fn t(lang: &str, key: &str) -> &'static str {
         "n_credit_expiring" => ("Codex 的额度重置次数快到期了", "Codex のリセットがまもなく期限切れ", "A Codex reset is about to expire"),
         "n_credit_expires" => ("有 1 次重置将在 %s 到期，用不掉就作废", "リセット 1 回分が %s に期限切れになります。使わないと失効します", "One reset expires %s; it's lost if unused"),
         "update_available" => ("有新版本 %s…", "新しいバージョン %s…", "Version %s available…"),
+        "runs_out" => ("预计 %s 用完", "%s に使い切る見込み", "runs out %s"),
+        "expires" => ("%s 到期", "%s まで", "expires %s"),
+        "earliest_expires" => ("最早 %s 到期", "最も早いもの %s まで", "earliest expires %s"),
+        "resets_full" => ("%s后重置（%s）", "%s後にリセット（%s）", "resets in %s (%s)"),
+        "resets_at" => ("%s 重置", "%s にリセット", "resets %s"),
         "resets_in" => ("%s后重置", "%s後にリセット", "resets in %s"),
         _ => ("", "", ""),
     };
@@ -94,7 +99,16 @@ pub fn fmt(lang: &str, key: &str, args: &[&str]) -> String {
 
 /// 「3小时20分后重置」（和界面的倒计时一样，差几秒到整分钟就进位）
 pub fn reset_text(lang: &str, at: i64) -> String {
+    reset_styled(lang, at, "relative")
+}
+
+/// 托盘菜单里的重置时间：full「3小时20分后重置（14:20）」/ relative「3小时20分后重置」/ absolute「周三 14:20 重置」
+pub fn reset_styled(lang: &str, at: i64, style: &str) -> String {
+    use chrono::{Local, TimeZone};
     let at = (at + 5) / 60 * 60;
+    if style == "absolute" {
+        return fmt(lang, "resets_at", &[&short_time(lang, at)]);
+    }
     let s = (at - chrono::Utc::now().timestamp()).max(0);
     let (d, h, m) = (s / 86400, s % 86400 / 3600, s % 3600 / 60);
     let rel = match lang {
@@ -108,6 +122,10 @@ pub fn reset_text(lang: &str, at: i64) -> String {
         _ if h > 0 => format!("{h}h {m}m"),
         _ => format!("{m}m"),
     };
+    if style == "full" {
+        let when = Local.timestamp_opt(at, 0).single().map(|d| d.format(if s >= 86400 { "%-m/%-d %H:%M" } else { "%H:%M" }).to_string()).unwrap_or_default();
+        return fmt(lang, "resets_full", &[&rel, &when]);
+    }
     fmt(lang, "resets_in", &[&rel])
 }
 

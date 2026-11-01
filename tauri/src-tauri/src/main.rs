@@ -27,11 +27,16 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent};
 #[serde(default)]
 struct Settings {
     language: String,     // auto / zh / ja / en
+    // 托盘（Linux 顶栏文字、Windows 悬停提示、托盘菜单和小面板）和主窗口的「额度」页
     display: String,      // remaining / used
     menu_label: String,   // short（Cc / Cx）/ full（Claude / Codex）
     refresh_minutes: u64, // 额度刷新间隔
     show_claude: bool,
     show_codex: bool,
+    tray_limit: String,   // session（5 小时）/ weekly（本周）/ both：托盘文字显示哪个额度
+    tray_reset: String,   // full / relative / absolute / hidden：托盘菜单和小面板里的重置时间
+    appearance: String,   // auto / light / dark
+    accent: String,       // 主题色：pink / purple / blue / teal / green / orange / gray
     /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
     claude_limit_source: String,
     codex_limit_source: String,
@@ -52,6 +57,9 @@ struct Settings {
     card_opacity: f64,
     card_bg_opacity: f64,
     card_reset: String,      // hidden / relative（多久后）/ absolute（几点）
+    card_display: String,    // 额度卡片自己的「剩余 / 已用」和显示哪几家（第一次沿用托盘的）
+    card_show_claude: bool,
+    card_show_codex: bool,
     // 用量卡片（成本、请求数、Tokens），布局和外观自己一套（第一次沿用额度卡片的）
     stats_card_show: bool,
     stats_card_on_top: bool,
@@ -80,6 +88,10 @@ impl Default for Settings {
             refresh_minutes: 5,
             show_claude: true,
             show_codex: true,
+            tray_limit: "both".into(),
+            tray_reset: "full".into(),
+            appearance: "auto".into(),
+            accent: "pink".into(),
             claude_limit_source: "api".into(),
             codex_limit_source: "api".into(),
             notify_threshold: 0,
@@ -96,6 +108,9 @@ impl Default for Settings {
             card_opacity: 1.0,
             card_bg_opacity: 1.0,
             card_reset: "relative".into(),
+            card_display: "remaining".into(),
+            card_show_claude: true,
+            card_show_codex: true,
             stats_card_show: false,
             stats_card_on_top: false,
             stats_card_range: "today".into(),
@@ -142,6 +157,8 @@ struct AppState {
     remote_limits: Mutex<Option<(serde_json::Value, i64)>>,
     /// 应用内更新：给界面的状态、查到的新版本、上次查的时间
     update: Mutex<update::State>,
+    /// 库里一共多少条、最早一条（设置页显示）
+    overview: Mutex<Option<db::Overview>>,
     update_release: Mutex<Option<update::Release>>,
     update_checked: Mutex<Option<Instant>>,
     /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
@@ -177,6 +194,9 @@ struct Snapshot {
     cycle: HashMap<String, i64>,
     remote_status: HashMap<String, remote::RemoteStatus>,
     update: update::State,
+    /// 价格表上次下载的时间（秒）和库里的记录概况：设置页「用量统计」一组
+    pricing_updated: Option<i64>,
+    overview: Option<db::Overview>,
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
@@ -198,7 +218,9 @@ fn snapshot(app: &AppHandle) -> Snapshot {
     let remote_status = st.remote_status.lock().unwrap().clone();
     let mut update = st.update.lock().unwrap().clone();
     update.current = app.package_info().version.to_string();
-    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle, remote_status, update }
+    let pricing_updated = st.pricing.lock().unwrap().updated_at.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+    let overview = st.overview.lock().unwrap().clone();
+    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle, remote_status, update, pricing_updated, overview }
 }
 
 /// 用量卡片的汇总。「重置以来」每家按自己的每周额度重置时间算
@@ -227,6 +249,12 @@ fn load_settings(app: &AppHandle) -> Settings {
     let mut s: Settings = serde_json::from_str(&text).unwrap_or_default();
     // 旧版没有用量卡片：它的外观先沿用额度卡片的
     let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    // 旧版托盘和额度卡片共用一份「剩余 / 已用」和显示哪几家：卡片的先沿用
+    if raw.get("card_display").is_none() {
+        s.card_display = s.display.clone();
+        s.card_show_claude = s.show_claude;
+        s.card_show_codex = s.show_codex;
+    }
     if raw.get("stats_card_layout").is_none() {
         s.stats_card_layout = s.card_layout.clone();
         s.stats_card_background = s.card_background.clone();
@@ -280,6 +308,7 @@ fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
     save_settings(&app, &settings);
     update_tray(&app);
     apply_card(&app);
+    apply_theme(&app);
     let snap = snapshot(&app);
     let _ = app.emit("state", snap.clone());
     snap
@@ -509,10 +538,11 @@ async fn refresh_stats(app: AppHandle, force_prices: bool) {
     let done = tauri::async_runtime::spawn_blocking(move || {
         let mut s = s.lock().unwrap();
         s.reprice_if_needed(&p);
-        (s.records_since(recent_start()), remote::logged_rate_limits(&s))
+        (s.records_since(recent_start()), remote::logged_rate_limits(&s), s.overview())
     })
     .await;
-    if let Ok((recs, limits)) = done {
+    if let Ok((recs, limits, overview)) = done {
+        *st.overview.lock().unwrap() = Some(overview);
         *st.records.lock().unwrap() = recs;
         *st.remote_limits.lock().unwrap() = limits;
         *st.stats_updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
@@ -671,6 +701,12 @@ fn ssh_config_hosts() -> Vec<String> {
     remote::ssh_config_hosts()
 }
 
+/// 设置页「价格表 → 立即更新」：重新下载价格表再读一遍
+#[tauri::command]
+fn refresh_prices(app: AppHandle) {
+    tauri::async_runtime::spawn(refresh_stats(app, true));
+}
+
 #[tauri::command]
 fn refresh_stats_now(app: AppHandle) {
     tauri::async_runtime::spawn(refresh_stats(app, false));
@@ -695,16 +731,27 @@ async fn refresh_loop(app: AppHandle) {
 
 // MARK: - 托盘
 
-/// 「Cc 56%  Cx 47%」：每家显示最紧的那个额度
+/// 「Cc 11%/86%  Cx 47%」：按设置显示 5 小时、本周或两个都显示
 fn tray_text(s: &Settings, providers: &[usage::Provider]) -> String {
     let used = s.display == "used";
+    // 用得比时间快的额度后面加个 ↑
+    let pct = |w: &usage::LimitWindow| format!("{}%{}", (if used { w.used.min(100.0) } else { w.remaining() }).round() as i64, if w.fast { "↑" } else { "" });
     let parts: Vec<String> = providers
         .iter()
         .filter(|p| if p.name == "Claude" { s.show_claude } else { s.show_codex })
         .map(|p| {
             let name = if s.menu_label == "full" { p.name.clone() } else if p.name == "Claude" { "Cc".into() } else { "Cx".into() };
-            // 用得比时间快的额度后面加个 ↑
-            let v = p.binding().map(|w| format!("{}%{}", (if used { w.used.min(100.0) } else { w.remaining() }).round() as i64, if w.fast { "↑" } else { "" }));
+            // 5 小时是第一个不是周额度的（两家都排在最前），本周是 weekly
+            let session = p.windows.iter().find(|w| !w.kind.starts_with("weekly") && w.kind != "days");
+            let weekly = p.windows.iter().find(|w| w.kind == "weekly");
+            let v = match s.tray_limit.as_str() {
+                "session" => session.or(weekly).map(pct),
+                "weekly" => weekly.or(session).map(pct),
+                _ => match (session, weekly) {
+                    (Some(a), Some(b)) => Some(format!("{}/{}", pct(a), pct(b))),
+                    (a, b) => a.or(b).map(pct),
+                },
+            };
             format!("{name} {}", v.unwrap_or_else(|| "–".into()))
         })
         .collect();
@@ -725,9 +772,25 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         if p.error.is_some() {
             menu.append(&MenuItem::with_id(app, format!("e-{}", p.name), format!("    {}", i18n::t(lang, "error")), false, None::<&str>)?)?;
         }
+        let style = snap.settings.tray_reset.as_str();
         for (i, w) in p.windows.iter().enumerate() {
             let line = format!("    {}   {}{}", i18n::window_label(lang, w), i18n::value_text(lang, w, used), if w.fast { " ↑" } else { "" });
             menu.append(&MenuItem::with_id(app, format!("w-{}-{i}", p.name), line, false, None::<&str>)?)?;
+            if let Some(r) = w.resets_at.filter(|_| style != "hidden") {
+                let mut sub = i18n::reset_styled(lang, r, style);
+                if let Some(t) = w.runs_out_at {
+                    sub += &format!(" · {}", i18n::fmt(lang, "runs_out", &[&i18n::short_time(lang, t)]));
+                }
+                menu.append(&MenuItem::with_id(app, format!("r-{}-{i}", p.name), format!("        {sub}"), false, None::<&str>)?)?;
+            }
+        }
+        if let Some(rc) = &p.resets {
+            let count = i18n::fmt(lang, "n_credits", &[&rc.count.to_string()]);
+            let line = match rc.expiries.first() {
+                Some(&e) => format!("{count} · {}", i18n::fmt(lang, if rc.count > 1 { "earliest_expires" } else { "expires" }, &[&i18n::date_time(e)])),
+                None => count,
+            };
+            menu.append(&MenuItem::with_id(app, format!("c-{}", p.name), format!("    ↻ {line}"), false, None::<&str>)?)?;
         }
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
@@ -890,6 +953,20 @@ fn open_card_settings(app: &AppHandle, which: &str) {
     let _ = app.emit_to("main", "navigate", ("card", which));
 }
 
+/// 主窗口和小面板的标题栏、原生控件跟着「外观」设置（auto 跟随系统）
+fn apply_theme(app: &AppHandle) {
+    let theme = match app.state::<AppState>().settings.lock().unwrap().appearance.as_str() {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    for label in ["main", "flyout"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_theme(theme);
+        }
+    }
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -913,7 +990,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
                                                  card_drag_start, card_drag_move, card_drag_end, card_content,
                                                  stats_query, refresh_stats_now, ssh_config_hosts, check_update_now,
-                                                 install_update, open_github])
+                                                 install_update, open_github, refresh_prices])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
@@ -934,6 +1011,7 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             *app.state::<AppState>().settings.lock().unwrap() = load_settings(&handle);
+            apply_theme(&handle);
 
             let mut trays = Vec::new();
             {
