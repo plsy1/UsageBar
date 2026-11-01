@@ -50,7 +50,9 @@ struct Settings {
     // 桌面卡片（跟 macOS 版的选项一一对应）
     card_show: bool,
     card_on_top: bool,       // 保持在最前；关掉时贴在桌面层（被其他窗口盖住）
-    card_layout: String,     // horizontal / vertical / compact
+    card_style: String,      // 样式：standard / compact / big（大数字）/ rings（圆环）/ slim（细条）
+    card_layout: String,     // 排列：horizontal（左右）/ vertical（上下），只对每家一块的样式有用
+    card_level_colors: bool, // 按余量着色：剩不到 30% 黄、不到 10% 红
     card_background: String, // none / dark / light
     card_text: String,       // white / black
     card_scale: f64,
@@ -66,6 +68,7 @@ struct Settings {
     stats_card_range: String,  // today / cycle / 7d
     stats_card_show_claude: bool,
     stats_card_show_codex: bool,
+    stats_card_style: String, // standard / compact / big（大数字）/ trend（走势图）/ share（占比条）
     stats_card_layout: String,
     stats_card_background: String,
     stats_card_text: String,
@@ -101,7 +104,9 @@ impl Default for Settings {
             remote_hosts: vec![],
             card_show: true,
             card_on_top: false,
+            card_style: "standard".into(),
             card_layout: "horizontal".into(),
+            card_level_colors: false,
             card_background: "none".into(),
             card_text: "white".into(),
             card_scale: 1.0,
@@ -116,6 +121,7 @@ impl Default for Settings {
             stats_card_range: "today".into(),
             stats_card_show_claude: true,
             stats_card_show_codex: true,
+            stats_card_style: "standard".into(),
             stats_card_layout: "horizontal".into(),
             stats_card_background: "none".into(),
             stats_card_text: "white".into(),
@@ -177,6 +183,9 @@ struct CardContent {
 struct UsageCard {
     claude: stats::Summary,
     codex: stats::Summary,
+    /// 走势图：每个时段的成本（「今天」按小时，其他按天）
+    claude_trend: Vec<f64>,
+    codex_trend: Vec<f64>,
     updated: Option<i64>,
 }
 
@@ -233,9 +242,12 @@ fn usage_card(st: &AppState, s: &Settings, providers: &[usage::Provider]) -> Usa
             .and_then(|t| chrono::DateTime::from_timestamp(t, 0));
         stats::card_start(&s.stats_card_range, reset.map(stats::cycle_start))
     };
+    let hourly = s.stats_card_range == "today";
     UsageCard {
         claude: stats::summarize(&records, Some(stats::Source::Claude), start("Claude")),
         codex: stats::summarize(&records, Some(stats::Source::Codex), start("Codex")),
+        claude_trend: stats::cost_trend(&records, stats::Source::Claude, start("Claude"), hourly),
+        codex_trend: stats::cost_trend(&records, stats::Source::Codex, start("Codex"), hourly),
         updated: *st.stats_updated.lock().unwrap(),
     }
 }
@@ -262,6 +274,15 @@ fn load_settings(app: &AppHandle) -> Settings {
         s.stats_card_scale = s.card_scale;
         s.stats_card_opacity = s.card_opacity;
         s.stats_card_bg_opacity = s.card_bg_opacity;
+    }
+    // 以前「布局」里混着样式（紧凑）：拆成「样式」和「排列」两项
+    for (style, layout, key) in [
+        (&mut s.card_style, &mut s.card_layout, "card_style"),
+        (&mut s.stats_card_style, &mut s.stats_card_layout, "stats_card_style"),
+    ] {
+        if raw.get(key).is_none() && layout != "horizontal" && layout != "vertical" {
+            *style = std::mem::replace(layout, "horizontal".into());
+        }
     }
     s
 }

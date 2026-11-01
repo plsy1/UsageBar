@@ -827,6 +827,31 @@ pub fn summarize(records: &[UsageRecord], source: Option<Source>, since: DateTim
     Summary::new(records.iter().filter(|r| r.time >= since && source.is_none_or(|s| r.source == s)))
 }
 
+/// 用量卡片的走势图：每个时段的成本。hourly：今天按小时（到现在这一小时）；否则从 since 那天起按天
+pub fn cost_trend(records: &[UsageRecord], source: Source, since: DateTime<Utc>, hourly: bool) -> Vec<f64> {
+    use chrono::{Local, Timelike};
+    let now = Local::now();
+    let today = now.date_naive();
+    let first = if hourly { today } else { since.with_timezone(&Local).date_naive() };
+    let n = if hourly { now.hour() as usize + 1 } else { (today - first).num_days().max(0) as usize + 1 };
+    let mut out = vec![0.0; n];
+    for r in records.iter().filter(|r| r.source == source && r.time >= since && !r.failed()) {
+        let t = r.time.with_timezone(&Local);
+        let i = if hourly {
+            if t.date_naive() != today {
+                continue;
+            }
+            t.hour() as usize
+        } else {
+            (t.date_naive() - first).num_days() as usize
+        };
+        if let Some(v) = out.get_mut(i) {
+            *v += r.cost.unwrap_or(0.0);
+        }
+    }
+    out
+}
+
 /// 没有价格的型号（成本没算进去），排查用
 pub fn unpriced_models(records: &[UsageRecord]) -> Vec<String> {
     let set: HashSet<&str> = records.iter().filter(|r| r.cost.is_none()).map(|r| r.model.as_str()).collect();
