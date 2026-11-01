@@ -173,7 +173,7 @@ enum I18n {
         "项目": ("プロジェクト", "Project"),
         "未知目录": ("不明なディレクトリ", "Unknown Directory"),
         "会话记录": ("セッション記録", "Session Logs"),
-        "读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）；成本按 models.dev 的 API 价格估算，价格每天更新一次": ("この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）と、「一般」で追加したリモートマシンの Codex ログ（ssh で読み込み、リモート側で絞り込み）を読みます。コストは models.dev の API 価格で推定し、価格は 1 日 1 回更新します", "Reads this Mac's session logs (~/.claude/projects and ~/.codex/sessions) plus Codex logs on remote machines added under General (read over ssh, filtered on the remote side); cost is estimated from models.dev API prices, refreshed daily"),
+        "读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）。解析结果存在本机的数据库里（~/Library/Application Support/UsageBar），日志被清理后统计也还在；成本按 models.dev 的 API 价格估算，价格每天更新一次": ("この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）と、「一般」で追加したリモートマシンの Codex ログ（ssh で読み込み、リモート側で絞り込み）を読みます。解析結果はこの Mac のデータベース（~/Library/Application Support/UsageBar）に保存され、ログが削除されても統計は残ります。コストは models.dev の API 価格で推定し、価格は 1 日 1 回更新します", "Reads this Mac's session logs (~/.claude/projects and ~/.codex/sessions) plus Codex logs on remote machines added under General (read over ssh, filtered on the remote side). Parsed records are kept in a local database (~/Library/Application Support/UsageBar), so statistics survive log cleanup; cost is estimated from models.dev API prices, refreshed daily"),
         "所有数据只在这台 Mac、你添加的远程机器和上述官方服务之间传输，不经过其他服务器": ("データはこの Mac、追加したリモートマシン、上記の公式サービスの間でのみやり取りされ、他のサーバーを経由しません", "Data only travels between this Mac, the remote machines you add and those official services, never through other servers"),
         "通知": ("通知", "Notifications"),
         "通知没有打开：请在 系统设置 → 通知 → UsageBar 中允许": ("通知がオフです：システム設定 → 通知 → UsageBar で許可してください", "Notifications are off: allow UsageBar in System Settings → Notifications"),
@@ -1059,7 +1059,7 @@ struct GeneralSettings: View {
             }
             Divider()
             SettingsRow(L("会话记录")) {
-                Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
+                Text(stats.overview.earliest.map { L("%d 条请求，最早 %@", stats.overview.count, shortDate($0)) } ?? L("正在读取本机会话记录…"))
                     .foregroundStyle(.secondary)
             }
         }
@@ -1554,7 +1554,7 @@ struct AboutSettings: View {
                                     L("用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询"))
                             Divider().padding(.leading, 54)
                             infoRow("chart.bar.xaxis", L("用量统计"),
-                                    L("读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）；成本按 models.dev 的 API 价格估算，价格每天更新一次"))
+                                    L("读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）。解析结果存在本机的数据库里（~/Library/Application Support/UsageBar），日志被清理后统计也还在；成本按 models.dev 的 API 价格估算，价格每天更新一次"))
                             Divider().padding(.leading, 54)
                             infoRow("lock.shield", L("隐私"), L("所有数据只在这台 Mac、你添加的远程机器和上述官方服务之间传输，不经过其他服务器"))
                         }
@@ -2625,6 +2625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self?.mainWindow?.contentViewController = nil
                 self?.mainWindow = nil
+                self?.stats.release()  // 统计页取进内存的更早的记录也放掉
             }
         }
         if let tab { nav.tab = tab }

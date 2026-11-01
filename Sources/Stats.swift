@@ -137,17 +137,15 @@ enum Pricing {
 // MARK: - 读会话记录
 
 enum LogReader {
-    /// 每个文件的解析结果。存到磁盘上，下次启动直接用（全部重读要好几秒）；
-    /// 文件变了只接着解析后面新写的部分（会话日志只会往后追加）
+    /// 一个日志文件的解析进度，存在数据库的 files 表里。文件变了只接着解析后面新写的部分（会话日志只会往后追加）
     struct Entry: Codable {
-        var mtime = Date.distantPast
-        var size = 0
-        var records: [UsageRecord] = []
         var offset = 0         // 已经解析到的字节位置（总在一行末尾）
         var tail: UInt64 = 0   // offset 之前一小段内容的指纹：对不上说明文件被改写过，得从头读
         var tailLength = 0
         var claude = ClaudeState()
         var codex = CodexState()
+        /// 最后几十条记录：Claude 的一个回复分几行写，接着读时后面几段要更新前面那条的耗时
+        var recent: [UsageRecord] = []
     }
     /// 解析读到 offset 时的状态，接着读时要用
     struct ClaudeState: Codable {
@@ -160,75 +158,127 @@ enum LogReader {
         var lastTotal = -1
         var inputAt: Date?, start: Date?, first: Date?, end: Date?
     }
-    struct DiskCache: Codable {
-        var version: Int
-        var files: [String: Entry]
+    /// 解析规则改了就加一：所有日志重新解析一遍（库里的记录按新结果更新；日志已经删掉的记录保留）
+    static let parserVersion = 4
+    static var dbURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("UsageBar/usage.sqlite")
     }
-    /// 解析规则改了就加一，旧缓存作废
-    static let cacheVersion = 4
-    static var diskURL: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("local.usagebar/records.plist")
-    }
-    private static var cache: [String: Entry] = [:]
-    private static var diskLoaded = false
+    private static var opened: SQLiteDB?
+    /// 数据库只开一个连接，所有读写都在这把锁里
     private static let lock = NSLock()
+    /// 每个文件上次解析时的修改时间和大小：没变的文件不用去库里取进度
+    private static var known: [String: (mtime: Double, size: Int)]?
 
-    private static func loadDisk() {
-        guard !diskLoaded else { return }
-        diskLoaded = true
-        guard let data = try? Data(contentsOf: diskURL),
-              let disk = try? PropertyListDecoder().decode(DiskCache.self, from: data),
-              disk.version == cacheVersion else { return }
-        cache = disk.files
+    /// 调用时要拿着锁
+    private static var db: SQLiteDB? {
+        if opened == nil { open() }
+        return opened
     }
 
-    private static func saveDisk() {
-        let enc = PropertyListEncoder()
-        enc.outputFormat = .binary
-        guard let data = try? enc.encode(DiskCache(version: cacheVersion, files: cache)) else { return }
-        try? FileManager.default.createDirectory(at: diskURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: diskURL, options: .atomic)
+    private static func open() {
+        let url = dbURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let d = SQLiteDB(path: url.path) else { return }
+        d.exec("""
+        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS files(key TEXT PRIMARY KEY, mtime REAL, size INTEGER, state BLOB);
+        CREATE TABLE IF NOT EXISTS records(
+          id TEXT PRIMARY KEY, file TEXT, time REAL NOT NULL, source TEXT NOT NULL, model TEXT NOT NULL, host TEXT, project TEXT,
+          input INTEGER, output INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_1h INTEGER,
+          duration REAL, first_token REAL, status INTEGER, cost REAL);
+        CREATE INDEX IF NOT EXISTS records_time ON records(time);
+        """)
+        if meta(d, "parser") != "\(parserVersion)" {
+            d.exec("DELETE FROM files")
+            setMeta(d, "parser", "\(parserVersion)")
+        }
+        opened = d
+        // 以前的缓存（整份记录存成 plist）不用了
+        try? FileManager.default.removeItem(at: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("local.usagebar/records.plist"))
     }
 
-    /// 上次存下的结果，不碰日志文件（启动时先拿它出数）
-    static func cached() -> [UsageRecord] {
-        lock.lock(); defer { lock.unlock() }
-        loadDisk()
-        return dedupe(cache.values.flatMap(\.records), since: .distantPast)
+    private static func meta(_ d: SQLiteDB, _ key: String) -> String? {
+        var v: String?
+        d.run("SELECT value FROM meta WHERE key = ?", [key]) { v = $0.text(0) }
+        return v
     }
 
-    static func read(since: Date) -> [UsageRecord] {
+    private static func setMeta(_ d: SQLiteDB, _ key: String, _ value: String) {
+        d.run("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", [key, value])
+    }
+
+    private static func loadKnown(_ d: SQLiteDB) {
+        guard known == nil else { return }
+        var k: [String: (Double, Int)] = [:]
+        d.run("SELECT key, mtime, size FROM files") { r in if let key = r.text(0) { k[key] = (r.double(1), r.int(2)) } }
+        known = k
+    }
+
+    private static func entry(_ d: SQLiteDB, _ key: String) -> Entry? {
+        var e: Entry?
+        d.run("SELECT state FROM files WHERE key = ?", [key]) { r in e = r.blob(0).flatMap { try? JSONDecoder().decode(Entry.self, from: $0) } }
+        return e
+    }
+
+    private static func store(_ d: SQLiteDB, _ key: String, mtime: Double, size: Int, _ e: Entry) {
+        d.run("INSERT OR REPLACE INTO files(key, mtime, size, state) VALUES(?, ?, ?, ?)", [key, mtime, size, try? JSONEncoder().encode(e)])
+        known?[key] = (mtime, size)
+    }
+
+    private static func forget(_ d: SQLiteDB, _ key: String) {
+        d.run("DELETE FROM files WHERE key = ?", [key])
+        known?[key] = nil
+    }
+
+    /// 写入记录。同一请求可能出现在多个文件里（续接的会话会带上旧记录，耗时、目录按新会话算，不准）：
+    /// 按 id 合并，留输出最多的那份；一样多时留先写进来的，只有同一个文件里的后续几段才更新它（比如补上耗时）
+    private static func save(_ d: SQLiteDB, _ rs: [UsageRecord], file: String) {
+        for r in rs {
+            d.run("""
+            INSERT INTO records(id, file, time, source, model, host, project, input, output, cache_read, cache_write, cache_write_1h,
+                                duration, first_token, status, cost)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET file = excluded.file, time = excluded.time, source = excluded.source,
+              model = excluded.model, host = excluded.host, project = excluded.project, input = excluded.input,
+              output = excluded.output, cache_read = excluded.cache_read, cache_write = excluded.cache_write,
+              cache_write_1h = excluded.cache_write_1h, duration = excluded.duration, first_token = excluded.first_token,
+              status = excluded.status, cost = excluded.cost
+            WHERE excluded.output > records.output OR (excluded.output = records.output AND excluded.file = records.file)
+            """, [r.id, file, r.time, r.source.rawValue, r.model, r.host, r.project, r.input, r.output, r.cacheRead, r.cacheWrite,
+                  r.cacheWrite1h, r.duration, r.firstToken, r.status, Pricing.cost(r)])
+        }
+    }
+
+    /// 把本机日志里新写的部分解析进库
+    static func syncLocal() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dirs: [(String, Source)] = [(".claude/projects", .claude), (".codex/sessions", .codex),
                                         (".codex/archived_sessions", .codex)]
-        var all: [UsageRecord] = []
         lock.lock(); defer { lock.unlock() }
-        loadDisk()
-        var seen = Set<String>(), changed = false
-        for (dir, src) in dirs {
-            let root = home.appendingPathComponent(dir)
-            guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
-            else { continue }
-            for case let url as URL in e where url.pathExtension == "jsonl" {
-                let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-                let mtime = v?.contentModificationDate ?? .distantPast, size = v?.fileSize ?? 0
-                seen.insert(url.path)
-                guard mtime >= since else { continue }
-                if let c = cache[url.path], c.mtime == mtime, c.size == size { all += c.records; continue }
-                var entry = cache[url.path].flatMap { canResume($0, url: url, size: size) ? $0 : nil } ?? Entry()
-                parse(url, src, into: &entry)
-                entry.mtime = mtime
-                entry.size = size
-                cache[url.path] = entry
-                changed = true
-                all += entry.records
+        guard let d = db else { return }
+        loadKnown(d)
+        var seen = Set<String>()
+        d.transaction {
+            for (dir, src) in dirs {
+                let root = home.appendingPathComponent(dir)
+                guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
+                else { continue }
+                for case let url as URL in e where url.pathExtension == "jsonl" {
+                    let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    let mtime = v?.contentModificationDate?.timeIntervalSince1970 ?? 0, size = v?.fileSize ?? 0
+                    let key = url.path
+                    seen.insert(key)
+                    if let k = known?[key], abs(k.mtime - mtime) < 0.001, k.size == size { continue }
+                    var progress = entry(d, key).flatMap { canResume($0, url: url, size: size) ? $0 : nil } ?? Entry()
+                    save(d, parse(url, src, into: &progress), file: key)
+                    store(d, key, mtime: mtime, size: size, progress)
+                }
             }
+            // 删掉的日志不用再记进度；记录留在库里
+            for key in known?.keys.filter({ !seen.contains($0) && !$0.hasPrefix(remotePrefix) }) ?? [] { forget(d, key) }
         }
-        // 删掉的日志也从缓存里去掉（远程机器的另算，见 readRemote）
-        for path in cache.keys where !seen.contains(path) && !path.hasPrefix(remotePrefix) { cache[path] = nil; changed = true }
-        if changed { saveDisk() }
-        return dedupe(all, since: since)
     }
 
     /// 能不能接着上次的位置读：文件没变小，offset 前面那一小段也没变
@@ -240,24 +290,27 @@ enum LogReader {
         return fnv(bytes) == e.tail
     }
 
-    /// 从 entry.offset 读到文件末尾最后一个完整行；写到一半的行留到下次
-    static func parse(_ url: URL, _ src: Source, into e: inout Entry) {
+    /// 从 entry.offset 读到文件末尾最后一个完整行（写到一半的行留到下次），返回新的和更新过的记录
+    static func parse(_ url: URL, _ src: Source, into e: inout Entry) -> [UsageRecord] {
         let data: Data
         if e.offset == 0 {
-            guard let d = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
+            guard let d = try? Data(contentsOf: url, options: .mappedIfSafe) else { return [] }
             data = d
         } else {
-            guard let fh = try? FileHandle(forReadingFrom: url) else { return }
+            guard let fh = try? FileHandle(forReadingFrom: url) else { return [] }
             defer { try? fh.close() }
-            guard (try? fh.seek(toOffset: UInt64(e.offset))) != nil, let d = try? fh.readToEnd() else { return }
+            guard (try? fh.seek(toOffset: UInt64(e.offset))) != nil, let d = try? fh.readToEnd() else { return [] }
             data = d
         }
-        guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return }
+        guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return [] }
         let chunk = data[data.startIndex...lastNewline]
-        if src == .claude { parseClaude(chunk, &e.claude, &e.records) } else { parseCodex(chunk, &e.codex, &e.records) }
+        var out = src == .claude ? e.recent : []
+        if src == .claude { parseClaude(chunk, &e.claude, &out) } else { parseCodex(chunk, &e.codex, &out) }
+        e.recent = src == .claude ? Array(out.suffix(50)) : []
         e.offset += chunk.count
         e.tailLength = min(64, chunk.count)
         e.tail = fnv(chunk.suffix(e.tailLength))
+        return out
     }
 
     /// FNV-1a：内容指纹（Swift 自带的 hashValue 每次启动都不一样，不能存盘）
@@ -267,14 +320,89 @@ enum LogReader {
         return h
     }
 
-    /// 同一请求可能出现在多个文件里（续接的会话会带上旧记录），按 id 去重，留输出最多的那条
-    static func dedupe(_ all: [UsageRecord], since: Date) -> [UsageRecord] {
-        var byID: [String: UsageRecord] = [:]
-        for r in all where r.time >= since {
-            if let old = byID[r.id], old.output >= r.output { continue }
-            byID[r.id] = r
+    // MARK: 查询
+
+    private static let columns = "id, time, source, model, host, project, input, output, cache_read, cache_write, cache_write_1h, duration, first_token, status, cost"
+
+    private static func record(_ r: SQLiteDB.Row) -> UsageRecord {
+        var u = UsageRecord(id: r.text(0) ?? "", time: Date(timeIntervalSince1970: r.double(1)),
+                            source: Source(rawValue: r.text(2) ?? "") ?? .claude, model: r.text(3) ?? "",
+                            input: r.int(6), output: r.int(7), cacheRead: r.int(8), cacheWrite: r.int(9))
+        u.host = r.text(4)
+        u.project = r.text(5)
+        u.cacheWrite1h = r.int(10)
+        u.duration = r.optDouble(11)
+        u.firstToken = r.optDouble(12)
+        u.status = r.int(13)
+        u.cost = r.optDouble(14)
+        return u
+    }
+
+    /// since 以来的记录，新的在前
+    static func records(since: Date) -> [UsageRecord] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [UsageRecord] = []
+        db?.run("SELECT \(columns) FROM records WHERE time >= ? ORDER BY time DESC", [since]) { out.append(record($0)) }
+        return out
+    }
+
+    /// 每天的用量（热力图用），按本地日期、应用、机器分组；失败的请求不算
+    struct DayTotal {
+        let day: Date
+        let source: Source
+        let host: String?
+        let tokens: Int
+        let requests: Int
+        let cost: Double
+    }
+
+    static func dailyTotals(since: Date) -> [DayTotal] {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        lock.lock(); defer { lock.unlock() }
+        var out: [DayTotal] = []
+        db?.run("""
+        SELECT date(time, 'unixepoch', 'localtime') AS d, source, host,
+               SUM(input + output + cache_read + cache_write), COUNT(*), SUM(COALESCE(cost, 0))
+        FROM records WHERE time >= ? AND status = 200 GROUP BY d, source, host
+        """, [since]) { r in
+            guard let day = r.text(0).flatMap(f.date(from:)) else { return }
+            out.append(DayTotal(day: day, source: Source(rawValue: r.text(1) ?? "") ?? .claude, host: r.text(2),
+                                tokens: r.int(3), requests: r.int(4), cost: r.double(5)))
         }
-        return Array(byID.values)
+        return out
+    }
+
+    /// 库里一共多少条、最早一条的时间、出现过哪些远程机器
+    struct Overview {
+        var count = 0
+        var earliest: Date?
+        var hosts: [String] = []
+    }
+
+    static func overview() -> Overview {
+        lock.lock(); defer { lock.unlock() }
+        var o = Overview()
+        db?.run("SELECT COUNT(*), MIN(time) FROM records") { r in
+            o.count = r.int(0)
+            o.earliest = r.optDouble(1).map(Date.init(timeIntervalSince1970:))
+        }
+        db?.run("SELECT DISTINCT host FROM records WHERE host IS NOT NULL") { r in r.text(0).map { o.hosts.append($0) } }
+        return o
+    }
+
+    /// 价格表换了一版：库里每条记录的成本重算一遍（一天最多一次）
+    static func repriceIfNeeded() {
+        guard let stamp = Pricing.updatedAt.map({ "\($0.timeIntervalSince1970)" }) else { return }
+        lock.lock(); defer { lock.unlock() }
+        guard let d = db, meta(d, "priced") != stamp else { return }
+        var rows: [UsageRecord] = []
+        d.run("SELECT \(columns) FROM records") { rows.append(record($0)) }
+        d.transaction {
+            for r in rows { d.run("UPDATE records SET cost = ? WHERE id = ?", [Pricing.cost(r), r.id]) }
+            setMeta(d, "priced", stamp)
+        }
     }
 
     static let iso: ISO8601DateFormatter = {
@@ -525,13 +653,10 @@ extension LogReader {
         return d
     }
 
-    /// 读一台远程机器上的 Codex 日志，返回记录和一句状态（设置页显示）
-    static func readRemote(_ host: String) -> (records: [UsageRecord], status: RemoteStatus) {
+    /// 把一台远程机器上 Codex 日志新写的部分读进库，返回一句状态（设置页显示）
+    static func readRemote(_ host: String) -> RemoteStatus {
         let list = ssh(host, listScript, timeout: 60)
-        if let error = list.error {
-            let recs = remoteRecords(host)
-            return (recs, RemoteStatus(files: nil, requests: recs.filter { !$0.failed }.count, error: error))
-        }
+        if let error = list.error { return RemoteStatus(files: nil, requests: remoteCount(host), error: error) }
         let files: [(size: Int, mtime: Date, path: String)] = String(decoding: list.out, as: UTF8.self)
             .split(separator: "\n").compactMap { line in
                 let parts = line.split(separator: " ", maxSplits: 2)
@@ -539,21 +664,23 @@ extension LogReader {
                 return (size, Date(timeIntervalSince1970: m), String(parts[2]))
             }
         let prefix = remotePrefix + host + "/"
-        // 要传回来的：缓存里的键、远程路径、从哪个字节开始、上次位置之前要核对多少字节
-        var need: [(key: String, path: String, from: Int, check: Int, size: Int, mtime: Date)] = []
+        // 要传回来的：库里的键、远程路径、从哪个字节开始、上次位置之前要核对多少字节、上次的进度
+        var need: [(key: String, path: String, from: Int, check: Int, size: Int, mtime: Date, entry: Entry)] = []
         lock.lock()
-        loadDisk()
-        var changed = false
-        let seen = Set(files.map { prefix + $0.path })
-        for key in cache.keys where key.hasPrefix(prefix) && !seen.contains(key) { cache[key] = nil; changed = true }
-        for f in files {
-            let key = prefix + f.path
-            if let c = cache[key], c.mtime == f.mtime, c.size == f.size { continue }
-            if let c = cache[key], c.offset > 0, f.size >= c.offset {
-                need.append((key, f.path, c.offset, c.tailLength, f.size, f.mtime))
-            } else {
-                cache[key] = nil
-                need.append((key, f.path, 0, 0, f.size, f.mtime))
+        if let d = db {
+            loadKnown(d)
+            let seen = Set(files.map { prefix + $0.path })
+            d.transaction {
+                for key in known?.keys.filter({ $0.hasPrefix(prefix) && !seen.contains($0) }) ?? [] { forget(d, key) }
+            }
+            for f in files {
+                let key = prefix + f.path
+                if let k = known?[key], abs(k.mtime - f.mtime.timeIntervalSince1970) < 0.001, k.size == f.size { continue }
+                if let e = entry(d, key), e.offset > 0, f.size >= e.offset {
+                    need.append((key, f.path, e.offset, e.tailLength, f.size, f.mtime, e))
+                } else {
+                    need.append((key, f.path, 0, 0, f.size, f.mtime, Entry()))
+                }
             }
         }
         lock.unlock()
@@ -572,62 +699,70 @@ extension LogReader {
             let startData = Data((mark + " S ").utf8), endData = Data((mark + " E ").utf8)
             var rest = r.out[...]
             lock.lock()
-            // 传断了也把收到的完整文件先存下
-            while let start = rest.range(of: startData) {
-                let afterMark = rest[start.upperBound...]
-                guard let nl = afterMark.firstIndex(of: UInt8(ascii: "\n")),
-                      let i = Int(String(decoding: afterMark[afterMark.startIndex..<nl], as: UTF8.self)),
-                      need.indices.contains(i) else { break }
-                let body = afterMark[(nl + 1)...]
-                guard let end = body.range(of: endData),
-                      let endLine = body[end.upperBound...].firstIndex(of: UInt8(ascii: "\n")) else { break }
-                let data = body[body.startIndex..<end.lowerBound]
-                // 结尾一行：这次读到的原始字节数、上次位置之前那段的十六进制、新位置之前那段的十六进制
-                let fields = String(decoding: body[end.upperBound..<endLine], as: UTF8.self).split(separator: " ").map(String.init)
-                rest = body[(endLine + 1)...]
-                let n = need[i]
-                guard fields.count == 3, let used = Int(fields[0]) else { continue }
-                var e = cache[n.key] ?? Entry()
-                if n.check > 0, fnv(hexBytes(fields[1])) != e.tail {
-                    // 上次读到的位置之前的内容变了：文件被改写过，下次从头传
-                    cache[n.key] = nil; changed = true; continue
+            if let d = db {
+                d.transaction {
+                    // 传断了也把收到的完整文件先存下
+                    while let start = rest.range(of: startData) {
+                        let afterMark = rest[start.upperBound...]
+                        guard let nl = afterMark.firstIndex(of: UInt8(ascii: "\n")),
+                              let i = Int(String(decoding: afterMark[afterMark.startIndex..<nl], as: UTF8.self)),
+                              need.indices.contains(i) else { break }
+                        let body = afterMark[(nl + 1)...]
+                        guard let end = body.range(of: endData),
+                              let endLine = body[end.upperBound...].firstIndex(of: UInt8(ascii: "\n")) else { break }
+                        let data = body[body.startIndex..<end.lowerBound]
+                        // 结尾一行：这次读到的原始字节数、上次位置之前那段的十六进制、新位置之前那段的十六进制
+                        let fields = String(decoding: body[end.upperBound..<endLine], as: UTF8.self).split(separator: " ").map(String.init)
+                        rest = body[(endLine + 1)...]
+                        let n = need[i]
+                        guard fields.count == 3, let used = Int(fields[0]) else { continue }
+                        var e = n.entry
+                        if n.check > 0, fnv(hexBytes(fields[1])) != e.tail {
+                            // 上次读到的位置之前的内容变了：文件被改写过，下次从头传
+                            forget(d, n.key); continue
+                        }
+                        if used > 0 {
+                            var out: [UsageRecord] = []
+                            parseCodex(data, &e.codex, &out)
+                            for j in out.indices { out[j].host = host }
+                            save(d, out, file: n.key)
+                            let tail = hexBytes(fields[2])
+                            e.offset = n.from + used
+                            e.tailLength = tail.count
+                            e.tail = fnv(tail)
+                        }
+                        store(d, n.key, mtime: n.mtime.timeIntervalSince1970, size: n.size, e)
+                    }
                 }
-                if used > 0 {
-                    parseCodex(data, &e.codex, &e.records)
-                    let tail = hexBytes(fields[2])
-                    e.offset = n.from + used
-                    e.tailLength = tail.count
-                    e.tail = fnv(tail)
-                }
-                for j in e.records.indices { e.records[j].host = host }
-                e.mtime = n.mtime
-                e.size = n.size
-                cache[n.key] = e
-                changed = true
             }
             lock.unlock()
         }
-        if changed { lock.lock(); saveDisk(); lock.unlock() }
-        let recs = remoteRecords(host)
-        return (recs, RemoteStatus(files: files.count, requests: recs.filter { !$0.failed }.count, error: error))
+        return RemoteStatus(files: files.count, requests: remoteCount(host), error: error)
     }
 
-    /// 缓存里这台机器的记录（连不上时也照样显示上次读到的）
-    static func remoteRecords(_ host: String) -> [UsageRecord] {
+    /// 库里这台机器的请求数（连不上时也照样显示上次读到的）
+    static func remoteCount(_ host: String) -> Int {
         lock.lock(); defer { lock.unlock() }
-        loadDisk()
-        let prefix = remotePrefix + host + "/"
-        return dedupe(cache.filter { $0.key.hasPrefix(prefix) }.values.flatMap(\.records), since: .distantPast)
+        var n = 0
+        db?.run("SELECT COUNT(*) FROM records WHERE host = ? AND status = 200", [host]) { n = $0.int(0) }
+        return n
     }
 
-    /// 删掉的远程机器：它的缓存也清掉
+    /// 删掉的远程机器：它的记录和读取进度都清掉
     static func pruneRemote(keep: [String]) {
         lock.lock(); defer { lock.unlock() }
-        loadDisk()
-        let gone = cache.keys.filter { k in k.hasPrefix(remotePrefix) && !keep.contains { k.hasPrefix(remotePrefix + $0 + "/") } }
-        guard !gone.isEmpty else { return }
-        for k in gone { cache[k] = nil }
-        saveDisk()
+        guard let d = db else { return }
+        loadKnown(d)
+        var gone: [String] = []
+        d.run("SELECT DISTINCT host FROM records WHERE host IS NOT NULL") { r in
+            if let h = r.text(0), !keep.contains(h) { gone.append(h) }
+        }
+        let goneKeys = known?.keys.filter { k in k.hasPrefix(remotePrefix) && !keep.contains { k.hasPrefix(remotePrefix + $0 + "/") } } ?? []
+        guard !gone.isEmpty || !goneKeys.isEmpty else { return }
+        d.transaction {
+            for h in gone { d.run("DELETE FROM records WHERE host = ?", [h]) }
+            for k in goneKeys { forget(d, k) }
+        }
     }
 }
 
@@ -745,7 +880,13 @@ struct CodexAccount {
 }
 
 final class StatsStore: ObservableObject {
+    /// 内存里只放用得到的记录（新的在前）：平时是最近 8 天，够用量卡片、「重置以来」用；
+    /// 统计页打开时按它选的时间范围从库里取，关掉主窗口后再缩回去
     @Published var all: [UsageRecord] = []
+    /// 每天的汇总（热力图用）：统计页打开时才查
+    @Published var daily: [LogReader.DayTotal] = []
+    /// 库里一共多少条、最早一条、出现过哪些远程机器
+    @Published var overview = LogReader.Overview()
     @Published var loading = false
     @Published var updated: Date?
     /// Codex 账号统计：一天才更新一次，最多一小时拉一次
@@ -756,48 +897,69 @@ final class StatsStore: ObservableObject {
     /// 各家周额度当前周期的起点，由额度刷新时填入
     @Published var cycleStarts: [Source: Date] = [:]
 
-    /// forcePrices：顺便从 models.dev 重新下载价格（设置里的「立即更新」）
+    /// all 从哪天起；wantDaily：要不要每日汇总
+    private var since = StatsStore.recentStart
+    private var wantDaily = false
+    static var recentStart: Date { Calendar.current.date(byAdding: .day, value: -8, to: Calendar.current.startOfDay(for: Date()))! }
+
+    /// 读日志里新写的部分进库，再从库里取。forcePrices：顺便从 models.dev 重新下载价格（设置里的「立即更新」）
     func reload(forcePrices: Bool = false) {
         guard !loading else { return }
         loading = true
         let first = all.isEmpty
         Task.detached(priority: .userInitiated) {
-            func priced(_ rs: [UsageRecord]) -> [UsageRecord] {
-                var rs = rs
-                for i in rs.indices { rs[i].cost = Pricing.cost(rs[i]) }
-                return rs.sorted { $0.time > $1.time }
-            }
-            // 刚启动：先用上次存下的结果马上出数，再去读改动过的日志
+            // 刚启动：先从库里取上次的结果马上出数，再去读改动过的日志
             if first {
                 await Pricing.load(download: false)
-                let cached = priced(LogReader.cached())
-                if !cached.isEmpty {
-                    await MainActor.run { self.all = cached; self.updated = Date() }
-                }
+                await self.requery()
             }
             await Pricing.load(force: forcePrices)
-            var records = LogReader.read(since: .distantPast)  // 全部历史，「全部时间」和自定义范围都要用
+            LogReader.syncLocal()
             // 远程机器上的 Codex 日志（SSH）
             let hosts = LogReader.hosts
             LogReader.pruneRemote(keep: hosts)
             var status: [String: RemoteStatus] = [:]
-            for host in hosts {
-                let r = LogReader.readRemote(host)
-                records += r.records
-                status[host] = r.status
-            }
-            let result = priced(records), remote = status
+            for host in hosts { status[host] = LogReader.readRemote(host) }
+            LogReader.repriceIfNeeded()
+            let remote = status
             await MainActor.run { self.remoteStatus = remote }
-            await MainActor.run {
-                self.all = result
-                self.loading = false
-                self.updated = Date()
-            }
+            await self.requery()
+            await MainActor.run { self.loading = false }
             let due = await MainActor.run { self.accountFetchedAt.map { Date().timeIntervalSince($0) > 3600 } ?? true }
             if due, let acc = await Codex.fetchAccount() {
                 await MainActor.run { self.codexAccount = acc; self.accountFetchedAt = Date() }
             }
         }
+    }
+
+    /// 从库里重新取（不碰日志）
+    func requery() async {
+        let (since, wantDaily) = await MainActor.run { (self.since, self.wantDaily) }
+        let rows = LogReader.records(since: since)
+        let days = wantDaily ? LogReader.dailyTotals(since: Calendar.current.date(byAdding: .day, value: -380, to: Date())!) : []
+        let ov = LogReader.overview()
+        await MainActor.run {
+            self.all = rows
+            self.daily = days
+            self.overview = ov
+            self.updated = Date()
+        }
+    }
+
+    /// 统计页要看更早的记录、要热力图：不够的话从库里补
+    func need(since: Date, daily: Bool) {
+        var more = false
+        if since < self.since { self.since = since; more = true }
+        if daily && !wantDaily { wantDaily = true; more = true }
+        if more { Task.detached(priority: .userInitiated) { await self.requery() } }
+    }
+
+    /// 主窗口关了：只留最近几天
+    func release() {
+        since = Self.recentStart
+        wantDaily = false
+        all = all.filter { $0.time >= since }
+        daily = []
     }
 }
 
@@ -839,6 +1001,12 @@ struct StatsView: View {
     /// 筛选、分组、热力图这些从全部记录算出来的结果：输入没变就用上次的。
     /// 拖窗口大小时表格宽度一直在变，整页每一帧都要重画，不缓存的话每帧都要把几万条记录重算一遍
     @State var memo = StatsMemo()
+    var rangeKey: String { "\(rangeRaw)|\(customStart)|\(store.overview.earliest?.timeIntervalSince1970 ?? 0)" }
+    func loadRange() {
+        let start = range == .all ? Date.distantPast : sources.map(since).min() ?? StatsRange.today.presetStart
+        store.need(since: start, daily: true)
+    }
+
     var memoKey: String {
         [store.updated.map { "\($0.timeIntervalSince1970)" } ?? "-", "\(store.all.count)", source, rangeRaw,
          "\(customStart)", "\(customEnd)", "\(customEndNow)", hiddenMachines, LogReader.hosts.joined(separator: ","),
@@ -881,7 +1049,7 @@ struct StatsView: View {
     func since(_ src: Source) -> Date {
         switch range {
         case .cycle: return store.cycleStarts[src] ?? StatsRange.week.presetStart
-        case .all: return store.all.last?.time ?? StatsRange.month.presetStart  // all 按时间倒序，最后一条最早
+        case .all: return store.overview.earliest ?? StatsRange.month.presetStart
         case .custom: return customStart > 0 ? Date(timeIntervalSince1970: customStart) : StatsRange.today.presetStart
         default: return range.presetStart
         }
@@ -900,7 +1068,7 @@ struct StatsView: View {
     }
     /// Codex 的机器：本机（""）加上设置里添加的、读到过记录的远程机器
     var machines: [String] {
-        memo.value("machines", memoKey) { [""] + Set(store.all.compactMap(\.host)).union(LogReader.hosts).sorted() }
+        memo.value("machines", memoKey) { [""] + Set(store.overview.hosts).union(LogReader.hosts).sorted() }
     }
     /// 只算现在还在的机器；删掉了远程机器、剩下的全被隐藏时就全看
     var hiddenMachineSet: Set<String> {
@@ -992,6 +1160,9 @@ struct StatsView: View {
         }
         }
         .frame(minWidth: 820, minHeight: 600)
+        // 选的时间范围要更早的记录、热力图要每日汇总：从库里补（内存里平时只有最近几天）
+        .onAppear { loadRange() }
+        .onChange(of: rangeKey) { _ in loadRange() }
         // 点请求明细的一行：从右边滑出详情
         .overlay(alignment: .trailing) {
             if let r = selected {
@@ -1148,12 +1319,11 @@ struct StatsView: View {
 
     /// 每天的用量（热力图用）：不看时间范围，只按上面选的应用和机器
     func dailyTotals() -> [Date: Bucket] {
-        let cal = Calendar.current, hidden = hiddenMachineSet, srcs = Set(sources)
+        let hidden = hiddenMachineSet, srcs = Set(sources)
         var out: [Date: Bucket] = [:]
-        for r in store.all where !r.failed && srcs.contains(r.source) && (r.source != .codex || !hidden.contains(r.host ?? "")) {
-            let day = cal.startOfDay(for: r.time)
-            let b = out[day] ?? Bucket(date: day, tokens: 0)
-            out[day] = Bucket(date: day, tokens: b.tokens + r.tokens, requests: b.requests + 1, cost: b.cost + (r.cost ?? 0))
+        for t in store.daily where srcs.contains(t.source) && (t.source != .codex || !hidden.contains(t.host ?? "")) {
+            let b = out[t.day] ?? Bucket(date: t.day, tokens: 0)
+            out[t.day] = Bucket(date: t.day, tokens: b.tokens + t.tokens, requests: b.requests + t.requests, cost: b.cost + t.cost)
         }
         return out
     }
@@ -2042,8 +2212,10 @@ struct Panel: ViewModifier {
 /// 命令行：UsageBar --stats，打印今天和最近 7 天的汇总（排查用）
 func printStats() async {
     await Pricing.load()
-    var recs = LogReader.read(since: StatsRange.week.presetStart)
-    for i in recs.indices { recs[i].cost = Pricing.cost(recs[i]) }
+    LogReader.syncLocal()
+    let status = LogReader.hosts.map { ($0, LogReader.readRemote($0)) }
+    LogReader.repriceIfNeeded()
+    let recs = LogReader.records(since: StatsRange.week.presetStart).filter { $0.host == nil }  // 本机的
     for range in [StatsRange.today, .week] {
         for src in [Source.claude, .codex] {
             let s = Summary(recs.filter { $0.time >= range.presetStart && $0.source == src })
@@ -2062,11 +2234,13 @@ func printStats() async {
     }
     let unpriced = Set(recs.filter { $0.cost == nil }.map(\.model))
     if !unpriced.isEmpty { print("unpriced models:", unpriced.sorted().joined(separator: ", ")) }
-    for host in LogReader.hosts {
-        let r = LogReader.readRemote(host)
-        let s = Summary(r.records.map { var x = $0; x.cost = Pricing.cost(x); return x })
-        print("remote \(host): \(r.status.error ?? "\(r.status.files ?? 0) files") · all time cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
+    let everything = LogReader.records(since: .distantPast)
+    for (host, st) in status {
+        let s = Summary(everything.filter { $0.host == host })
+        print("remote \(host): \(st.error ?? "\(st.files ?? 0) files") · all time cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
     }
+    let o = LogReader.overview()
+    print("database: \(o.count) records since \(o.earliest.map { f.string(from: $0) } ?? "—") · \(LogReader.dbURL.path)")
 }
 
 /// 统计页的计算结果缓存（引用类型：存进去不会触发重画）
@@ -2294,7 +2468,8 @@ struct UsageChart: View {
     func axisTicks(_ data: [Bucket]) -> [Date] {
         let steps = hourly ? [1, 2, 3, 4, 6, 12, 24] : [1, 2, 3, 7, 14, 30, 61, 91, 182]
         let step = steps.first { data.count <= $0 * 8 } ?? steps.last!
-        return stride(from: 0, to: data.count, by: step).map { midpoint(data[$0].date) }
+        // 间隔大于 1 时从半个间隔处开始：第一个刻度贴着左边的话，日期会被截掉一半
+        return stride(from: step > 1 ? step / 2 : 0, to: data.count, by: step).map { midpoint(data[$0].date) }
     }
 
     func axisLabel(_ d: Date) -> String {
