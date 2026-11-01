@@ -414,6 +414,64 @@ enum LogReader {
         return (Date(timeIntervalSince1970: t), rl)
     }
 
+    // MARK: 数据库文件：位置、大小、备份、从备份导入
+
+    /// 库文件加上 -wal、-shm 一共多大（字节）
+    static func databaseSize() -> Int64 {
+        ["", "-wal", "-shm"].reduce(0) { sum, ext in
+            let a = try? FileManager.default.attributesOfItem(atPath: dbURL.path + ext)
+            return sum + ((a?[.size] as? NSNumber)?.int64Value ?? 0)
+        }
+    }
+
+    /// 存一份完整的副本（VACUUM INTO：写着也能拿到一致的快照，顺便压紧）。目标文件已存在时先删掉
+    static func backup(to url: URL) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let d = db else { return false }
+        try? FileManager.default.removeItem(at: url)
+        d.run("VACUUM INTO ?", [url.path])
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// 从备份导入：备份里的记录合并进来（按 id，和读日志时一样留输出多的那份），已有的不会丢；周期也合并。
+    /// 解析进度（files）不导入：那是备份那台机器上的日志位置。
+    /// Windows / Linux 版的库里时间是毫秒，这边是秒：看数值大小换算。返回新增了多少条，不是 UsageBar 的库时为空
+    static func importBackup(from url: URL) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard let d = db else { return nil }
+        d.run("ATTACH DATABASE ? AS bak", [url.path])
+        defer { d.exec("DETACH DATABASE bak") }
+        var tables: Set<String> = []
+        d.run("SELECT name FROM bak.sqlite_master WHERE type = 'table'") { r in r.text(0).map { tables.insert($0) } }
+        guard tables.contains("records") else { return nil }
+        var maxTime = 0.0, before = 0, after = 0
+        d.run("SELECT MAX(time) FROM bak.records") { maxTime = $0.optDouble(0) ?? 0 }
+        let scale = maxTime > 1e11 ? 0.001 : 1.0
+        d.run("SELECT COUNT(*) FROM records") { before = $0.int(0) }
+        d.transaction {
+            d.run("""
+            INSERT INTO records(id, file, time, source, model, host, project, input, output, cache_read, cache_write, cache_write_1h,
+                                duration, first_token, status, cost)
+            SELECT id, file, time * ?, source, model, host, project, input, output, cache_read, cache_write, cache_write_1h,
+                   duration, first_token, status, cost FROM bak.records WHERE true
+            ON CONFLICT(id) DO UPDATE SET file = excluded.file, time = excluded.time, source = excluded.source,
+              model = excluded.model, host = excluded.host, project = excluded.project, input = excluded.input,
+              output = excluded.output, cache_read = excluded.cache_read, cache_write = excluded.cache_write,
+              cache_write_1h = excluded.cache_write_1h, duration = excluded.duration, first_token = excluded.first_token,
+              status = excluded.status, cost = excluded.cost
+            WHERE excluded.output > records.output
+            """, [scale])
+            if tables.contains("cycles") {
+                d.exec("""
+                INSERT INTO cycles(source, resets_at, used) SELECT source, resets_at, used FROM bak.cycles WHERE true
+                ON CONFLICT(source, resets_at) DO UPDATE SET used = max(COALESCE(used, 0), COALESCE(excluded.used, 0))
+                """)
+            }
+        }
+        d.run("SELECT COUNT(*) FROM records") { after = $0.int(0) }
+        return after - before
+    }
+
     // MARK: 每周额度的周期
     //   一个周期是从上次重置到下次重置：记下每个周期的「下次重置时间」和这期间见到的最高已用比例。
     //   Codex 从会话日志里取（每次回复都记着额度），两家也都从查官方接口的结果里取

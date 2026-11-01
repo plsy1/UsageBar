@@ -262,6 +262,24 @@ enum I18n {
         "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
         "服务端数据统计": ("サーバー側の統計", "Server Statistics"),
         "可用重置": ("使えるリセット", "Resets Available"),
+        "数据": ("データ", "Data"),
+        "用量记录存在本机的数据库里，可以备份，也可以从备份导入": ("使用記録はこの Mac のデータベースに保存されます。バックアップやバックアップからの読み込みができます", "Usage records live in a local database you can back up and import from a backup"),
+        "数据库": ("データベース", "Database"),
+        "解析好的用量记录和每周额度的周期都存在这里，Claude Code 清理旧日志后统计也还在": ("解析済みの使用記録と週間上限の期間はここに保存され、Claude Code が古いログを削除しても統計は残ります", "Parsed usage records and weekly limit cycles are kept here, so statistics survive Claude Code's log cleanup"),
+        "位置": ("場所", "Location"),
+        "在访达中显示": ("Finder で表示", "Show in Finder"),
+        "备份": ("バックアップ", "Backup"),
+        "备份是一个完整的数据库文件。导入会把备份里的记录合并进来，现有的不会丢；Windows / Linux 版的备份也能导入": ("バックアップはデータベース全体のファイルです。読み込むとバックアップの記録が統合され、今ある記録は消えません。Windows / Linux 版のバックアップも読み込めます", "A backup is a complete copy of the database. Importing merges its records in without losing the ones you have; backups from Windows / Linux work too"),
+        "备份到文件": ("ファイルにバックアップ", "Back Up to a File"),
+        "保存一份数据库的副本": ("データベースのコピーを保存します", "Saves a copy of the database"),
+        "备份…": ("バックアップ…", "Back Up…"),
+        "从备份导入": ("バックアップから読み込む", "Import a Backup"),
+        "合并备份里的记录，比如换了电脑或重装之后": ("バックアップの記録を統合します（PC を替えたときや再インストール後など）", "Merges its records in, e.g. after moving to a new computer or reinstalling"),
+        "导入…": ("読み込む…", "Import…"),
+        "已备份到 %@": ("%@ にバックアップしました", "Backed up to %@"),
+        "备份失败": ("バックアップに失敗しました", "Backup failed"),
+        "已导入，新增 %d 条请求": ("読み込みました（%d 件追加）", "Imported: %d new requests"),
+        "这不是 UsageBar 的数据库": ("UsageBar のデータベースではありません", "That isn't a UsageBar database"),
         "隐藏 UsageBar": ("UsageBar を隠す", "Hide UsageBar"),
         "隐藏其他": ("ほかを隠す", "Hide Others"),
         "编辑": ("編集", "Edit"),
@@ -1251,6 +1269,90 @@ struct GeneralSettings: View {
     }
 }
 
+/// 「数据」：用量记录的数据库在哪、多大，备份和从备份导入
+struct DataSettings: View {
+    @ObservedObject var stats: StatsStore
+    @State var size = LogReader.databaseSize()
+    @State var message: String?
+    @State var busy = false
+
+    var body: some View {
+        SettingsScroll(.data, L("用量记录存在本机的数据库里，可以备份，也可以从备份导入")) {
+            HStack(alignment: .top, spacing: 24) {
+                database.frame(maxWidth: .infinity, alignment: .top)
+                backup.frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    var database: some View {
+        SettingsGroup(L("数据库"), footer: L("解析好的用量记录和每周额度的周期都存在这里，Claude Code 清理旧日志后统计也还在")) {
+            SettingsRow(L("位置"), detail: (LogReader.dbURL.path as NSString).abbreviatingWithTildeInPath) {
+                Button(L("在访达中显示")) { NSWorkspace.shared.activateFileViewerSelecting([LogReader.dbURL]) }.controlSize(.small)
+            }
+            Divider()
+            SettingsRow(L("大小")) {
+                Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Divider()
+            SettingsRow(L("会话记录")) {
+                Text(stats.overview.earliest.map { L("%d 条请求，最早 %@", stats.overview.count, Self.day($0)) } ?? L("正在读取本机会话记录…"))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    var backup: some View {
+        SettingsGroup(L("备份"), footer: message ?? L("备份是一个完整的数据库文件。导入会把备份里的记录合并进来，现有的不会丢；Windows / Linux 版的备份也能导入")) {
+            SettingsRow(L("备份到文件"), detail: L("保存一份数据库的副本")) {
+                Button(L("备份…"), action: doBackup).controlSize(.small).disabled(busy)
+            }
+            Divider()
+            SettingsRow(L("从备份导入"), detail: L("合并备份里的记录，比如换了电脑或重装之后")) {
+                Button(L("导入…"), action: doImport).controlSize(.small).disabled(busy)
+            }
+        }
+    }
+
+    static func day(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none; return f.string(from: d)
+    }
+
+    func doBackup() {
+        let panel = NSSavePanel()
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "UsageBar-backup-\(f.string(from: Date())).sqlite"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        busy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = LogReader.backup(to: url)
+            DispatchQueue.main.async {
+                busy = false
+                message = ok ? L("已备份到 %@", (url.path as NSString).abbreviatingWithTildeInPath) : L("备份失败")
+            }
+        }
+    }
+
+    func doImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        busy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let added = LogReader.importBackup(from: url)
+            DispatchQueue.main.async {
+                busy = false
+                size = LogReader.databaseSize()
+                message = added.map { L("已导入，新增 %d 条请求", $0) } ?? L("这不是 UsageBar 的数据库")
+                if added != nil { stats.reload() }
+            }
+        }
+    }
+}
+
 /// 「菜单栏」：上面是设置，下面是铺满宽度的预览（菜单栏和点开后的菜单）
 struct MenuBarSettings: View {
     @ObservedObject var model: UsageModel
@@ -1783,7 +1885,7 @@ struct HideSidebarToggle: ViewModifier {
 }
 
 enum MainTab: String, CaseIterable, Identifiable {
-    case stats, general, menuBar, card, about
+    case stats, general, menuBar, card, data, about
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -1791,6 +1893,7 @@ enum MainTab: String, CaseIterable, Identifiable {
         case .general: return L("通用")
         case .menuBar: return L("菜单栏")
         case .card: return L("卡片")
+        case .data: return L("数据")
         case .about: return L("关于")
         }
     }
@@ -1800,6 +1903,7 @@ enum MainTab: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .menuBar: return "menubar.rectangle"
         case .card: return "rectangle.on.rectangle"
+        case .data: return "cylinder.split.1x2"
         case .about: return "info.circle"
         }
     }
@@ -1838,6 +1942,7 @@ struct PageHost: View, Equatable {
         case .general: GeneralSettings(updater: updater, model: model, stats: stats)
         case .menuBar: MenuBarSettings(model: model)
         case .card: CardSettings(model: model, stats: stats)
+        case .data: DataSettings(stats: stats)
         case .about: AboutSettings(updater: updater)
         }
     }
@@ -1860,7 +1965,7 @@ struct MainPages: View {
     var body: some View {
         let _ = language  // 切换语言时重绘
         PagesLayout(current: nav.tab, frozen: frozen) {
-            ForEach([MainTab.stats, .general, .menuBar, .card, .about]) { t in
+            ForEach([MainTab.stats, .general, .menuBar, .card, .data, .about]) { t in
                 if visited.contains(t) || nav.tab == t {
                     PageHost(tab: t, stats: stats, model: model, updater: updater, language: language).equatable()
                         .opacity(nav.tab == t ? 1 : 0)
@@ -1942,7 +2047,7 @@ struct MainView: View {
                     row(.stats)
                     Text(L("设置")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .padding(.leading, 10).padding(.top, 14).padding(.bottom, 4)
-                    ForEach([MainTab.general, .menuBar, .card, .about]) { row($0) }
+                    ForEach([MainTab.general, .menuBar, .card, .data, .about]) { row($0) }
                 }
                 .padding(.horizontal, 10).padding(.top, 6)
             }
