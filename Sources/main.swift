@@ -262,6 +262,12 @@ enum I18n {
         "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
         "服务端数据统计": ("サーバー側の統計", "Server Statistics"),
         "可用重置": ("使えるリセット", "Resets Available"),
+        "大数字": ("大きな数字", "Big Numbers"),
+        "圆环": ("リング", "Rings"),
+        "细条": ("細いバー", "Slim Bars"),
+        "已用": ("使用済み", "Used"),
+        "按余量着色": ("残りで色分け", "Color by Level"),
+        "剩不到 30% 变黄，不到 10% 变红": ("残り 30% 未満で黄、10% 未満で赤", "Amber under 30% left, red under 10%"),
         "数据": ("データ", "Data"),
         "用量记录存在本机的数据库里，可以备份，也可以从备份导入": ("使用記録はこの Mac のデータベースに保存されます。バックアップやバックアップからの読み込みができます", "Usage records live in a local database you can back up and import from a backup"),
         "数据库": ("データベース", "Database"),
@@ -776,23 +782,36 @@ func shortTime(_ d: Date) -> String {
     return f.string(from: d)
 }
 
-func resetText(_ d: Date?, style: String = "full") -> String {
-    guard var d else { return "" }
-    // 接口给的重置时间常是 05:59:59.x：差几秒到整分钟就进位，和统计页的「重置以来」一致
-    d = Date(timeIntervalSince1970: ((d.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60)
+/// 接口给的重置时间常是 05:59:59.x：差几秒到整分钟就进位，和统计页的「重置以来」一致
+func resetMinute(_ d: Date) -> Date { Date(timeIntervalSince1970: ((d.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60) }
+
+/// 「3天4小时」「4小时40分」「12分钟」
+func countdown(_ d: Date) -> String {
     let s = max(0, d.timeIntervalSinceNow)
     let days = Int(s) / 86400, hours = Int(s) % 86400 / 3600, mins = Int(s) % 3600 / 60
-    let rel = days > 0 ? L("%d天%d小时", days, hours) : hours > 0 ? L("%d小时%d分", hours, mins) : L("%d分钟", mins)
-    if style == "relative" { return L("%@后重置", rel) }
-    if style == "absolute" {
-        // 今天内只写几点，否则带上星期几
-        let f = DateFormatter()
-        f.locale = Locale(identifier: ["zh": "zh_CN", "ja": "ja_JP"][I18n.lang] ?? "en_US")
-        f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : (I18n.lang == "ja" ? "EEEE HH:mm" : "EEE HH:mm")
-        return L("%@ 重置", f.string(from: d))
-    }
-    let f = DateFormatter(); f.dateFormat = days > 0 ? "M/d HH:mm" : "HH:mm"
-    return L("%@后重置（%@）", rel, f.string(from: d))
+    return days > 0 ? L("%d天%d小时", days, hours) : hours > 0 ? L("%d小时%d分", hours, mins) : L("%d分钟", mins)
+}
+
+/// 今天内只写几点，否则带上星期几
+func resetClock(_ d: Date) -> String {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: ["zh": "zh_CN", "ja": "ja_JP"][I18n.lang] ?? "en_US")
+    f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : (I18n.lang == "ja" ? "EEEE HH:mm" : "EEE HH:mm")
+    return f.string(from: d)
+}
+
+func resetText(_ d: Date?, style: String = "full") -> String {
+    guard let d = d.map(resetMinute) else { return "" }
+    if style == "relative" { return L("%@后重置", countdown(d)) }
+    if style == "absolute" { return L("%@ 重置", resetClock(d)) }
+    let f = DateFormatter(); f.dateFormat = d.timeIntervalSinceNow >= 86400 ? "M/d HH:mm" : "HH:mm"
+    return L("%@后重置（%@）", countdown(d), f.string(from: d))
+}
+
+/// 卡片上的短写法（前面配一个 ↻ 图标）：relative「4小时40分」/ absolute「周三 14:20」；hidden 或没有重置时间时为空
+func resetShort(_ d: Date?, style: String) -> String? {
+    guard let d = d.map(resetMinute), style != "hidden" else { return nil }
+    return style == "absolute" ? resetClock(d) : countdown(d)
 }
 
 // MARK: - 设置
@@ -819,7 +838,8 @@ enum Pref {
     static let menuStyle = "menuStyle"         // inline 一行 / stacked 名称在上、数值在下两行
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
-    static let cardLayout = "cardLayout"       // horizontal / vertical / compact
+    static let cardLayout = "cardLayout"       // horizontal / vertical / compact / big（大数字）/ rings（圆环）/ slim（细条）
+    static let cardLevelColors = "cardLevelColors"  // 额度卡片按余量着色
     static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
     static let appearance = "appearance"       // auto / light / dark
     // 菜单栏和两张卡片各自显示哪几家、剩余还是已用（旧版是共用的 showClaude / showCodex / displayMode，只用来给它们当初始值）
@@ -1583,6 +1603,7 @@ struct CardForm: View {
     @AppStorage var bgOpacity: Double
     @AppStorage(Pref.resetStyle) var resetStyle = "relative"
     @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
+    @AppStorage(Pref.cardLevelColors) var levelColors = false
     @AppStorage(Pref.statsCardRange) var statsRange = "today"
 
     init(keys: CardKeys) {
@@ -1645,12 +1666,26 @@ struct CardForm: View {
             }
             SettingsGroup(L("布局")) {
                 SettingsRow(L("布局")) {
-                    Picker("", selection: $layout) {
-                        Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
-                        Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
-                        Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                    if keys.stats {
+                        Picker("", selection: $layout) {
+                            Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                            Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                            Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    } else {
+                        // 额度卡片的样式多，用菜单
+                        Picker("", selection: $layout) {
+                            Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                            Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                            Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                            Divider()
+                            Label(L("大数字"), systemImage: "textformat.size").tag("big")
+                            Label(L("圆环"), systemImage: "circle.circle").tag("rings")
+                            Label(L("细条"), systemImage: "chart.bar.doc.horizontal").tag("slim")
+                        }
+                        .labelsHidden().fixedSize()
                     }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
                 Divider()
                 SettingsRow(L("大小")) { PercentControl(value: $scale, range: 0.8...2.5, step: 0.1) }
@@ -1678,6 +1713,10 @@ struct CardForm: View {
                 }
                 Divider()
                 SettingsRow(L("整体不透明度")) { PercentControl(value: $opacity, range: 0.3...1.0, step: 0.05) }
+                if !keys.stats {
+                    Divider()
+                    SettingsRow(L("按余量着色"), detail: L("剩不到 30% 变黄，不到 10% 变红")) { SwitchControl(isOn: $levelColors) }
+                }
             }
             .disabled(!show)
         }
@@ -1712,6 +1751,9 @@ struct CardPreview: View {
         switch (keys.stats, layout) {
         case (false, "vertical"): base = CGSize(width: 292, height: 295)
         case (false, "compact"): base = CGSize(width: 273, height: 93)
+        case (false, "big"): base = CGSize(width: 472, height: 190)
+        case (false, "rings"): base = CGSize(width: 330, height: 175)
+        case (false, "slim"): base = CGSize(width: 300, height: 120)
         case (false, _): base = CGSize(width: 476, height: 167)
         case (true, "vertical"): base = CGSize(width: 292, height: 330)
         case (true, "compact"): base = CGSize(width: 330, height: 93)
@@ -2187,6 +2229,8 @@ struct UsageRow: View {
     var keepResetSpace = false
     /// 重置时间后面加上「预计几点用完」（菜单里有地方写；卡片太窄不写）
     var showRunOut = false
+    /// 按余量着色时的颜色（够用时为空，用原来的颜色）
+    var tint: Color? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 3 * s) {
             HStack(spacing: 3 * s) {
@@ -2194,6 +2238,7 @@ struct UsageRow: View {
                 Spacer()
                 Text(w.shownText(used))
                     .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+                    .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
                 if w.fast {
                     Image(systemName: "arrow.up").font(.system(size: 9 * s, weight: .bold))
                         .help(L("用得比时间快：已用的比例超过了这个周期已经过去的比例"))
@@ -2202,7 +2247,7 @@ struct UsageRow: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.25))
-                    Capsule().fill(Color.primary.opacity(0.9)).frame(width: g.size.width * w.shown(used) / 100)
+                    Capsule().fill(tint ?? Color.primary.opacity(0.9)).frame(width: g.size.width * w.shown(used) / 100)
                 }
             }
             .frame(height: 4 * s)
@@ -2213,6 +2258,14 @@ struct UsageRow: View {
                 Text(" ").font(.system(size: 10 * s)).hidden()
             }
         }
+    }
+}
+
+extension LimitWindow {
+    /// 按余量着色：剩不到 30% 黄、不到 10% 红；够用时为空（用原来的颜色）。显示「已使用」时也按剩余算
+    func levelColor(_ on: Bool) -> Color? {
+        guard on else { return nil }
+        return remaining < 10 ? .red : remaining < 30 ? .orange : nil
     }
 }
 
@@ -2229,6 +2282,7 @@ struct CardView: View {
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.cardLayout) var layout = "horizontal"
+    @AppStorage(Pref.cardLevelColors) var levelColors = false
     @AppStorage(Pref.showCard) var visible = true
     @AppStorage(Pref.cardOnTop) var onTop = false
     var report = true  // 设置页的预览传 false
@@ -2252,6 +2306,14 @@ struct CardView: View {
                     // 网格：各行的同一列上下对齐
                     Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
                         ForEach(shown, id: \.name, content: compactRow)
+                    }
+                case "big":
+                    HStack(alignment: .top, spacing: 26 * s) { ForEach(shown, id: \.name, content: bigBlock) }
+                case "rings":
+                    HStack(alignment: .top, spacing: 26 * s) { ForEach(shown, id: \.name, content: ringBlock) }
+                case "slim":
+                    Grid(alignment: .leading, horizontalSpacing: 8 * s, verticalSpacing: 7 * s) {
+                        ForEach(shown, id: \.name, content: slimRows)
                     }
                 default:
                     HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.name, content: column) }
@@ -2302,7 +2364,8 @@ extension CardView {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, keepResetSpace: true)
+                UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, keepResetSpace: true,
+                         tint: w.levelColor(levelColors))
             }
             if let rc = u.resetCredits { CreditsRow(rc: rc, s: s) }
             if let n = u.note {
@@ -2312,6 +2375,137 @@ extension CardView {
         }
         // 上下布局时一栏占满整行，放宽一些更好看
         .frame(width: (layout == "vertical" ? CardWindow.wideColumn : CardWindow.column) * s, alignment: .topLeading)
+    }
+
+    // MARK: 大数字、圆环、细条
+
+    /// 名称、套餐，右边一个小字「剩余 / 已用」说明下面的数字是哪种
+    func header(_ u: ProviderUsage, caption: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
+            Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+            if let p = u.plan { Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
+            if caption {
+                Spacer(minLength: 10 * s)
+                Text(used ? L("已用") : L("剩余")).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder func errorText(_ u: ProviderUsage) -> some View {
+        if let e = u.error, u.windows.isEmpty {
+            Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(2)
+                .frame(maxWidth: 200 * s, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 细进度条（圆头）
+    func thinBar(_ v: Double, tint: Color?, width: CGFloat? = nil, height: CGFloat) -> some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.22))
+                Capsule().fill(tint ?? Color.primary.opacity(0.9)).frame(width: g.size.width * min(100, max(0, v)) / 100)
+            }
+        }
+        .frame(width: width, height: height)
+    }
+
+    /// ↻ 4小时40分（不显示重置时间时空着）
+    @ViewBuilder func resetLabel(_ w: LimitWindow, size: CGFloat) -> some View {
+        if let r = resetShort(w.resetsAt, style: resetStyle) {
+            HStack(spacing: 3 * s) {
+                Image(systemName: "arrow.clockwise").font(.system(size: (size - 1.5) * s, weight: .semibold))
+                Text(r).font(.system(size: size * s)).monospacedDigit()
+            }
+            .foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    /// 大数字：每个额度一格，两格一行；名称、大号百分比、细进度条、多久后重置
+    func bigBlock(_ u: ProviderUsage) -> some View {
+        let cell: CGFloat = 92
+        return VStack(alignment: .leading, spacing: 10 * s) {
+            header(u, caption: !u.windows.isEmpty)
+            errorText(u)
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell * s), spacing: 16 * s, alignment: .leading), count: 2),
+                      alignment: .leading, spacing: 12 * s) {
+                ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in bigCell(w) }
+            }
+            if let rc = u.resetCredits { CreditsRow(rc: rc, s: s) }
+        }
+        .frame(width: (cell * 2 + 16) * s, alignment: .topLeading)
+    }
+
+    func bigCell(_ w: LimitWindow) -> some View {
+        let tint = w.levelColor(levelColors)
+        return VStack(alignment: .leading, spacing: 4 * s) {
+            Text(w.label).font(.system(size: 10 * s)).foregroundStyle(.secondary).lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 1 * s) {
+                Text("\(Int(w.shown(used).rounded()))")
+                    .font(.system(size: 26 * s, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+                Text("%").font(.system(size: 12 * s, weight: .medium)).foregroundStyle(.secondary)
+                if w.fast { Image(systemName: "arrow.up").font(.system(size: 10 * s, weight: .bold)).padding(.leading, 2 * s) }
+            }
+            thinBar(w.shown(used), tint: tint, height: 3 * s)
+            resetLabel(w, size: 9.5)
+        }
+    }
+
+    /// 圆环：每个额度一个环，中间是百分比，下面是名称和多久后重置
+    func ringBlock(_ u: ProviderUsage) -> some View {
+        VStack(alignment: .leading, spacing: 10 * s) {
+            header(u, caption: !u.windows.isEmpty)
+            errorText(u)
+            HStack(alignment: .top, spacing: 12 * s) {
+                ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in ring(w) }
+            }
+            // 环下面地方窄，重置次数只写次数（和紧凑一样）
+            if let rc = u.resetCredits { Text(rc.countText).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
+        }
+    }
+
+    func ring(_ w: LimitWindow) -> some View {
+        let v = w.shown(used), tint = w.levelColor(levelColors), line = 5 * s
+        return VStack(spacing: 5 * s) {
+            ZStack {
+                Circle().stroke(Color.primary.opacity(0.22), lineWidth: line)
+                Circle().trim(from: 0, to: min(100, max(0, v)) / 100)
+                    .stroke(tint ?? Color.primary.opacity(0.9), style: StrokeStyle(lineWidth: line, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text("\(Int(v.rounded()))").font(.system(size: 15 * s, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+                    Text("%").font(.system(size: 9 * s, weight: .medium)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 52 * s, height: 52 * s)
+            Text(w.label + (w.fast ? " ↑" : "")).font(.system(size: 10 * s)).foregroundStyle(.secondary).lineLimit(1)
+            resetLabel(w, size: 9)
+        }
+        .frame(minWidth: 58 * s)
+    }
+
+    /// 细条：每个额度一行：名称（每家第一行写）、额度名、细进度条、数值；不写重置时间
+    @ViewBuilder func slimRows(_ u: ProviderUsage) -> some View {
+        if let e = u.error, u.windows.isEmpty {
+            GridRow(alignment: .firstTextBaseline) {
+                Text(u.name).font(.system(size: 12 * s, weight: .semibold))
+                Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(maxWidth: 220 * s, alignment: .leading).gridCellColumns(3)
+            }
+        }
+        ForEach(Array(u.windows.enumerated()), id: \.offset) { i, w in
+            let tint = w.levelColor(levelColors)
+            GridRow(alignment: .center) {
+                Text(i == 0 ? u.name : " ").font(.system(size: 12 * s, weight: .semibold))
+                Text(w.label).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(1)
+                thinBar(w.shown(used), tint: tint, width: 110 * s, height: 4 * s)
+                Text(w.shownText(used) + (w.fast ? "↑" : ""))
+                    .font(.system(size: 11.5 * s, weight: .medium).monospacedDigit())
+                    .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+                    .gridColumnAlignment(.trailing)
+            }
+        }
     }
 
     /// 紧凑：一家一行，只有数字
@@ -2327,6 +2521,7 @@ extension CardView {
                 HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
                     Text(w.label).font(.system(size: 11 * s)).foregroundStyle(.secondary)
                     Text(w.shownText(used)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+                        .foregroundStyle(w.levelColor(levelColors).map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
                 }
             }
             if let rc = u.resetCredits {
