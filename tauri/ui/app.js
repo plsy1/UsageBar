@@ -47,6 +47,9 @@ const T = {
   runs_out: ['预计 %s 用完', '%s に使い切る見込み', 'runs out %s'],
   fast_hint: ['用得比时间快：已用的比例超过了这个周期已经过去的比例', '時間の進みより速いペース：使用した割合がこの期間の経過割合を上回っています', "Ahead of pace: you've used more of this limit than the share of the period that has passed"],
   reset_one: ['可用重置 1 次', 'リセット 1 回分', '1 reset available'],
+  resets_available: ['可用重置', '使えるリセット', 'Resets Available'],
+  times: ['%s 次', '%s 回', '%s'],
+  list_sep: ['、', '、', ', '],
   limits_card: ['额度卡片', '上限カード', 'Limits Card'],
   usage_card: ['用量卡片', '使用量カード', 'Usage Card'],
   show_usage_card: ['显示用量卡片', '使用量カードを表示', 'Show Usage Card'],
@@ -277,14 +280,11 @@ function resetText(at, style = 'relative') {
   return t('resets_full', rel, d > 0 ? `${date.getMonth() + 1}/${date.getDate()} ${hm}` : hm);
 }
 
-// Codex 的额度重置：「可用重置 1 次 · 11/7 06:50 到期」；多次时写最早那次，lines 是逐条的到期时间
+// Codex 的额度重置：紧凑卡片里只写「可用重置 2 次」
 const resetCountText = (r) => (r.count === 1 ? t('reset_one') : t('reset_count', r.count));
-function resetCreditsText(r) {
-  if (!r.expiries.length) return resetCountText(r);
-  const first = dateTime(r.expiries[0]);
-  return resetCountText(r) + ' · ' + (r.count > 1 ? t('earliest', first) : t('expires', first));
-}
-const resetCreditLines = (r) => (r.count > 1 ? r.expiries.map((e) => t('expires', dateTime(e))) : []);
+// 每次的到期时间写成一行：「11/7 06:50、12/1 05:15 到期」
+const monthDayTime = (sec) => { const d = new Date(sec * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${d.toTimeString().slice(0, 5)}`; };
+const resetExpiryText = (r) => (r.expiries.length ? t('expires', r.expiries.map(monthDayTime).join(t('list_sep'))) : '');
 
 // 出错原因：附带的数字是时间的按日期写，其他（HTTP 状态码）原样
 const errorText = (p) => t(p.error, p.detail == null ? '' : p.error === 'claude_local_stale' ? dateTime(p.detail) : p.detail);
@@ -302,8 +302,11 @@ function providerHTML(p) {
     </div>`;
   }
   if (p.resets) {
-    html += `<div class="note">↻ ${esc(resetCreditsText(p.resets))}</div>`;
-    for (const l of resetCreditLines(p.resets)) html += `<div class="note indent">${esc(l)}</div>`;
+    // 和额度一样左边名称、右边数值，下面一行小字是每次的到期时间
+    html += `<div class="row">
+      <div class="top"><span>${t('resets_available')}</span><span class="value">${t('times', p.resets.count)}</span></div>
+      ${p.resets.expiries.length ? `<div class="reset">${esc(resetExpiryText(p.resets))}</div>` : ''}
+    </div>`;
   }
   if (p.note) html += `<div class="note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>`;
   return html + '</div>';
@@ -349,7 +352,8 @@ function cardColumn(p) {
     <div class="c-name">${esc(p.name)}${p.plan ? `<span class="c-plan">${esc(p.plan)}</span>` : ''}</div>
     ${p.error ? `<div class="c-err">${esc(errorText(p))}</div>` : ''}
     ${p.windows.map(cardRow).join('')}
-    ${p.resets ? `<div class="c-reset">↻ ${esc(resetCreditsText(p.resets))}</div>` : ''}
+    ${p.resets ? `<div class="c-row"><div class="c-top"><span>${t('resets_available')}</span><span class="c-val">${t('times', p.resets.count)}</span></div>
+      ${p.resets.expiries.length ? `<div class="c-reset">${esc(resetExpiryText(p.resets))}</div>` : ''}</div>` : ''}
     ${p.note ? `<div class="c-note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>` : ''}
   </div>`;
 }

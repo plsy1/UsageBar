@@ -89,8 +89,10 @@ struct ResetCredits {
         guard let e = earliest else { return countText }
         return countText + " · " + (count > 1 ? L("最早 %@ 到期", Self.date(e)) : L("%@ 到期", Self.date(e)))
     }
-    /// 菜单里逐条列出每次的到期时间（多于一次时）
-    var lines: [String] { count > 1 ? expiries.map { L("%@ 到期", Self.date($0)) } : [] }
+    /// 每次的到期时间写成一行：「11/7 06:50、12/1 05:15 到期」
+    var expiryText: String? {
+        expiries.isEmpty ? nil : L("%@ 到期", expiries.map(Self.date).joined(separator: L("、")))
+    }
 
     static func date(_ d: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
@@ -259,6 +261,9 @@ enum I18n {
         "命中率": ("ヒット率", "Hit Rate"),
         "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
         "服务端数据统计": ("サーバー側の統計", "Server Statistics"),
+        "可用重置": ("使えるリセット", "Resets Available"),
+        "1 次": ("1 回", "1"),
+        "%d 次": ("%d 回", "%d"),
         "按周期": ("期間別", "By Cycle"),
         "周期": ("期間", "Cycle"),
         "已用额度": ("使用した上限", "Limit Used"),
@@ -2178,9 +2183,7 @@ extension CardView {
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
                 UsageRow(w: w, s: s, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, keepResetSpace: true)
             }
-            if let rc = u.resetCredits {
-                Label(rc.text, systemImage: "arrow.counterclockwise.circle").font(.system(size: 10 * s)).foregroundStyle(.secondary)
-            }
+            if let rc = u.resetCredits { CreditsRow(rc: rc, s: s) }
             if let n = u.note {
                 Text(n).font(.system(size: 10 * s)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2212,6 +2215,25 @@ extension CardView {
     }
 }
 
+/// Codex 的额度重置次数：和额度一样左边名称、右边数值，下面一行小字是每次的到期时间
+struct CreditsRow: View {
+    let rc: ResetCredits
+    let s: CGFloat
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3 * s) {
+            HStack(spacing: 3 * s) {
+                Text(L("可用重置")).font(.system(size: 12 * s))
+                Spacer()
+                Text(rc.count == 1 ? L("1 次") : L("%d 次", rc.count))
+                    .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+            }
+            if let e = rc.expiryText {
+                Text(e).font(.system(size: 10 * s)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 /// 菜单里每家的用量区块：名称、套餐，各额度一行加圆角进度条
 struct MenuUsageBlock: View {
     let u: ProviderUsage
@@ -2229,14 +2251,7 @@ struct MenuUsageBlock: View {
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
                 UsageRow(w: w, s: 1.08, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, showRunOut: true)
             }
-            if let rc = u.resetCredits {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(rc.text, systemImage: "arrow.counterclockwise.circle")
-                    // 多次时逐条列出，图标宽度留空对齐
-                    ForEach(rc.lines, id: \.self) { Text($0).padding(.leading, 20) }
-                }
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
+            if let rc = u.resetCredits { CreditsRow(rc: rc, s: 1.08) }
             if let n = u.note {
                 Text(n).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             }

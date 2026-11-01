@@ -801,13 +801,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 menu.append(&MenuItem::with_id(app, format!("r-{}-{i}", p.name), format!("        {sub}"), false, None::<&str>)?)?;
             }
         }
+        // 重置次数：和额度一行的写法一样，下面一行是每次的到期时间
         if let Some(rc) = &p.resets {
-            let count = i18n::fmt(lang, "n_credits", &[&rc.count.to_string()]);
-            let line = match rc.expiries.first() {
-                Some(&e) => format!("{count} · {}", i18n::fmt(lang, if rc.count > 1 { "earliest_expires" } else { "expires" }, &[&i18n::date_time(e)])),
-                None => count,
-            };
-            menu.append(&MenuItem::with_id(app, format!("c-{}", p.name), format!("    ↻ {line}"), false, None::<&str>)?)?;
+            let line = format!("    {}   {}", i18n::t(lang, "resets_available"), i18n::fmt(lang, "times", &[&rc.count.to_string()]));
+            menu.append(&MenuItem::with_id(app, format!("c-{}", p.name), line, false, None::<&str>)?)?;
+            if !rc.expiries.is_empty() {
+                let dates: Vec<String> = rc.expiries.iter().map(|&e| i18n::date_time(e)).collect();
+                let sub = i18n::fmt(lang, "expires", &[&dates.join(i18n::t(lang, "n_sep"))]);
+                menu.append(&MenuItem::with_id(app, format!("ce-{}", p.name), format!("        {sub}"), false, None::<&str>)?)?;
+            }
         }
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
