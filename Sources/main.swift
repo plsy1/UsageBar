@@ -2408,10 +2408,14 @@ extension CardView {
     // MARK: 大数字、圆环、细条
 
     /// 名称、套餐，右边一个小字「剩余 / 已用」说明下面的数字是哪种
-    func header(_ u: ProviderUsage, caption: Bool) -> some View {
+    func header(_ u: ProviderUsage, caption: Bool, credits: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
             Text(u.name).font(.system(size: 13 * s, weight: .semibold))
             if let p = u.plan { Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
+            // 圆环：重置次数放在名字这一行（「↻ 2」），不另占一行
+            if credits, let rc = u.resetCredits {
+                Text("↻ \(rc.count)").font(.system(size: 10 * s).monospacedDigit()).foregroundStyle(.secondary).help(rc.text)
+            }
             if caption {
                 Spacer(minLength: 10 * s)
                 Text(used ? L("已用") : L("剩余")).font(.system(size: 10 * s)).foregroundStyle(.secondary)
@@ -2479,38 +2483,43 @@ extension CardView {
         }
     }
 
-    /// 圆环：每个额度一个环，中间是百分比，下面是名称和多久后重置
+    /// 圆环：每个额度一个环，环里是百分比和额度名，下面是多久后重置（环大、字小，卡片不至于太瘦长）
     func ringBlock(_ u: ProviderUsage) -> some View {
         VStack(alignment: .leading, spacing: 10 * s) {
-            header(u, caption: !u.windows.isEmpty)
+            header(u, caption: !u.windows.isEmpty, credits: true)
             errorText(u)
-            HStack(alignment: .top, spacing: 12 * s) {
+            HStack(alignment: .top, spacing: 30 * s) {
                 ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in ring(w) }
             }
-            // 环下面地方窄，重置次数只写次数（和紧凑一样）
-            if let rc = u.resetCredits { Text(rc.countText).font(.system(size: 10 * s)).foregroundStyle(.secondary) }
+            .padding(.horizontal, 6 * s)
         }
     }
 
     func ring(_ w: LimitWindow) -> some View {
-        let v = w.shown(used), tint = w.levelColor(levelColors), line = 5 * s
+        let v = w.shown(used), tint = w.levelColor(levelColors), size = 66 * s, line = 7 * s
         return VStack(spacing: 5 * s) {
             ZStack {
                 Circle().stroke(Color.primary.opacity(0.22), lineWidth: line)
                 Circle().trim(from: 0, to: min(100, max(0, v)) / 100)
                     .stroke(tint ?? Color.primary.opacity(0.9), style: StrokeStyle(lineWidth: line, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text("\(Int(v.rounded()))").font(.system(size: 15 * s, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
-                    Text("%").font(.system(size: 9 * s, weight: .medium)).foregroundStyle(.secondary)
+                VStack(spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        Text("\(Int(v.rounded()))").font(.system(size: 18 * s, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+                        Text("%").font(.system(size: 10 * s, weight: .medium)).foregroundStyle(.secondary)
+                        if w.fast { Text("↑").font(.system(size: 10 * s, weight: .bold)) }
+                    }
+                    Text(w.label).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 }
+                .frame(maxWidth: size - line * 2 - 6 * s)
             }
-            .frame(width: 52 * s, height: 52 * s)
-            Text(w.label + (w.fast ? " ↑" : "")).font(.system(size: 10 * s)).foregroundStyle(.secondary).lineLimit(1)
-            resetLabel(w, size: 9)
+            .frame(width: size, height: size)
+            if let r = resetShort(w.resetsAt, style: resetStyle) {
+                Text(r).font(.system(size: 9.5 * s)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+            }
         }
-        .frame(minWidth: 58 * s)
     }
 
     /// 细条：每个额度一行：名称（每家第一行写）、额度名、细进度条、数值；不写重置时间

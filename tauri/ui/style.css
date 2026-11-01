@@ -382,15 +382,17 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .c-big .up { font-size: calc(11 * var(--u)); margin-left: calc(3 * var(--u)); }
 .c-bar.thin { height: calc(3 * var(--u)); }
 .c-cost.small { font-size: calc(17 * var(--u)); }
-.c-rings { display: flex; gap: calc(12 * var(--u)); }
-.c-ringcell { display: flex; flex-direction: column; align-items: center; gap: calc(5 * var(--u)); min-width: calc(58 * var(--u)); }
-.c-ring { position: relative; width: calc(52 * var(--u)); height: calc(52 * var(--u)); }
+.c-rings { display: flex; gap: calc(30 * var(--u)); padding: 0 calc(6 * var(--u)); }
+.c-ringcell { display: flex; flex-direction: column; align-items: center; gap: calc(5 * var(--u)); }
+.c-ring { position: relative; width: calc(66 * var(--u)); height: calc(66 * var(--u)); }
 .c-ring svg { width: 100%; height: 100%; overflow: visible; }
-.c-ring circle { fill: none; stroke-width: 5; stroke-linecap: round; }
+.c-ring circle { fill: none; stroke-width: 7; stroke-linecap: round; }
 .c-ring circle.track { stroke: var(--ctrack); }
-.c-ring > span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: calc(15 * var(--u)); font-weight: 650; font-variant-numeric: tabular-nums; }
-.c-ring .c-pct { font-size: calc(9 * var(--u)); }
+.c-ringtext { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.c-ringtext > span:first-child { font-size: calc(18 * var(--u)); font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.c-ringtext .c-pct { font-size: calc(10 * var(--u)); }
+.c-ringtext .c-lab { font-size: calc(10 * var(--u)); max-width: calc(46 * var(--u)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-ringcell .c-reset { font-size: calc(9.5 * var(--u)); }
 .c-slim { display: grid; grid-template-columns: repeat(4, max-content); align-items: center; column-gap: calc(8 * var(--u)); row-gap: calc(7 * var(--u)); }
 .c-bar.slim { width: calc(110 * var(--u)); }
 .c-slim .c-num { justify-self: end; }

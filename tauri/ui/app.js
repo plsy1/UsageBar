@@ -429,7 +429,7 @@ function cardCompactRow(p, cols) {
 // MARK: 大数字、圆环、细条
 
 // 名称、套餐，右边小字「剩余 / 已用」
-const cardHead = (p) => `<div class="c-head"><span class="c-name">${esc(p.name)}${p.plan ? `<span class="c-plan">${esc(p.plan)}</span>` : ''}</span>
+const cardHead = (p, extra = '') => `<div class="c-head"><span class="c-name">${esc(p.name)}${p.plan ? `<span class="c-plan">${esc(p.plan)}</span>` : ''}${extra}</span>
   ${p.windows.length ? `<span class="c-cap">${t(state.settings.card_display === 'used' ? 'used_opt' : 'remaining')}</span>` : ''}</div>`;
 const cardErr = (p) => (p.error && !p.windows.length ? `<div class="c-err">${esc(errorText(p))}</div>` : '');
 const resetIcon = (w) => { const r = resetShort(w.resets_at, state.settings.card_reset); return r ? `<div class="c-reset">↻ ${esc(r)}</div>` : ''; };
@@ -445,18 +445,20 @@ function bigBlock(p) {
   return `<div class="c-block big">${cardHead(p)}${cardErr(p)}<div class="c-grid2">${cells}</div>${creditsRow(p)}</div>`;
 }
 
-// 圆环：每个额度一个环，中间是百分比
+// 圆环：每个额度一个环，环里是百分比和额度名，下面是多久后重置（环大、字小，卡片不至于太瘦长）；
+// 重置次数放在名字这一行（「↻ 2」），不另占一行
 function ringBlock(p) {
   const rings = p.windows.map((w) => {
-    const v = shownValue(w), c = 2 * Math.PI * 23.5, color = levelColor(w) || 'var(--cfill)';
+    const v = shownValue(w), c = 2 * Math.PI * 29.5, color = levelColor(w) || 'var(--cfill)';
+    const r = resetShort(w.resets_at, state.settings.card_reset);
     return `<div class="c-ringcell">
-      <div class="c-ring"><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="23.5" class="track"/>
-        <circle cx="26" cy="26" r="23.5" stroke="${color}" stroke-dasharray="${(c * v / 100).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 26 26)"/></svg>
-        <span style="${tintStyle(w)}">${Math.round(v)}<span class="c-pct">%</span></span></div>
-      <div class="c-lab">${esc(windowLabel(w))}${w.fast ? ' ↑' : ''}</div>${resetIcon(w)}</div>`;
+      <div class="c-ring"><svg viewBox="0 0 66 66"><circle cx="33" cy="33" r="29.5" class="track"/>
+        <circle cx="33" cy="33" r="29.5" stroke="${color}" stroke-dasharray="${(c * v / 100).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 33 33)"/></svg>
+        <div class="c-ringtext"><span style="${tintStyle(w)}">${Math.round(v)}<span class="c-pct">%</span>${w.fast ? '↑' : ''}</span><span class="c-lab">${esc(windowLabel(w))}</span></div></div>
+      ${r ? `<div class="c-reset">${esc(r)}</div>` : ''}</div>`;
   }).join('');
-  return `<div class="c-block">${cardHead(p)}${cardErr(p)}<div class="c-rings">${rings}</div>
-    ${p.resets ? `<div class="c-lab">${esc(resetCountText(p.resets))}</div>` : ''}</div>`;
+  const credits = p.resets ? `<span class="c-plan" title="${esc(resetExpiryText(p.resets))}">↻ ${p.resets.count}</span>` : '';
+  return `<div class="c-block">${cardHead(p, credits)}${cardErr(p)}<div class="c-rings">${rings}</div></div>`;
 }
 
 // 细条：每个额度一行：名称（每家第一行写）、额度名、细进度条、数值
