@@ -36,6 +36,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>$MIN_OS</string>
   <key>LSUIElement</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>Read Codex session logs from the remote machines you add, over SSH.</string>
 </dict></plist>
 EOF
 codesign --force --sign - "$APP"

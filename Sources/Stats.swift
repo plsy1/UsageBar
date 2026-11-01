@@ -24,6 +24,7 @@ struct UsageRecord: Identifiable, Codable {
     let cacheWrite: Int
     var cacheWrite1h = 0  // cacheWrite 里属于 1 小时缓存的部分（Claude 才有），单价是输入的 2 倍
     var cost: Double?
+    var host: String?      // 从哪台远程机器读来的（SSH）；本机的为空
     var duration: Double?  // 估算的总耗时（秒）
     var firstToken: Double?  // 估算的首字时间（秒）：第一段内容写入日志的时间
     var status = 200       // 失败的请求（Claude Code 会记下来）：429、401 等
@@ -222,8 +223,8 @@ enum LogReader {
                 all += entry.records
             }
         }
-        // 删掉的日志也从缓存里去掉
-        for path in cache.keys where !seen.contains(path) { cache[path] = nil; changed = true }
+        // 删掉的日志也从缓存里去掉（远程机器的另算，见 readRemote）
+        for path in cache.keys where !seen.contains(path) && !path.hasPrefix(remotePrefix) { cache[path] = nil; changed = true }
         if changed { saveDisk() }
         return dedupe(all, since: since)
     }
@@ -414,6 +415,204 @@ enum LogReader {
     }
 }
 
+// MARK: - 远程机器（SSH）上的 Codex 日志
+//   Codex 在哪台机器上跑，日志就只留在哪台（Claude 用 app 连远程时日志存在本机，不用管）。
+//   用系统的 ssh 去读：先列出远程的日志文件和大小，再把有变化的文件从上次读到的位置往后、在远程过滤后传回来。
+//   要能免密登录（密钥或 ssh-agent）；BatchMode 下不会弹密码
+
+extension LogReader {
+    static let remotePrefix = "ssh://"
+    /// 设置里添加的远程机器（~/.ssh/config 里的名字或 user@host），逗号分隔
+    static let hostsKey = "remoteHosts"
+    static var hosts: [String] {
+        (UserDefaults.standard.string(forKey: hostsKey) ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// 在远程跑一段 sh 脚本，拿回输出
+    static func ssh(_ host: String, _ script: String, timeout: TimeInterval) -> (out: Data, error: String?) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        p.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15", "-C", host, "sh -s"]
+        let input = Pipe(), output = Pipe(), error = Pipe()
+        p.standardInput = input; p.standardOutput = output; p.standardError = error
+        do { try p.run() } catch { return (Data(), error.localizedDescription) }
+        input.fileHandleForWriting.write(Data(script.utf8))
+        try? input.fileHandleForWriting.close()
+        // 边跑边读：输出可能很大，等进程结束再读的话管道写满会卡住
+        var out = Data(), err = Data()
+        let group = DispatchGroup()
+        group.enter(); DispatchQueue.global().async { out = output.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        group.enter(); DispatchQueue.global().async { err = error.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        var timedOut = false
+        if group.wait(timeout: .now() + timeout) == .timedOut { timedOut = true; p.terminate(); group.wait() }
+        p.waitUntilExit()
+        if timedOut { return (out, L("超时")) }
+        guard p.terminationStatus == 0 else {
+            let msg = String(decoding: err, as: UTF8.self).split(separator: "\n").last.map { String($0) } ?? ""
+            // 局域网里的机器：macOS 要在「隐私与安全性 → 本地网络」里允许 UsageBar，不然连不上
+            if msg.contains("No route to host") { return (out, L("连不上：请在 系统设置 → 隐私与安全性 → 本地网络 中允许 UsageBar")) }
+            return (out, msg.isEmpty ? L("连不上") : msg.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (out, nil)
+    }
+
+    /// 列出远程的 Codex 日志：「大小 修改时间 路径」一行一个（Linux 和 macOS 的 stat 参数不一样，两种都试）
+    static let listScript = #"""
+    for d in "$HOME/.codex/sessions" "$HOME/.codex/archived_sessions"; do
+      [ -d "$d" ] || continue
+      find "$d" -type f -name '*.jsonl' | while IFS= read -r f; do
+        s=$(stat -c '%s %Y' "$f" 2>/dev/null || stat -f '%z %m' "$f" 2>/dev/null) && printf '%s %s\n' "$s" "$f"
+      done
+    done
+    """#
+
+    /// 远程这边先过滤再传：会话日志大部分是对话和工具输出，统计只用到 token_count、turn_context 这两种整行，
+    /// 其余行只要时间、类型和是不是用户消息（算耗时用）。这样传回来的只有原文件的百分之几。
+    /// fetch 文件 起点 长度 核对长度 分隔符 序号：只处理 [起点, 起点+长度) 里的完整行，
+    /// 最后打印实际读到的原始字节数，以及起点之前、新位置之前各一小段原始内容（十六进制，用来核对文件有没有被改写）
+    static let remoteFilter = #"""
+    t=$(mktemp) || exit 1
+    trap 'rm -f "$t"' EXIT
+    hex() { od -An -v -tx1 | tr -d ' \n'; }
+    fetch() {
+      printf '%s S %s\n' "$5" "$6"
+      old=-
+      [ "$4" -gt 0 ] && old=$(tail -c +$(($2 - $4 + 1)) "$1" | head -c "$4" | hex)
+      tail -c +$(($2 + 1)) "$1" | head -c "$3" | LC_ALL=C awk -v n="$3" -v out="$t" '
+        function emit(l,  ts, ty, r) {
+          if (l ~ /"(token_count|turn_context|token_usage_record)"/) { print l; return }
+          if (!match(l, /"timestamp":"[^"]*"/)) return
+          ts = substr(l, RSTART, RLENGTH)
+          ty = ""
+          if (match(l, /"payload":\{"type":"[^"]*"/)) ty = substr(l, RSTART, RLENGTH)
+          r = (l ~ /"role":"user"/) ? ",\"role\":\"user\"" : ""
+          if (ty == "") print "{" ts "}"; else print "{" ts "," ty r "}}"
+        }
+        { if (has) emit(prev); prev = $0; has = 1; used += length($0) + 1 }
+        END {
+          c = 0
+          if (has) { if (used <= n) { emit(prev); c = used } else c = used - length(prev) - 1 }
+          print c > out
+        }'
+      c=$(cat "$t"); e=$(($2 + c)); k=$((e < 64 ? e : 64))
+      new=-
+      [ "$k" -gt 0 ] && new=$(tail -c +$((e - k + 1)) "$1" | head -c "$k" | hex)
+      printf '%s E %s %s %s\n' "$5" "$c" "${old:--}" "${new:--}"
+    }
+
+    """#
+
+    static func hexBytes(_ s: String) -> Data {
+        var d = Data(), i = s.startIndex
+        while let j = s.index(i, offsetBy: 2, limitedBy: s.endIndex), j > i, let b = UInt8(s[i..<j], radix: 16) { d.append(b); i = j }
+        return d
+    }
+
+    /// 读一台远程机器上的 Codex 日志，返回记录和一句状态（设置页显示）
+    static func readRemote(_ host: String) -> (records: [UsageRecord], status: String, ok: Bool) {
+        let list = ssh(host, listScript, timeout: 60)
+        if let error = list.error { return (remoteRecords(host), error, false) }
+        let files: [(size: Int, mtime: Date, path: String)] = String(decoding: list.out, as: UTF8.self)
+            .split(separator: "\n").compactMap { line in
+                let parts = line.split(separator: " ", maxSplits: 2)
+                guard parts.count == 3, let size = Int(parts[0]), let m = Double(parts[1]) else { return nil }
+                return (size, Date(timeIntervalSince1970: m), String(parts[2]))
+            }
+        let prefix = remotePrefix + host + "/"
+        // 要传回来的：缓存里的键、远程路径、从哪个字节开始、上次位置之前要核对多少字节
+        var need: [(key: String, path: String, from: Int, check: Int, size: Int, mtime: Date)] = []
+        lock.lock()
+        loadDisk()
+        var changed = false
+        let seen = Set(files.map { prefix + $0.path })
+        for key in cache.keys where key.hasPrefix(prefix) && !seen.contains(key) { cache[key] = nil; changed = true }
+        for f in files {
+            let key = prefix + f.path
+            if let c = cache[key], c.mtime == f.mtime, c.size == f.size { continue }
+            if let c = cache[key], c.offset > 0, f.size >= c.offset {
+                need.append((key, f.path, c.offset, c.tailLength, f.size, f.mtime))
+            } else {
+                cache[key] = nil
+                need.append((key, f.path, 0, 0, f.size, f.mtime))
+            }
+        }
+        lock.unlock()
+
+        var error: String?
+        if !need.isEmpty {
+            // 一次 ssh 把要的都传回来，每个文件前后加分隔行（随机的，不会和日志内容撞上）
+            let mark = "@@UB-\(UUID().uuidString)"
+            let quote = { (p: String) in "'" + p.replacingOccurrences(of: "'", with: #"'\''"#) + "'" }
+            let script = remoteFilter + need.indices.map { i in
+                let n = need[i]
+                return "fetch \(quote(n.path)) \(n.from) \(n.size - n.from) \(n.check) '\(mark)' \(i)"
+            }.joined(separator: "\n")
+            let r = ssh(host, script, timeout: 900)
+            error = r.error
+            let startData = Data((mark + " S ").utf8), endData = Data((mark + " E ").utf8)
+            var rest = r.out[...]
+            lock.lock()
+            // 传断了也把收到的完整文件先存下
+            while let start = rest.range(of: startData) {
+                let afterMark = rest[start.upperBound...]
+                guard let nl = afterMark.firstIndex(of: UInt8(ascii: "\n")),
+                      let i = Int(String(decoding: afterMark[afterMark.startIndex..<nl], as: UTF8.self)),
+                      need.indices.contains(i) else { break }
+                let body = afterMark[(nl + 1)...]
+                guard let end = body.range(of: endData),
+                      let endLine = body[end.upperBound...].firstIndex(of: UInt8(ascii: "\n")) else { break }
+                let data = body[body.startIndex..<end.lowerBound]
+                // 结尾一行：这次读到的原始字节数、上次位置之前那段的十六进制、新位置之前那段的十六进制
+                let fields = String(decoding: body[end.upperBound..<endLine], as: UTF8.self).split(separator: " ").map(String.init)
+                rest = body[(endLine + 1)...]
+                let n = need[i]
+                guard fields.count == 3, let used = Int(fields[0]) else { continue }
+                var e = cache[n.key] ?? Entry()
+                if n.check > 0, fnv(hexBytes(fields[1])) != e.tail {
+                    // 上次读到的位置之前的内容变了：文件被改写过，下次从头传
+                    cache[n.key] = nil; changed = true; continue
+                }
+                if used > 0 {
+                    parseCodex(data, &e.codex, &e.records)
+                    let tail = hexBytes(fields[2])
+                    e.offset = n.from + used
+                    e.tailLength = tail.count
+                    e.tail = fnv(tail)
+                }
+                for j in e.records.indices { e.records[j].host = host }
+                e.mtime = n.mtime
+                e.size = n.size
+                cache[n.key] = e
+                changed = true
+            }
+            lock.unlock()
+        }
+        if changed { lock.lock(); saveDisk(); lock.unlock() }
+        let recs = remoteRecords(host)
+        if let error { return (recs, error, false) }
+        return (recs, L("%d 个日志文件 · %d 条请求", files.count, recs.filter { !$0.failed }.count), true)
+    }
+
+    /// 缓存里这台机器的记录（连不上时也照样显示上次读到的）
+    static func remoteRecords(_ host: String) -> [UsageRecord] {
+        lock.lock(); defer { lock.unlock() }
+        loadDisk()
+        let prefix = remotePrefix + host + "/"
+        return dedupe(cache.filter { $0.key.hasPrefix(prefix) }.values.flatMap(\.records), since: .distantPast)
+    }
+
+    /// 删掉的远程机器：它的缓存也清掉
+    static func pruneRemote(keep: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        loadDisk()
+        let gone = cache.keys.filter { k in k.hasPrefix(remotePrefix) && !keep.contains { k.hasPrefix(remotePrefix + $0 + "/") } }
+        guard !gone.isEmpty else { return }
+        for k in gone { cache[k] = nil }
+        saveDisk()
+    }
+}
+
 // MARK: - 汇总
 
 /// 统计的时间范围。cycle：周额度上次重置以来（每家按自己的重置时间算）；custom：自选起止
@@ -470,6 +669,7 @@ struct ModelRow: Identifiable {
     var speed: Double?       // 平均速度（只算估得出速度的请求）
     var firstToken: Double?  // 首字的中位数
     var successRate: Double { Double(s.requests) / Double(max(1, s.requests + failed)) }
+    var machine: String?     // 按应用分行时 Codex 的机器（"" 是本机）
 }
 
 /// 中位数：首字偶尔会因为等确认、长时间思考到几分钟，平均数会被这几次拉高
@@ -502,21 +702,22 @@ struct CodexAccount {
         return f
     }()
 
-    /// 其他设备在 from...to 里用了多少：按 UTC 日，服务端的数减去本机记录的数（不会小于 0）。
-    /// pending：范围里有服务端还没出数的日子（那几天只算了本机）
-    func otherDevices(from: Date, to: Date, local: [UsageRecord]) -> (tokens: Int, pending: Bool) {
-        var localByDay: [String: Int] = [:]
-        for r in local where r.source == .codex && !r.failed { localByDay[Self.utcDay.string(from: r.time), default: 0] += r.tokens }
+    /// 服务端统计在 from...to 里的数（按 UTC 日，和本机记录无关）。
+    /// days：范围里服务端已出数的天数；pending：范围里还有服务端没出数的日子
+    func range(from: Date, to: Date) -> (tokens: Int, days: Int, peak: Int, pending: Bool) {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
         let last = lastDay ?? ""
-        var day = cal.startOfDay(for: from), sum = 0, pending = false
+        var day = cal.startOfDay(for: from), sum = 0, days = 0, peak = 0, pending = false
         while day <= to {
             let key = Self.utcDay.string(from: day)
-            if key > last { pending = true } else { sum += max(0, (daily[key] ?? 0) - (localByDay[key] ?? 0)) }
+            if key > last { pending = true } else {
+                let n = daily[key] ?? 0
+                sum += n; days += 1; peak = max(peak, n)
+            }
             day = cal.date(byAdding: .day, value: 1, to: day)!
         }
-        return (sum, pending)
+        return (sum, days, peak, pending)
     }
 }
 
@@ -526,6 +727,8 @@ final class StatsStore: ObservableObject {
     @Published var updated: Date?
     /// Codex 账号统计：一天才更新一次，最多一小时拉一次
     @Published var codexAccount: CodexAccount?
+    /// 每台远程机器上次读取的结果（设置页显示）
+    @Published var remoteStatus: [String: (text: String, ok: Bool)] = [:]
     private var accountFetchedAt: Date?
     /// 各家周额度当前周期的起点，由额度刷新时填入
     @Published var cycleStarts: [Source: Date] = [:]
@@ -550,7 +753,18 @@ final class StatsStore: ObservableObject {
                 }
             }
             await Pricing.load(force: forcePrices)
-            let result = priced(LogReader.read(since: .distantPast))  // 全部历史，「全部时间」和自定义范围都要用
+            var records = LogReader.read(since: .distantPast)  // 全部历史，「全部时间」和自定义范围都要用
+            // 远程机器上的 Codex 日志（SSH）
+            let hosts = LogReader.hosts
+            LogReader.pruneRemote(keep: hosts)
+            var status: [String: (text: String, ok: Bool)] = [:]
+            for host in hosts {
+                let r = LogReader.readRemote(host)
+                records += r.records
+                status[host] = (r.status, r.ok)
+            }
+            let result = priced(records), remote = status
+            await MainActor.run { self.remoteStatus = remote }
             await MainActor.run {
                 self.all = result
                 self.loading = false
@@ -605,6 +819,8 @@ struct StatsView: View {
     @AppStorage("statsMoreTiles") var moreTiles = false
     /// 请求明细只看某个状态码；0 是全部
     @AppStorage("statsStatus") var statusFilter = 0
+    /// 不看的 Codex 机器（本机记作 @local），逗号分隔；新加的机器默认都看
+    @AppStorage("statsHiddenMachines") var hiddenMachines = ""
     /// 点开详情的那条请求
     @State var selected: UsageRecord?
     /// 表格可用的宽度：列多了放不下时改成左右滚动
@@ -639,7 +855,19 @@ struct StatsView: View {
     var rows: [UsageRecord] {
         let starts = Dictionary(uniqueKeysWithValues: sources.map { ($0, since($0)) })
         let end = end
-        return store.all.filter { r in r.time <= end && (starts[r.source].map { r.time >= $0 } ?? false) }
+        let hidden = hiddenMachineSet
+        return store.all.filter { r in
+            r.time <= end && (starts[r.source].map { r.time >= $0 } ?? false)
+                && (r.source != .codex || !hidden.contains(r.host ?? ""))
+        }
+    }
+    /// Codex 的机器：本机（""）加上设置里添加的、读到过记录的远程机器
+    var machines: [String] { [""] + Set(store.all.compactMap(\.host)).union(LogReader.hosts).sorted() }
+    /// 只算现在还在的机器；删掉了远程机器、剩下的全被隐藏时就全看
+    var hiddenMachineSet: Set<String> {
+        let all = machines
+        let h = Set(hiddenMachines.split(separator: ",").map { $0 == "@local" ? "" : String($0) }).intersection(all)
+        return h.count >= all.count ? [] : h
     }
     var rangeLabel: String {
         guard range == .custom else { return range.title }
@@ -717,7 +945,7 @@ struct StatsView: View {
             codexAccountPanel(rows)
             chart(rows)
             tables(rows)
-            Text(L("成本按 models.dev 的 API 价格估算，仅统计本机会话记录"))
+            Text(L("成本按 models.dev 的 API 价格估算，统计本机和已添加的远程机器上的会话记录"))
                 .font(.caption).foregroundStyle(.tertiary)
         }
         .padding([.horizontal, .bottom], 20)
@@ -763,6 +991,7 @@ struct StatsView: View {
                 Text("Codex").tag("Codex")
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
+            if sources.contains(.codex), machines.count > 1 { machineMenu }
             Spacer()
             if store.loading {
                 ProgressView().controlSize(.small)
@@ -776,42 +1005,61 @@ struct StatsView: View {
         }
     }
 
-    /// Codex · 全部设备：本机日志（精确）加上其他设备的用量（服务端账号统计按天减去本机）
+    /// 选看哪几台机器的 Codex 记录（可多选）
+    var machineMenu: some View {
+        let all = machines, hidden = hiddenMachineSet
+        let shown = all.filter { !hidden.contains($0) }
+        let name = { (m: String) in m.isEmpty ? L("本机") : m }
+        let set = { (h: Set<String>) in
+            hiddenMachines = h.map { $0.isEmpty ? "@local" : $0 }.sorted().joined(separator: ",")
+            page = 0
+        }
+        return Menu {
+            Button { set([]) } label: { check(hidden.isEmpty, L("全部机器")) }
+            Divider()
+            ForEach(all, id: \.self) { m in
+                Button {
+                    if hidden.contains(m) { set(hidden.subtracting([m])) }
+                    else if shown.count > 1 { set(hidden.union([m])) }  // 至少留一台
+                } label: { check(!hidden.contains(m), name(m)) }
+            }
+            Divider()
+            ForEach(all, id: \.self) { m in
+                Button(L("只看 %@", name(m))) { set(Set(all).subtracting([m])) }
+            }
+        } label: {
+            Label(shown.count == all.count ? L("全部机器") : shown.count == 1 ? name(shown[0]) : L("%d 台机器", shown.count),
+                  systemImage: "desktopcomputer")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help(L("Codex 记录来自哪几台机器"))
+    }
+
+    /// Codex · 服务端数据统计：OpenAI 账号统计，单独显示，不和本机、远程的日志记录混在一起算
     @ViewBuilder func codexAccountPanel(_ rows: [UsageRecord]) -> some View {
         if sources.contains(.codex), let acc = store.codexAccount {
-            let mine = Summary(rows.filter { $0.source == .codex })
-            let other = acc.otherDevices(from: since(.codex), to: end, local: store.all)
-            let total = mine.tokens + other.tokens
-            // 其他设备只知道总 tokens（不分输入、缓存、输出）：按本机近 30 天 Codex 记录的每 token 平均成本估算
-            let recent = store.all.filter { $0.source == .codex && !$0.failed && $0.time > Date().addingTimeInterval(-30 * 86400) }
-            let recentTokens = recent.reduce(0) { $0 + $1.tokens }
-            let perToken = recentTokens > 0 ? recent.reduce(0.0) { $0 + ($1.cost ?? 0) } / Double(recentTokens) : nil
+            let r = acc.range(from: since(.codex), to: end)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Codex · " + L("全部设备")).font(.headline)
+                    Text("Codex · " + L("服务端数据统计")).font(.headline)
                     Spacer()
                     Text(L("累计 %@ tokens", abbrev(acc.lifetime))).font(.callout).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 18)
                 HStack(spacing: 0) {
-                    tile("Tokens", abbrev(total), small: true)
+                    tile("Tokens", r.days > 0 ? abbrev(r.tokens) : "—", small: true)
                     Divider().padding(.vertical, 4)
-                    tile(L("其他设备"), abbrev(other.tokens), small: true)
+                    tile(L("日均"), r.days > 0 ? abbrev(r.tokens / r.days) : "—", small: true)
                     Divider().padding(.vertical, 4)
-                    tile(L("估算成本"), money(mine.cost + Double(other.tokens) * (perToken ?? 0)), small: true)
+                    tile(L("最多的一天"), r.days > 0 ? abbrev(r.peak) : "—", small: true)
                     Divider().padding(.vertical, 4)
-                    tile(L("本机记录占比"), total > 0 ? percent(Double(mine.tokens) / Double(total)) : "—", small: true)
+                    tile(L("数据截至"), acc.lastDay.map { String($0.dropFirst(5)).replacingOccurrences(of: "-", with: "/") } ?? "—", small: true)
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                Group {
-                    if other.pending, let last = acc.lastDay {
-                        Text(L("其他设备的数据来自 OpenAI 账号统计（按 UTC 日），目前只到 %@，之后几天只算了本机。", last))
-                    } else {
-                        Text(L("其他设备的数据来自 OpenAI 账号统计（按 UTC 日）。"))
-                    }
-                }
-                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(L("来自 OpenAI 账号统计：所有设备合计，只有总 tokens，按 UTC 日，通常晚 1–2 天出数。和上面按日志记录算的数据分开，不参与成本估算。")
+                     + (r.pending ? " " + L("所选范围里最近几天服务端还没出数。") : ""))
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 14)
             .modifier(Panel())
@@ -895,7 +1143,16 @@ struct StatsView: View {
 
     func modelRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { "\($0.source.rawValue)|\($0.model)" } }
     /// 按应用（CC Switch 叫「供应商」）：Claude Code、Codex 各一行
-    func appRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { $0.source.rawValue } }
+    /// 有远程机器的记录时，Codex 按机器分行
+    func appRows(_ rows: [UsageRecord]) -> [ModelRow] {
+        let remote = rows.contains { $0.host != nil }
+        return grouped(rows) { r in r.source == .codex && remote ? "Codex|" + (r.host ?? "") : r.source.rawValue }
+            .map { m in
+                var m = m
+                if m.id.hasPrefix("Codex|") { m.machine = String(m.id.dropFirst(6)) }
+                return m
+            }
+    }
 
     /// 按 key 分组汇总。失败的请求也分进去，只用来算成功率
     func grouped(_ rows: [UsageRecord], by key: (UsageRecord) -> String) -> [ModelRow] {
@@ -1273,7 +1530,9 @@ enum GroupColumn: String, CaseIterable, StatsColumn {
     @ViewBuilder func cell(_ m: ModelRow, appName: Bool) -> some View {
         switch self {
         case .name:
-            if appName { Text(m.source == .claude ? "Claude Code" : "Codex") }
+            if appName {
+                Text((m.source == .claude ? "Claude Code" : "Codex") + (m.machine.map { " · " + ($0.isEmpty ? L("本机") : $0) } ?? ""))
+            }
             else { Text(m.model).font(.system(.body, design: .monospaced)) }
         case .app: Text(m.source.rawValue)
         case .requests: Text(m.s.requests.formatted())
@@ -1331,7 +1590,7 @@ enum LogColumn: String, CaseIterable, StatsColumn {
     @ViewBuilder func cell(_ r: UsageRecord, time: String) -> some View {
         switch self {
         case .time: Text(time)
-        case .app: Text(r.source.rawValue)
+        case .app: Text(r.host.map { "\(r.source.rawValue) · \($0)" } ?? r.source.rawValue)
         case .model: Text(r.model).font(.system(.body, design: .monospaced))
         case .cost: Text(r.failed ? "—" : money(r.cost, digits: 4))
         case .input: Text(r.input.formatted())
@@ -1381,7 +1640,7 @@ struct RequestDetail: View {
                 VStack(alignment: .leading, spacing: 18) {
                     section(L("基本信息")) {
                         line(L("时间"), f.string(from: r.time))
-                        line(L("应用"), r.source.rawValue)
+                        line(L("应用"), r.host.map { "\(r.source.rawValue) · \($0)" } ?? r.source.rawValue)
                         line(L("模型"), r.model, mono: true)
                         line(L("状态码"), r.failed ? "\(r.status) · " + L("请求失败") : "\(r.status)")
                         line(L("请求 ID"), r.id, mono: true)
@@ -1732,4 +1991,9 @@ func printStats() async {
     }
     let unpriced = Set(recs.filter { $0.cost == nil }.map(\.model))
     if !unpriced.isEmpty { print("unpriced models:", unpriced.sorted().joined(separator: ", ")) }
+    for host in LogReader.hosts {
+        let r = LogReader.readRemote(host)
+        let s = Summary(r.records.map { var x = $0; x.cost = Pricing.cost(x); return x })
+        print("remote \(host): \(r.status) · all time cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
+    }
 }

@@ -188,12 +188,18 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
-        "全部设备": ("すべてのデバイス", "All Devices"),
-        "本机记录占比": ("この Mac の記録の割合", "Logged on This Mac"),
-        "其他设备": ("他のデバイス", "Other Devices"),
         "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
-        "其他设备的数据来自 OpenAI 账号统计（按 UTC 日），目前只到 %@，之后几天只算了本机。": ("他のデバイスの分は OpenAI アカウントの統計（UTC 日単位）から。現在 %@ までで、それ以降はこの Mac の分のみです。", "Other devices come from your OpenAI account statistics (by UTC day), currently through %@; later days count this Mac only."),
-        "其他设备的数据来自 OpenAI 账号统计（按 UTC 日）。": ("他のデバイスの分は OpenAI アカウントの統計（UTC 日単位）から。", "Other devices come from your OpenAI account statistics (by UTC day)."),
+        "服务端数据统计": ("サーバー側の統計", "Server Statistics"),
+        "日均": ("1 日平均", "Daily Avg"),
+        "最多的一天": ("最多の日", "Peak Day"),
+        "数据截至": ("データの最終日", "Data Through"),
+        "来自 OpenAI 账号统计：所有设备合计，只有总 tokens，按 UTC 日，通常晚 1–2 天出数。和上面按日志记录算的数据分开，不参与成本估算。": ("OpenAI アカウントの統計：全デバイスの合計で、総 tokens のみ、UTC 日単位、通常 1〜2 日遅れて反映されます。上のログ記録に基づく集計とは別で、コスト推定には使いません。", "From your OpenAI account statistics: all devices combined, total tokens only, by UTC day, usually 1–2 days behind. Kept separate from the log-based figures above and not used for cost estimates."),
+        "本机": ("この Mac", "This Mac"),
+        "全部机器": ("すべてのマシン", "All Machines"),
+        "只看 %@": ("%@ のみ", "Only %@"),
+        "%d 台机器": ("%d 台のマシン", "%d Machines"),
+        "Codex 记录来自哪几台机器": ("Codex の記録をどのマシンから表示するか", "Which machines' Codex logs to show"),
+        "所选范围里最近几天服务端还没出数。": ("選択した期間の直近数日はまだサーバーに反映されていません。", "The most recent days in this range aren't on the server yet."),
         "可用重置 1 次": ("リセット 1 回分", "1 reset available"),
         "可用重置 %d 次": ("リセット %d 回分", "%d resets available"),
         "%@ 到期": ("%@ まで", "expires %@"),
@@ -268,7 +274,19 @@ enum I18n {
         "耗时按会话日志的时间戳估算：从请求发出到最后一段内容写进日志。日志要等一段内容生成完才写，所以首字偏大。": ("時間はセッション記録のタイムスタンプから推定しています（リクエスト送信から最後の内容が記録されるまで）。記録は内容のまとまりが生成し終わってから書かれるため、初回応答は長めに出ます。", "Times are estimated from session log timestamps, from when the request was sent until its last part was logged. The log is written only after each part finishes, so TTFT reads high."),
         "正在读取本机会话记录…": ("ローカルのセッション記録を読み込み中…", "Reading local session logs…"),
         "该时间段内没有记录": ("この期間の記録はありません", "No usage in this period"),
-        "成本按 models.dev 的 API 价格估算，仅统计本机会话记录": ("コストは models.dev の API 価格による推定で、この Mac のセッション記録のみを集計しています", "Cost is estimated from models.dev API prices and covers only session logs on this Mac"),
+        "成本按 models.dev 的 API 价格估算，统计本机和已添加的远程机器上的会话记录": ("コストは models.dev の API 価格による推定で、この Mac と追加したリモートマシンのセッション記録を集計しています", "Cost is estimated from models.dev API prices and covers session logs on this Mac and the remote machines you added"),
+        "远程 Codex 日志（SSH）": ("リモートの Codex ログ（SSH）", "Remote Codex logs (SSH)"),
+        "读取中…": ("読み込み中…", "Reading…"),
+        "移除": ("削除", "Remove"),
+        "远程机器": ("リモートマシン", "Remote Machines"),
+        "Codex 跑在远程时日志只在那边，用 SSH 读回来": ("Codex をリモートで動かすとログはそちらにだけ残るので、SSH で読み込みます", "Codex keeps its logs on the machine it runs on; read them over SSH"),
+        "主机名": ("ホスト名", "Host"),
+        "~/.ssh/config 里的主机": ("~/.ssh/config のホスト", "Hosts in ~/.ssh/config"),
+        "添加": ("追加", "Add"),
+        "超时": ("タイムアウト", "Timed out"),
+        "连不上": ("接続できません", "Can't connect"),
+        "连不上：请在 系统设置 → 隐私与安全性 → 本地网络 中允许 UsageBar": ("接続できません：システム設定 → プライバシーとセキュリティ → ローカルネットワーク で UsageBar を許可してください", "Can't connect: allow UsageBar in System Settings → Privacy & Security → Local Network"),
+        "%d 个日志文件 · %d 条请求": ("ログ %d 件 · リクエスト %d 件", "Logs %d · Requests %d"),
         "第 %d / %d 页 · 共 %d 条": ("%d / %d ページ · 全 %d 件", "Page %d of %d · %d total"),
         "上一页": ("前のページ", "Previous Page"),
         "下一页": ("次のページ", "Next Page"),
@@ -825,6 +843,8 @@ struct GeneralSettings: View {
     @AppStorage(Pref.appearance) var appearance = "auto"
     @AppStorage(Pref.refreshMinutes) var refreshMinutes = 5
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
+    @AppStorage(LogReader.hostsKey) var remoteHosts = ""
+    @State var newHost = ""
     @State var launchAtLogin = LoginItem.status == .enabled
     @State var needsApproval = LoginItem.status == .requiresApproval
 
@@ -928,6 +948,61 @@ struct GeneralSettings: View {
             provider("Claude", source: L("Claude Code 登录（钥匙串）"))
             Divider()
             provider("Codex", source: "~/.codex/auth.json")
+            ForEach(hosts, id: \.self) { host in
+                Divider()
+                SettingsRow(host, detail: L("远程 Codex 日志（SSH）")) {
+                    HStack(spacing: 8) {
+                        let s = stats.remoteStatus[host]
+                        Text(s?.text ?? L("读取中…"))
+                            .lineLimit(2).multilineTextAlignment(.trailing)
+                            .foregroundStyle(s?.ok == false ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                        Button { setHosts(hosts.filter { $0 != host }) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).help(L("移除"))
+                    }
+                }
+            }
+            Divider()
+            SettingsRow(L("远程机器"), detail: L("Codex 跑在远程时日志只在那边，用 SSH 读回来")) {
+                HStack(spacing: 6) {
+                    TextField(L("主机名"), text: $newHost)
+                        .textFieldStyle(.roundedBorder).frame(width: 120)
+                        .onSubmit(addHost)
+                    let suggestions = sshConfigHosts.filter { !hosts.contains($0) }
+                    if !suggestions.isEmpty {
+                        Menu {
+                            ForEach(suggestions, id: \.self) { h in Button(h) { newHost = h; addHost() } }
+                        } label: { Image(systemName: "chevron.down") }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                            .help(L("~/.ssh/config 里的主机"))
+                    }
+                    Button(L("添加"), action: addHost).disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+
+    var hosts: [String] { _ = remoteHosts; return LogReader.hosts }
+
+    func setHosts(_ list: [String]) {
+        remoteHosts = list.joined(separator: ",")
+        stats.reload()
+    }
+
+    func addHost() {
+        let h = newHost.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, !h.contains(","), !hosts.contains(h) else { return }
+        newHost = ""
+        setHosts(hosts + [h])
+    }
+
+    /// ~/.ssh/config 里写了名字的主机（不含 * 这种通配）
+    var sshConfigHosts: [String] {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/config")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").flatMap { line -> [String] in
+            let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "=" })
+            guard words.first?.lowercased() == "host" else { return [] }
+            return words.dropFirst().map(String.init).filter { !$0.contains("*") && !$0.contains("?") && !$0.hasPrefix("!") }
         }
     }
 
