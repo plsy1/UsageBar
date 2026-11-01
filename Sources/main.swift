@@ -36,7 +36,7 @@ struct ProviderUsage {
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
     var session: LimitWindow? { windows.first { !$0.weekly } }  // 5 小时（两家都排在第一个）
     var weekly: LimitWindow? { windows.first(where: \.weekly) }
-    /// 菜单栏上的百分比：session 5 小时 / weekly 本周 / both「5 小时/本周」；没有就 nil
+    /// 菜单栏上的百分比：session 5 小时 / weekly 本周 / both「11%/86%」；没有就 nil
     func menuValue(_ which: String, used: Bool) -> String? {
         let pct = { (w: LimitWindow) in "\(Int(w.shown(used).rounded()))%" }
         switch which {
@@ -44,7 +44,7 @@ struct ProviderUsage {
         case "weekly": return (weekly ?? session).map(pct)
         default:
             switch (session, weekly) {
-            case let (s?, w?): return "\(Int(s.shown(used).rounded()))/" + pct(w)
+            case let (s?, w?): return pct(s) + "/" + pct(w)
             case let (s?, nil): return pct(s)
             case let (nil, w?): return pct(w)
             default: return nil
