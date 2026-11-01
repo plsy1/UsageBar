@@ -265,6 +265,8 @@ enum I18n {
         "大数字": ("大きな数字", "Big Numbers"),
         "圆环": ("リング", "Rings"),
         "细条": ("細いバー", "Slim Bars"),
+        "走势图": ("推移グラフ", "Trend Chart"),
+        "占比条": ("割合バー", "Share Bar"),
         "已用": ("使用済み", "Used"),
         "按余量着色": ("残りで色分け", "Color by Level"),
         "剩不到 30% 变黄，不到 10% 变红": ("残り 30% 未満で黄、10% 未満で赤", "Amber under 30% left, red under 10%"),
@@ -1671,8 +1673,12 @@ struct CardForm: View {
                             Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
                             Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
                             Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                            Divider()
+                            Label(L("大数字"), systemImage: "textformat.size").tag("big")
+                            Label(L("走势图"), systemImage: "chart.bar.xaxis").tag("trend")
+                            Label(L("占比条"), systemImage: "chart.bar.doc.horizontal").tag("share")
                         }
-                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        .labelsHidden().fixedSize()
                     } else {
                         // 额度卡片的样式多，用菜单
                         Picker("", selection: $layout) {
@@ -1757,6 +1763,9 @@ struct CardPreview: View {
         case (false, _): base = CGSize(width: 476, height: 167)
         case (true, "vertical"): base = CGSize(width: 292, height: 330)
         case (true, "compact"): base = CGSize(width: 330, height: 93)
+        case (true, "big"): base = CGSize(width: 472, height: 170)
+        case (true, "trend"): base = CGSize(width: 252, height: 250)
+        case (true, "share"): base = CGSize(width: 252, height: 160)
         default: base = CGSize(width: 476, height: 180)
         }
         return CGSize(width: base.width * scale, height: base.height * scale)

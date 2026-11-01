@@ -2235,17 +2235,22 @@ struct StatsCardView: View {
     var s: CGFloat { CGFloat(scale) }
     var rangeTitle: String { (StatsRange(rawValue: range) ?? .today).title }
 
-    /// 「重置以来」每家按自己的周额度重置时间算
-    func summary(_ src: Source) -> Summary {
-        let from: Date
+    /// 统计范围的起点：「重置以来」每家按自己的周额度重置时间算
+    func start(_ src: Source) -> Date {
         switch range {
-        case "cycle": from = stats.cycleStarts[src] ?? StatsRange.week.presetStart
-        case "7d": from = StatsRange.week.presetStart
-        default: from = StatsRange.today.presetStart
+        case "cycle": return stats.cycleStarts[src] ?? StatsRange.week.presetStart
+        case "7d": return StatsRange.week.presetStart
+        default: return StatsRange.today.presetStart
         }
-        // all 按时间倒序，取到起点为止
-        return Summary(stats.all.prefix { $0.time >= from }.filter { $0.source == src })
     }
+
+    /// 范围里这一家的记录（all 按时间倒序，取到起点为止）
+    func records(_ src: Source) -> [UsageRecord] {
+        let from = start(src)
+        return stats.all.prefix { $0.time >= from }.filter { $0.source == src }
+    }
+
+    func summary(_ src: Source) -> Summary { Summary(records(src)) }
 
     var body: some View {
         let _ = language  // 切换语言时重绘
@@ -2264,6 +2269,12 @@ struct StatsCardView: View {
                         Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
                             ForEach(shown, id: \.self, content: compactRow)
                         }
+                    case "big":
+                        HStack(alignment: .top, spacing: 26 * s) { ForEach(shown, id: \.self, content: bigBlock) }
+                    case "trend":
+                        VStack(alignment: .leading, spacing: 16 * s) { ForEach(shown, id: \.self, content: trendBlock) }
+                    case "share":
+                        shareBlock(shown)
                     default:
                         HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.self, content: column) }
                     }
@@ -2325,6 +2336,117 @@ struct StatsCardView: View {
             }
         }
         .frame(width: (layout == "vertical" ? CardWindow.wideColumn : CardWindow.column) * s, alignment: .topLeading)
+    }
+
+    // MARK: 大数字、走势图、占比条
+
+    func header(_ src: Source) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6 * s) {
+            Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
+            if let p = model.results.first(where: { $0.name == src.rawValue })?.plan {
+                Text(p).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 大数字：成本、请求数、Tokens、命中率，两个一行
+    func bigBlock(_ src: Source) -> some View {
+        let sum = summary(src), cell: CGFloat = 96
+        let items = [(money(sum.cost), L("成本")), (sum.requests.formatted(), L("请求数")),
+                     (abbrev(sum.tokens), "Tokens"), (sum.hitRate.map(percent) ?? "—", L("缓存命中率"))]
+        return VStack(alignment: .leading, spacing: 10 * s) {
+            header(src)
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell * s), spacing: 16 * s, alignment: .leading), count: 2),
+                      alignment: .leading, spacing: 12 * s) {
+                ForEach(items, id: \.1) { value, title in
+                    VStack(alignment: .leading, spacing: 2 * s) {
+                        Text(value).font(.system(size: 20 * s, weight: .semibold, design: .rounded).monospacedDigit())
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                        Text(title).font(.system(size: 10 * s)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .frame(width: (cell * 2 + 16) * s, alignment: .topLeading)
+    }
+
+    /// 走势图的时段：「今天」按小时（到现在这一小时），其他按天
+    func trendBuckets(_ src: Source) -> [Double] {
+        let cal = Calendar.current, now = Date()
+        let hourly = range == "today"
+        let first = hourly ? cal.startOfDay(for: now) : cal.startOfDay(for: start(src))
+        let count = hourly ? cal.component(.hour, from: now) + 1
+                           : (cal.dateComponents([.day], from: first, to: cal.startOfDay(for: now)).day ?? 0) + 1
+        var out = Array(repeating: 0.0, count: max(1, count))
+        for r in records(src) where !r.failed {
+            let i = hourly ? cal.component(.hour, from: r.time)
+                           : cal.dateComponents([.day], from: first, to: cal.startOfDay(for: r.time)).day ?? -1
+            if out.indices.contains(i) { out[i] += r.cost ?? 0 }
+        }
+        return out
+    }
+
+    /// 走势图：成本，下面是每个时段的成本柱（最近的一根实一些）
+    func trendBlock(_ src: Source) -> some View {
+        let sum = summary(src), buckets = trendBuckets(src)
+        let top = max(buckets.max() ?? 0, 0.0001), width: CGFloat = 220, height: CGFloat = 38
+        let gap: CGFloat = buckets.count > 12 ? 2 : 4
+        let barWidth = max(2, (width - gap * CGFloat(buckets.count - 1)) / CGFloat(buckets.count))
+        return VStack(alignment: .leading, spacing: 8 * s) {
+            HStack(alignment: .firstTextBaseline) {
+                header(src)
+                Spacer(minLength: 12 * s)
+                Text(money(sum.cost)).font(.system(size: 17 * s, weight: .semibold, design: .rounded).monospacedDigit())
+            }
+            HStack(alignment: .bottom, spacing: gap * s) {
+                ForEach(Array(buckets.enumerated()), id: \.offset) { i, v in
+                    RoundedRectangle(cornerRadius: min(2, barWidth / 2) * s)
+                        .fill(Color.primary.opacity(i == buckets.count - 1 ? 0.95 : 0.55))
+                        .frame(width: barWidth * s, height: max(2, height * v / top) * s)
+                }
+            }
+            .frame(width: width * s, height: height * s, alignment: .bottomLeading)
+            Text("\(sum.requests.formatted()) \(L("请求数")) · \(abbrev(sum.tokens)) Tokens")
+                .font(.system(size: 10 * s)).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .frame(width: width * s, alignment: .topLeading)
+    }
+
+    /// 占比条：合计成本，一根按各家成本分段的条，下面每家一行（成本、占比）
+    func shareBlock(_ shown: [Source]) -> some View {
+        let costs = shown.map { ($0, summary($0).cost) }
+        let total = costs.reduce(0) { $0 + $1.1 }
+        let width: CGFloat = 220
+        let shade: (Int) -> Double = { [0.9, 0.45, 0.25][min($0, 2)] }
+        return VStack(alignment: .leading, spacing: 10 * s) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(L("合计")).font(.system(size: 13 * s, weight: .semibold))
+                Spacer(minLength: 12 * s)
+                Text(money(total)).font(.system(size: 20 * s, weight: .semibold, design: .rounded).monospacedDigit())
+            }
+            HStack(spacing: 2 * s) {
+                ForEach(Array(costs.enumerated()), id: \.offset) { i, c in
+                    Rectangle().fill(Color.primary.opacity(shade(i)))
+                        .frame(width: max(2, (width - 2 * CGFloat(costs.count - 1)) * (total > 0 ? c.1 / total : 1 / Double(costs.count))) * s)
+                }
+            }
+            .frame(width: width * s, height: 8 * s, alignment: .leading)
+            .clipShape(Capsule())
+            VStack(spacing: 5 * s) {
+                ForEach(Array(costs.enumerated()), id: \.offset) { i, c in
+                    HStack(spacing: 6 * s) {
+                        Circle().fill(Color.primary.opacity(shade(i))).frame(width: 7 * s, height: 7 * s)
+                        Text(c.0.rawValue).font(.system(size: 12 * s))
+                        Spacer()
+                        Text(money(c.1)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+                        Text(total > 0 ? "\(Int((c.1 / total * 100).rounded()))%" : "—")
+                            .font(.system(size: 11 * s).monospacedDigit()).foregroundStyle(.secondary)
+                            .frame(width: 34 * s, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .frame(width: width * s, alignment: .topLeading)
     }
 
     func row(_ title: String, _ value: String) -> some View {
