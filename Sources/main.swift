@@ -1217,8 +1217,13 @@ struct GeneralSettings: View {
     var hosts: [String] { _ = remoteHosts; return LogReader.hosts }
 
     func setHosts(_ list: [String]) {
+        let removed = hosts.filter { !list.contains($0) }
         remoteHosts = list.joined(separator: ",")
-        stats.reload()
+        // 移除的机器把它的记录也清掉，再重新读
+        DispatchQueue.global(qos: .userInitiated).async {
+            LogReader.removeHosts(removed)
+            DispatchQueue.main.async { stats.reload() }
+        }
     }
 
     func addHost() {

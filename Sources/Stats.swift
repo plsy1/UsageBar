@@ -942,17 +942,14 @@ extension LogReader {
         return n
     }
 
-    /// 删掉的远程机器：它的记录和读取进度都清掉
-    static func pruneRemote(keep: [String]) {
+    /// 在设置里移除的远程机器：它的记录和读取进度都清掉。
+    /// 只在移除时清：库里别的机器的记录（比如从备份导入的）不动
+    static func removeHosts(_ gone: [String]) {
+        guard !gone.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
         guard let d = db else { return }
         loadKnown(d)
-        var gone: [String] = []
-        d.run("SELECT DISTINCT host FROM records WHERE host IS NOT NULL") { r in
-            if let h = r.text(0), !keep.contains(h) { gone.append(h) }
-        }
-        let goneKeys = known?.keys.filter { k in k.hasPrefix(remotePrefix) && !keep.contains { k.hasPrefix(remotePrefix + $0 + "/") } } ?? []
-        guard !gone.isEmpty || !goneKeys.isEmpty else { return }
+        let goneKeys = known?.keys.filter { k in gone.contains { k.hasPrefix(remotePrefix + $0 + "/") } } ?? []
         d.transaction {
             for h in gone { d.run("DELETE FROM records WHERE host = ?", [h]) }
             for k in goneKeys { forget(d, k) }
@@ -1111,7 +1108,6 @@ final class StatsStore: ObservableObject {
             LogReader.syncLocal()
             // 远程机器上的 Codex 日志（SSH）
             let hosts = LogReader.hosts
-            LogReader.pruneRemote(keep: hosts)
             var status: [String: RemoteStatus] = [:]
             for host in hosts { status[host] = LogReader.readRemote(host) }
             LogReader.repriceIfNeeded()

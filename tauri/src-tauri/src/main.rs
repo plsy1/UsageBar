@@ -293,10 +293,17 @@ fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
         settings.card_y = cur.card_y;
         let changed = cur.claude_limit_source != settings.claude_limit_source || cur.codex_limit_source != settings.codex_limit_source;
         let hosts_changed = cur.remote_hosts != settings.remote_hosts;
+        let removed: Vec<String> = cur.remote_hosts.iter().filter(|h| !settings.remote_hosts.contains(h)).cloned().collect();
         *cur = settings.clone();
-        // 加了或删了远程机器：马上读一次（删掉的那台的记录也清掉）
+        // 加了或删了远程机器：先清掉删掉的那几台的记录，再马上读一次
         if hosts_changed && !changed {
-            tauri::async_runtime::spawn(refresh_stats(app.clone(), false));
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(store) = open_store(&app) {
+                    let _ = tauri::async_runtime::spawn_blocking(move || store.lock().unwrap().remove_hosts(&removed)).await;
+                }
+                refresh_stats(app, false).await;
+            });
         }
         changed
     };
@@ -533,14 +540,7 @@ async fn refresh_stats(app: AppHandle, force_prices: bool) {
     let hosts = st.settings.lock().unwrap().remote_hosts.clone();
     let s = store.clone();
     let p = pricing.clone();
-    let keep = hosts.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        let mut s = s.lock().unwrap();
-        s.sync_local(&p);
-        // 删掉的远程机器：它的记录和读取进度都清掉
-        s.prune_remote(&keep);
-    })
-    .await;
+    let _ = tauri::async_runtime::spawn_blocking(move || s.lock().unwrap().sync_local(&p)).await;
     // 远程机器上的 Codex 日志（SSH）：一台一台读，读完一台就更新设置页的状态
     st.remote_status.lock().unwrap().retain(|h, _| hosts.contains(h));
     for host in hosts {
@@ -710,6 +710,63 @@ async fn update_loop(app: AppHandle) {
         }
         tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
     }
+}
+
+// MARK: - 数据：数据库的位置、大小、备份、从备份导入
+
+#[derive(Serialize)]
+struct DataInfo {
+    path: String,
+    size: u64,
+}
+
+#[tauri::command]
+fn data_info(app: AppHandle) -> Option<DataInfo> {
+    let store = open_store(&app)?;
+    let s = store.lock().unwrap();
+    Some(DataInfo { path: s.path().to_string_lossy().into_owned(), size: s.size() })
+}
+
+/// 在资源管理器 / 文件管理器里显示数据库文件
+#[tauri::command]
+fn reveal_db(app: AppHandle) {
+    let Some(store) = open_store(&app) else { return };
+    let path = store.lock().unwrap().path().to_path_buf();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
+    }
+    #[cfg(not(windows))]
+    if let Some(dir) = path.parent() {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
+}
+
+/// 备份到用户选的文件：返回存到了哪里；取消时为空，失败时是 "failed"
+#[tauri::command]
+async fn backup_db(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let store = open_store(&app)?;
+    let name = format!("UsageBar-backup-{}.sqlite", chrono::Local::now().format("%Y-%m-%d"));
+    let target = app.dialog().file().set_file_name(name).add_filter("SQLite", &["sqlite"]).blocking_save_file()?.into_path().ok()?;
+    let t = target.clone();
+    let ok = tauri::async_runtime::spawn_blocking(move || store.lock().unwrap().backup_to(&t)).await.unwrap_or(false);
+    Some(if ok { target.to_string_lossy().into_owned() } else { "failed".into() })
+}
+
+/// 从用户选的备份导入：返回新增了多少条；取消时为空，不是 UsageBar 的库时是 -1
+#[tauri::command]
+async fn import_db(app: AppHandle) -> Option<i64> {
+    use tauri_plugin_dialog::DialogExt;
+    let store = open_store(&app)?;
+    let source = app.dialog().file().blocking_pick_file()?.into_path().ok()?;
+    let added = tauri::async_runtime::spawn_blocking(move || store.lock().unwrap().import_from(&source)).await.ok().flatten();
+    if added.is_some() {
+        // 内存里的最近几天、统计页、周期都按新库重新算
+        tauri::async_runtime::spawn(refresh_stats(app.clone(), false));
+    }
+    Some(added.unwrap_or(-1))
 }
 
 /// 设置页添加远程机器时给的选择
@@ -1004,12 +1061,14 @@ fn main() {
         // 只跑一份：再启动一次（比如从开始菜单再点）就把已经在跑的那个窗口调出来
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
                                                  card_drag_start, card_drag_move, card_drag_end, card_content,
                                                  stats_query, refresh_stats_now, ssh_config_hosts, check_update_now,
-                                                 install_update, open_github, refresh_prices])
+                                                 install_update, open_github, refresh_prices, data_info, reveal_db,
+                                                 backup_db, import_db])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {

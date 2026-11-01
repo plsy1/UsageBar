@@ -10,6 +10,25 @@ const T = {
   nav_card: ['卡片', 'カード', 'Cards'],
   nav_general: ['通用', '一般', 'General'],
   nav_tray: ['托盘', 'トレイ', 'Tray'],
+  nav_data: ['数据', 'データ', 'Data'],
+  data_sub: ['用量记录存在本机的数据库里，可以备份，也可以从备份导入', '使用記録はこの PC のデータベースに保存されます。バックアップやバックアップからの読み込みができます', 'Usage records live in a local database you can back up and import from a backup'],
+  g_database: ['数据库', 'データベース', 'Database'],
+  database_note: ['解析好的用量记录和每周额度的周期都存在这里，Claude Code 清理旧日志后统计也还在', '解析済みの使用記録と週間上限の期間はここに保存され、Claude Code が古いログを削除しても統計は残ります', "Parsed usage records and weekly limit cycles are kept here, so statistics survive Claude Code's log cleanup"],
+  location: ['位置', '場所', 'Location'],
+  show_file: ['显示文件', 'ファイルを表示', 'Show File'],
+  db_size: ['大小', 'サイズ', 'Size'],
+  g_backup: ['备份', 'バックアップ', 'Backup'],
+  backup_note: ['备份是一个完整的数据库文件。导入会把备份里的记录合并进来，现有的不会丢；macOS 版的备份也能导入', 'バックアップはデータベース全体のファイルです。読み込むとバックアップの記録が統合され、今ある記録は消えません。macOS 版のバックアップも読み込めます', 'A backup is a complete copy of the database. Importing merges its records in without losing the ones you have; backups from macOS work too'],
+  backup_to: ['备份到文件', 'ファイルにバックアップ', 'Back Up to a File'],
+  backup_hint: ['保存一份数据库的副本', 'データベースのコピーを保存します', 'Saves a copy of the database'],
+  backup_btn: ['备份…', 'バックアップ…', 'Back Up…'],
+  import_from: ['从备份导入', 'バックアップから読み込む', 'Import a Backup'],
+  import_hint: ['合并备份里的记录，比如换了电脑或重装之后', 'バックアップの記録を統合します（PC を替えたときや再インストール後など）', 'Merges its records in, e.g. after moving to a new computer or reinstalling'],
+  import_btn: ['导入…', '読み込む…', 'Import…'],
+  backed_up: ['已备份到 %s', '%s にバックアップしました', 'Backed up to %s'],
+  backup_failed: ['备份失败', 'バックアップに失敗しました', 'Backup failed'],
+  imported: ['已导入，新增 %s 条请求', '読み込みました（%s 件追加）', 'Imported: %s new requests'],
+  not_usagebar_db: ['这不是 UsageBar 的数据库', 'UsageBar のデータベースではありません', "That isn't a UsageBar database"],
   tray_sub: ['托盘上显示的文字，右边是点开后的面板', 'トレイに表示する文字。右側はクリックで開くパネル', 'What the tray shows; on the right, the panel it opens'],
   g_basic: ['基本', '基本', 'Basics'],
   g_show: ['显示内容', '表示内容', 'Contents'],
@@ -541,6 +560,38 @@ function settingsPage() {
   return `${pageHeader('settings', t('nav_general'), t('settings_sub'))}${columns(basic + notify + usage, refresh + sources)}`;
 }
 
+// 数据页：数据库的位置、大小、记录数，备份和从备份导入
+let dataInfo = null;       // { path, size }：进入数据页时向 Rust 要
+let dataMessage = '';      // 备份 / 导入的结果
+let dataBusy = false;
+const fileSize = (n) => (n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + ' GB' : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
+const loadDataInfo = async () => { dataInfo = await invoke('data_info').catch(() => null); if (page === 'data') render(); };
+
+function dataPage() {
+  if (!dataInfo) loadDataInfo();
+  const o = state.overview;
+  const db = group(t('g_database'), `
+      <div class="field"><span>${t('location')}<div class="hint path-hint">${esc(dataInfo?.path ?? '')}</div></span><button class="btn" id="reveal-db">${t('show_file')}</button></div>
+      <div class="field"><span>${t('db_size')}</span><span class="sub">${dataInfo ? fileSize(dataInfo.size) : '—'}</span></div>
+      <div class="field"><span>${t('session_logs')}</span><span class="sub">${o?.earliest
+        ? t('records_since', o.count.toLocaleString(), new Date(o.earliest).toLocaleDateString()) : t('reading_logs')}</span></div>`, t('database_note'));
+  const backup = group(t('g_backup'), `
+      <div class="field"><span>${t('backup_to')}<div class="hint">${t('backup_hint')}</div></span><button class="btn" id="backup-db" ${dataBusy ? 'disabled' : ''}>${t('backup_btn')}</button></div>
+      <div class="field"><span>${t('import_from')}<div class="hint">${t('import_hint')}</div></span><button class="btn" id="import-db" ${dataBusy ? 'disabled' : ''}>${t('import_btn')}</button></div>`,
+    dataMessage || t('backup_note'));
+  return `${pageHeader('data', t('nav_data'), t('data_sub'))}${columns(db, backup)}`;
+}
+
+async function runData(cmd) {
+  dataBusy = true; render();
+  const r = await invoke(cmd).catch(() => null);
+  dataBusy = false;
+  if (cmd === 'backup_db' && r != null) dataMessage = r === 'failed' ? t('backup_failed') : t('backed_up', r);
+  if (cmd === 'import_db' && r != null) dataMessage = r < 0 ? t('not_usagebar_db') : t('imported', r.toLocaleString());
+  await loadDataInfo();
+  render();
+}
+
 // 托盘页：左边设置，右边是托盘文字和点开后面板的预览
 function trayText() {
   const s = state.settings, used = s.display === 'used';
@@ -612,6 +663,7 @@ const ICONS = {
   stats: '<path d="M4 4v16h16"/><path d="M8 16v-5M12 16V7M16 16v-8"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   tray: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9h18"/>',
+  data: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>',
   card: '<rect x="8" y="9" width="13" height="10" rx="2"/><path d="M16 9V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h3"/>',
   about: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
 };
@@ -702,7 +754,7 @@ function render() {
     reportCardContent(s[k + 'show'] && ready && count ? `${s[k + 'layout']}|${s[k + 'scale']}|${count}` : '');
     return;
   }
-  const pages = { stats: statsPage, settings: settingsPage, tray: trayPage, card: cardSettingsPage, about: aboutPage };
+  const pages = { stats: statsPage, settings: settingsPage, tray: trayPage, card: cardSettingsPage, data: dataPage, about: aboutPage };
   const main = document.getElementById('content');
   const focused = document.activeElement?.id === 'new-host';
   main.classList.toggle('wide', page === 'stats');
@@ -725,12 +777,15 @@ async function save(patch) {
 // 事件委托：重绘后也能点
 document.addEventListener('click', (e) => {
   const nav = e.target.closest('.nav');
-  if (nav) { page = nav.dataset.page; render(); return; }
+  if (nav) { page = nav.dataset.page; if (page === 'data') { dataInfo = null; dataMessage = ''; } render(); return; }
   if (e.target.id === 'refresh') { invoke('refresh_now'); return; }
   if (e.target.id === 'open-main') { invoke('open_main'); return; }
   if (e.target.id === 'add-host') { addHost(); return; }
   if (e.target.id === 'check-update') { invoke('check_update_now'); return; }
   if (e.target.id === 'update-prices') { invoke('refresh_prices'); return; }
+  if (e.target.id === 'reveal-db') { invoke('reveal_db'); return; }
+  if (e.target.id === 'backup-db') { runData('backup_db'); return; }
+  if (e.target.id === 'import-db') { runData('import_db'); return; }
   if (e.target.id === 'install-update') { invoke('install_update'); return; }
   const gh = e.target.closest('[data-github]');
   if (gh) { invoke('open_github', { path: gh.dataset.github }); return; }

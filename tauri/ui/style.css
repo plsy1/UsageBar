@@ -367,3 +367,4 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .cycle-tag { font-size: 11px; color: var(--secondary); margin-left: 6px; }
 .cycle-tag.on { color: var(--accent); }
 .table-foot.cycle-note { display: block; font-size: 12px; line-height: 1.5; padding: 10px 18px; }
+.path-hint { word-break: break-all; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }

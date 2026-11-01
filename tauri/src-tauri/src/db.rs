@@ -33,6 +33,8 @@ const COLUMNS: &str = "id, time, source, model, host, project, input, output, ca
 
 pub struct Store {
     conn: Connection,
+    /// 库文件的位置（设置页「数据」显示、备份用）
+    path: std::path::PathBuf,
     /// 每个文件上次解析时的修改时间（纳秒）和大小：没变的文件不用去库里取进度
     known: Option<HashMap<String, (i64, u64)>>,
 }
@@ -106,7 +108,8 @@ fn record(r: &Row) -> rusqlite::Result<UsageRecord> {
 impl Store {
     pub fn open(dir: &Path) -> Option<Store> {
         fs::create_dir_all(dir).ok()?;
-        let conn = Connection::open(dir.join("usage.sqlite")).ok()?;
+        let path = dir.join("usage.sqlite");
+        let conn = Connection::open(&path).ok()?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -120,7 +123,7 @@ impl Store {
                PRIMARY KEY(source, resets_at));",
         )
         .ok()?;
-        let store = Store { conn, known: None };
+        let store = Store { conn, path, known: None };
         if store.meta("parser").as_deref() != Some(PARSER_VERSION) {
             let _ = store.conn.execute("DELETE FROM files", []);
             store.set_meta("parser", PARSER_VERSION);
@@ -303,20 +306,19 @@ impl Store {
         });
     }
 
-    /// 删掉的远程机器：它的记录和读取进度都清掉
-    pub fn prune_remote(&mut self, keep: &[String]) {
-        let o = self.overview();
-        let gone: Vec<String> = o.hosts.into_iter().filter(|h| !keep.contains(h)).collect();
+    /// 在设置里移除的远程机器：它的记录和读取进度都清掉。
+    /// 只在移除时清：库里别的机器的记录（比如从备份导入的）不动
+    pub fn remove_hosts(&mut self, gone: &[String]) {
+        if gone.is_empty() {
+            return;
+        }
         let gone_keys: Vec<String> = self
             .known_keys()
             .into_iter()
-            .filter(|k| k.starts_with(REMOTE_PREFIX) && !keep.iter().any(|h| k.starts_with(&format!("{REMOTE_PREFIX}{h}/"))))
+            .filter(|k| gone.iter().any(|h| k.starts_with(&format!("{REMOTE_PREFIX}{h}/"))))
             .collect();
-        if gone.is_empty() && gone_keys.is_empty() {
-            return;
-        }
         self.transaction(|s| {
-            for h in &gone {
+            for h in gone {
                 let _ = s.conn.execute("DELETE FROM records WHERE host = ?1", [h]);
             }
             for k in &gone_keys {
@@ -329,6 +331,72 @@ impl Store {
         self.conn
             .query_row("SELECT COUNT(*) FROM records WHERE host = ?1 AND status = 200", [host], |r| r.get(0))
             .unwrap_or(0)
+    }
+
+    // MARK: 数据库文件：位置、大小、备份、从备份导入
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// 库文件加上 -wal、-shm 一共多大（字节）
+    pub fn size(&self) -> u64 {
+        ["", "-wal", "-shm"]
+            .iter()
+            .filter_map(|ext| fs::metadata(format!("{}{ext}", self.path.display())).ok())
+            .map(|m| m.len())
+            .sum()
+    }
+
+    /// 存一份完整的副本（VACUUM INTO：写着也能拿到一致的快照，顺便压紧）。目标文件已存在时先删掉
+    pub fn backup_to(&self, target: &Path) -> bool {
+        let _ = fs::remove_file(target);
+        self.conn.execute("VACUUM INTO ?1", [target.to_string_lossy()]).is_ok() && target.exists()
+    }
+
+    /// 从备份导入：备份里的记录合并进来（按 id，和读日志时一样留输出多的那份），已有的不会丢；周期也合并。
+    /// 解析进度（files）不导入：那是备份那台机器上的日志位置。
+    /// macOS 版的库里时间是秒，这边是毫秒：看数值大小换算。返回新增了多少条，不是 UsageBar 的库时为空
+    pub fn import_from(&mut self, source: &Path) -> Option<i64> {
+        self.conn.execute("ATTACH DATABASE ?1 AS bak", [source.to_string_lossy()]).ok()?;
+        let result = (|| {
+            let tables: Vec<String> = {
+                let mut st = self.conn.prepare("SELECT name FROM bak.sqlite_master WHERE type = 'table'").ok()?;
+                let rows = st.query_map([], |r| r.get::<_, String>(0)).ok()?;
+                rows.flatten().collect()
+            };
+            if !tables.iter().any(|t| t == "records") {
+                return None;
+            }
+            let max_time: f64 = self.conn.query_row("SELECT COALESCE(MAX(time), 0) FROM bak.records", [], |r| r.get(0)).ok()?;
+            let scale = if max_time < 1e11 { 1000.0 } else { 1.0 };
+            let count = |s: &Store| s.conn.query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+            let before = count(self);
+            self.transaction(|s| {
+                let _ = s.conn.execute(
+                    "INSERT INTO records(id, file, time, source, model, host, project, input, output, cache_read, cache_write,
+                                         cache_write_1h, duration, first_token, status, cost)
+                     SELECT id, file, CAST(ROUND(time * ?1) AS INTEGER), source, model, host, project, input, output, cache_read,
+                            cache_write, cache_write_1h, duration, first_token, status, cost FROM bak.records WHERE true
+                     ON CONFLICT(id) DO UPDATE SET file = excluded.file, time = excluded.time, source = excluded.source,
+                       model = excluded.model, host = excluded.host, project = excluded.project, input = excluded.input,
+                       output = excluded.output, cache_read = excluded.cache_read, cache_write = excluded.cache_write,
+                       cache_write_1h = excluded.cache_write_1h, duration = excluded.duration, first_token = excluded.first_token,
+                       status = excluded.status, cost = excluded.cost
+                     WHERE excluded.output > records.output",
+                    [scale],
+                );
+                if tables.iter().any(|t| t == "cycles") {
+                    let _ = s.conn.execute_batch(
+                        "INSERT INTO cycles(source, resets_at, used) SELECT source, resets_at, used FROM bak.cycles WHERE true
+                         ON CONFLICT(source, resets_at) DO UPDATE SET used = max(COALESCE(used, 0), COALESCE(excluded.used, 0));",
+                    );
+                }
+            });
+            Some(count(self) - before)
+        })();
+        let _ = self.conn.execute_batch("DETACH DATABASE bak;");
+        result
     }
 
     // MARK: 每周额度的周期
