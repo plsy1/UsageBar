@@ -836,6 +836,7 @@ struct StatsView: View {
     @State var showRange = false
     @State var showMachines = false
     @State var hoverDate: Date?  // 图表上鼠标所在的时段
+    @State var heatHover: Date?  // 热力图上鼠标所在的那天
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
     /// 请求明细里隐藏的列（LogColumn 的 rawValue，逗号分隔）
@@ -971,6 +972,7 @@ struct StatsView: View {
             }
             codexAccountPanel(rows)
             chart(rows)
+            heatmap()
             tables(rows)
             Text(L("成本按 models.dev 的 API 价格估算，统计本机和已添加的远程机器上的会话记录"))
                 .font(.caption).foregroundStyle(.tertiary)
@@ -1131,6 +1133,103 @@ struct StatsView: View {
             t = cal.date(byAdding: hourly ? .hour : .day, value: 1, to: t)!
         }
         return out
+    }
+
+    /// 每天的用量（热力图用）：不看时间范围，只按上面选的应用和机器
+    func dailyTotals() -> [Date: Bucket] {
+        let cal = Calendar.current, hidden = hiddenMachineSet, srcs = Set(sources)
+        var out: [Date: Bucket] = [:]
+        for r in store.all where !r.failed && srcs.contains(r.source) && (r.source != .codex || !hidden.contains(r.host ?? "")) {
+            let day = cal.startOfDay(for: r.time)
+            let b = out[day] ?? Bucket(date: day, tokens: 0)
+            out[day] = Bucket(date: day, tokens: b.tokens + r.tokens, requests: b.requests + 1, cost: b.cost + (r.cost ?? 0))
+        }
+        return out
+    }
+
+    /// 像 GitHub 那样的每日格子：一列一周，最近一年（窗口窄时少几周）；颜色深浅分五档
+    func heatmap() -> some View {
+        let days = dailyTotals()
+        // 有用量的日子按四分位分档，少数几天特别多也不会把其他天都压成最浅
+        let sorted = days.values.map(\.tokens).filter { $0 > 0 }.sorted()
+        let cuts = [0.25, 0.5, 0.75].map { q in sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * q))] }
+        let level = { (n: Int) -> Int in n <= 0 ? 0 : 1 + cuts.filter { n > $0 }.count }
+        let c = ChartColor.color(chartColor)
+        let shade = { (l: Int) -> Color in l == 0 ? Color.primary.opacity(0.07) : c.opacity([0, 0.3, 0.5, 0.72, 1][l]) }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let hovered = heatHover.flatMap { days[$0] ?? Bucket(date: $0, tokens: 0) }
+        let monthF = DateFormatter(), dayF = DateFormatter()
+        monthF.locale = locale; monthF.setLocalizedDateFormatFromTemplate("MMM")
+        dayF.dateFormat = "yyyy/M/d"
+        let labelWidth: CGFloat = 30, gap: CGFloat = 3
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(L("每日用量")).font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+                if let h = hovered {
+                    Text(dayF.string(from: h.date) + " · " + abbrev(h.tokens) + " tokens · " + L("%d 次请求", h.requests) + " · " + money(h.cost))
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 4) {
+                        Text(L("少")).font(.caption).foregroundStyle(.secondary)
+                        ForEach(0..<5) { RoundedRectangle(cornerRadius: 2).fill(shade($0)).frame(width: 10, height: 10) }
+                        Text(L("多")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            GeometryReader { g in
+                // 格子边长随宽度变，最大 16；放不下一年就少几周
+                let weeks = max(8, min(53, Int((g.size.width - labelWidth) / (10 + gap))))
+                let cell = min(16, (g.size.width - labelWidth) / CGFloat(weeks) - gap)
+                let thisWeek = cal.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+                let start = cal.date(byAdding: .weekOfYear, value: -(weeks - 1), to: thisWeek) ?? today
+                let date = { (w: Int, d: Int) in cal.date(byAdding: .day, value: w * 7 + d, to: start) ?? start }
+                VStack(alignment: .leading, spacing: 4) {
+                    // 月份写在这个月第一次出现的那一列上面
+                    ZStack(alignment: .topLeading) {
+                        ForEach(0..<weeks, id: \.self) { w in
+                            let month = { (w: Int) in cal.component(.month, from: date(w, 0)) }
+                            // 第一列只在这个月还要再占两列以上时才写，否则和下一列的月份挤在一起
+                            if w == 0 ? month(0) == month(2) : month(w) != month(w - 1) {
+                                Text(monthF.string(from: date(w, 0)))
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize()
+                                    .offset(x: labelWidth + CGFloat(w) * (cell + gap))
+                            }
+                        }
+                    }
+                    .frame(height: 14, alignment: .topLeading)
+                    HStack(alignment: .top, spacing: gap) {
+                        // 星期：只写第 2、4、6 行，和 GitHub 一样
+                        VStack(alignment: .leading, spacing: gap) {
+                            ForEach(0..<7, id: \.self) { d in
+                                Text(d % 2 == 1 ? cal.shortWeekdaySymbols[(cal.firstWeekday - 1 + d) % 7] : "")
+                                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                                    .frame(width: labelWidth - gap, height: cell, alignment: .leading)
+                            }
+                        }
+                        ForEach(0..<weeks, id: \.self) { w in
+                            VStack(spacing: gap) {
+                                ForEach(0..<7, id: \.self) { d in
+                                    let day = date(w, d)
+                                    RoundedRectangle(cornerRadius: 2.5)
+                                        .fill(day > today ? Color.clear : shade(level(days[day]?.tokens ?? 0)))
+                                        .overlay(RoundedRectangle(cornerRadius: 2.5)
+                                            .strokeBorder(Color.primary.opacity(heatHover == day ? 0.6 : 0), lineWidth: 1))
+                                        .frame(width: cell, height: cell)
+                                        .onHover { inside in
+                                            if inside, day <= today { heatHover = day } else if heatHover == day { heatHover = nil }
+                                        }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(height: 14 + 4 + 7 * 16 + 6 * gap)
+        }
+        .padding(16)
+        .modifier(Panel())
     }
 
     func chart(_ rows: [UsageRecord]) -> some View {
