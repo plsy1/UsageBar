@@ -94,6 +94,20 @@ const T = {
   n_reset_hint: ['提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时', '予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき', 'When reset early (an across-the-board reset or a reset you used), or after over half had been used'],
   n_credits: ['Codex 额度重置次数', 'Codex の上限リセット', 'Codex Resets'],
   n_credits_hint: ['新获得时，以及到期前 24 小时', '新たにもらったとき、期限の 24 時間前', 'When you get one, and 24 hours before one expires'],
+  remote: ['远程机器', 'リモートマシン', 'Remote Machines'],
+  remote_hint: ['Codex 跑在远程时日志只在那边，用 SSH 读回来', 'Codex をリモートで動かすとログはそちらにだけ残るので、SSH で読み込みます', 'Codex keeps its logs on the machine it runs on; read them over SSH'],
+  add_machine: ['添加机器', 'マシンを追加', 'Add Machine'],
+  host: ['主机名', 'ホスト名', 'Host'],
+  add: ['添加', '追加', 'Add'],
+  remove: ['移除', '削除', 'Remove'],
+  ssh_config_hosts: ['~/.ssh/config 里的主机', '~/.ssh/config のホスト', 'Hosts in ~/.ssh/config'],
+  ssh_files: ['SSH · %s 个日志文件', 'SSH · ログ %s 件', 'SSH · %s log files'],
+  ssh_reading: ['SSH · 读取中…', 'SSH · 読み込み中…', 'SSH · Reading…'],
+  n_req: ['%s 条请求', '%s リクエスト', '%s requests'],
+  timeout: ['超时', 'タイムアウト', 'Timed out'],
+  unreachable: ['连不上', '接続できません', "Can't connect"],
+  no_ssh: ['找不到 ssh 命令：请安装 OpenSSH 客户端', 'ssh コマンドが見つかりません：OpenSSH クライアントをインストールしてください', 'ssh not found: install the OpenSSH client'],
+  remote_note: ['需要能免密登录（密钥或 ssh-agent）。只读远程的 Codex 会话日志，在远程先过滤再传回来', 'パスワードなしでログインできる必要があります（鍵または ssh-agent）。リモートの Codex セッションログを読むだけで、リモート側で絞り込んでから転送します', 'Needs passwordless login (a key or ssh-agent). Only reads the Codex session logs on that machine, filtered there before being sent back'],
   g_sources: ['数据来源', 'データソース', 'Data Sources'],
   src_api: ['官方接口', '公式 API', 'Official API'],
   src_local: ['仅本地', 'ローカルのみ', 'Local Only'],
@@ -128,6 +142,9 @@ const ANY_CARD = CARD || STATS_CARD;
 // 拖卡片时画对齐线的透明窗口
 const GUIDES = location.hash === '#guides';
 let autostart = false;
+// ~/.ssh/config 里的主机（添加远程机器时给个选择），和输入框里还没添加的字（状态更新重绘时保留）
+let sshHosts = [];
+let newHostDraft = '';
 
 const L = () => ({ zh: 0, ja: 1, en: 2 })[state?.lang] ?? 2;
 const t = (key, ...args) => {
@@ -423,7 +440,34 @@ function settingsPage() {
     </div>
     <div class="group-title">${t('g_sources')}</div>
     <div class="panel group">${['Claude', 'Codex'].map(sourceRow).join('')}</div>
-    <div class="footnote">${t('sources_note')}</div>`;
+    <div class="footnote">${t('sources_note')}</div>
+    <div class="group-title">${t('remote')}</div>
+    <div class="panel group">
+      ${s.remote_hosts.map(hostRow).join('')}
+      <div class="field"><span>${t('add_machine')}<div class="hint">${t('remote_hint')}</div></span>
+        <span class="host-add">
+          <input id="new-host" type="text" placeholder="${t('host')}" spellcheck="false" autocomplete="off">
+          ${sshHosts.filter((h) => !s.remote_hosts.includes(h)).length ? `<select id="ssh-pick" title="${esc(t('ssh_config_hosts'))}"><option value="">~/.ssh/config</option>${sshHosts.filter((h) => !s.remote_hosts.includes(h)).map((h) => `<option>${esc(h)}</option>`).join('')}</select>` : ''}
+          <button class="btn" id="add-host">${t('add')}</button>
+        </span></div>
+    </div>
+    <div class="footnote">${t('remote_note')}</div>`;
+}
+
+// 一台远程机器：左边是 SSH 和日志文件数（连不上时是红色的原因），右边是请求数和移除
+function hostRow(host) {
+  const st = state.remote_status?.[host];
+  const detail = !st ? t('ssh_reading') : st.error ? (T[st.error] ? t(st.error) : st.error) : t('ssh_files', st.files ?? 0);
+  return `<div class="field"><span>${esc(host)}<div class="hint ${st?.error ? 'error-text' : ''}">${esc(detail)}</div></span>
+    <span class="host-right"><span class="sub">${st ? t('n_req', st.requests.toLocaleString()) : '—'}</span>
+    <button class="btn plain" data-remove-host="${esc(host)}" title="${esc(t('remove'))}">✕</button></span></div>`;
+}
+
+function addHost(h) {
+  h = (h ?? document.getElementById('new-host')?.value ?? '').trim();
+  if (!h || h.includes(',') || /\s/.test(h) || state.settings.remote_hosts.includes(h)) return;
+  newHostDraft = '';
+  save({ remote_hosts: [...state.settings.remote_hosts, h] });
 }
 
 // 左边是这次从哪查到了什么（套餐、本地数据的时间），出错时是原因；右边选额度来源
@@ -457,8 +501,15 @@ function render() {
   }
   const pages = { stats: statsPage, usage: usagePage, card: cardSettingsPage, settings: settingsPage };
   const main = document.getElementById('content');
+  const focused = document.activeElement?.id === 'new-host';
   main.classList.toggle('wide', page === 'stats');
   main.innerHTML = pages[page]();
+  // 远程机器读完一台就会重绘：输入框里打到一半的字和焦点留着
+  const input = document.getElementById('new-host');
+  if (input) {
+    input.value = newHostDraft;
+    if (focused) input.focus();
+  }
   if (page === 'stats') afterStatsRender();
 }
 
@@ -473,16 +524,21 @@ document.addEventListener('click', (e) => {
   if (nav) { page = nav.dataset.page; render(); return; }
   if (e.target.id === 'refresh') { invoke('refresh_now'); return; }
   if (e.target.id === 'open-main') { invoke('open_main'); return; }
+  if (e.target.id === 'add-host') { addHost(); return; }
+  const rm = e.target.closest('[data-remove-host]');
+  if (rm) { save({ remote_hosts: state.settings.remote_hosts.filter((h) => h !== rm.dataset.removeHost) }); return; }
   const tab = e.target.closest('[data-cardtab]');
   if (tab) { cardTab = tab.dataset.cardtab; render(); return; }
   const b = e.target.closest('[data-set]');
   if (b) save({ [b.dataset.set]: b.dataset.val });
 });
+document.addEventListener('keydown', (e) => { if (e.target.id === 'new-host' && e.key === 'Enter') addHost(); });
 document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'language') save({ language: el.value });
   else if (el.id === 'refresh_minutes') save({ refresh_minutes: Number(el.value) });
   else if (el.id === 'notify_threshold') save({ notify_threshold: Number(el.value) });
+  else if (el.id === 'ssh-pick') { if (el.value) addHost(el.value); }
   else if (['show_claude', 'show_codex', 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
             'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset', 'notify_credits'].includes(el.id)) save({ [el.id]: el.checked });
   else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
@@ -495,6 +551,7 @@ document.addEventListener('change', async (e) => {
 
 document.addEventListener('input', (e) => {
   const el = e.target;
+  if (el.id === 'new-host') { newHostDraft = el.value; return; }
   if (el.dataset.num) el.nextElementSibling.textContent = `${Math.round(el.value * 100)}%`;
 });
 
@@ -544,6 +601,7 @@ function drawGuides([x, y]) {
   if (ANY_CARD) { document.documentElement.classList.add('card'); document.body.classList.add('card'); }
   document.getElementById('version').textContent = await window.__TAURI__.app.getVersion().catch(() => '');
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
+  if (!FLYOUT && !ANY_CARD) sshHosts = await invoke('ssh_config_hosts').catch(() => []);
   state = await invoke('get_state');
   render();
   await listen('state', (e) => {

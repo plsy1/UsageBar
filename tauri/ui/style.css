@@ -294,3 +294,7 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .account { padding: 14px 4px; margin-bottom: 14px; }
 .account .panel-head { padding: 0 18px; }
 .account .account-note { padding: 0 18px; margin-top: 10px; font-size: 12px; line-height: 1.5; }
+.host-add, .host-right { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.host-add input { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; width: 140px; }
+.host-add select { max-width: 130px; }
+.host-right .btn.plain { color: var(--secondary); padding: 4px 6px; }

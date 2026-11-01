@@ -119,10 +119,10 @@ fn failed(name: &str, key: &str, detail: Option<i64>) -> Provider {
     Provider { name: name.into(), error: Some(key.into()), detail, ..Default::default() }
 }
 
-/// claude_local / codex_local：额度来源选了「仅本地」
-pub async fn fetch_all(client: &reqwest::Client, claude_local: bool, codex_local: bool) -> Vec<Provider> {
+/// claude_local / codex_local：额度来源选了「仅本地」；remote_limits：远程机器的日志里最新的一份 Codex 额度（和它的时间）
+pub async fn fetch_all(client: &reqwest::Client, claude_local: bool, codex_local: bool, remote_limits: Option<(Value, i64)>) -> Vec<Provider> {
     let c = async { if claude_local { claude_local_limits() } else { claude(client).await } };
-    let (c, x) = tokio::join!(c, codex(client, codex_local));
+    let (c, x) = tokio::join!(c, codex(client, codex_local, remote_limits));
     vec![c, x]
 }
 
@@ -291,7 +291,7 @@ fn codex_window(seconds: f64, used: f64, resets_at: Option<i64>) -> LimitWindow 
     LimitWindow::new(kind, amount, used, resets_at, seconds)
 }
 
-async fn codex(client: &reqwest::Client, local: bool) -> Provider {
+async fn codex(client: &reqwest::Client, local: bool, remote_limits: Option<(Value, i64)>) -> Provider {
     let mut p = Provider { name: "Codex".into(), ..Default::default() };
     let auth = if local {
         None
@@ -356,8 +356,12 @@ async fn codex(client: &reqwest::Client, local: bool) -> Provider {
             Err(_) => p.note = Some("codex_cache_http".into()),
         }
     }
-    // 「仅本地」，或接口查不到：最近一次会话日志里的 rate_limits
-    if let Some((rl, mtime)) = latest_local_rate_limits() {
+    // 「仅本地」，或接口查不到：会话日志里最新的一份 rate_limits（本机和远程机器的都算）
+    let logged = match (latest_local_rate_limits(), remote_limits) {
+        (Some(a), Some(b)) => Some(if a.1 >= b.1 { a } else { b }),
+        (a, b) => a.or(b),
+    };
+    if let Some((rl, mtime)) = logged {
         if p.plan.is_none() {
             p.plan = plan_name(rl["plan_type"].as_str());
         }

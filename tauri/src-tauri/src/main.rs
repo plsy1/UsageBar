@@ -9,6 +9,7 @@ mod cards;
 mod db;
 mod i18n;
 mod notify;
+mod remote;
 mod stats;
 mod statsview;
 mod usage;
@@ -38,6 +39,8 @@ struct Settings {
     notify_run_out: bool,
     notify_reset: bool,
     notify_credits: bool,
+    /// 读 Codex 日志的远程机器（~/.ssh/config 里的名字或 user@host）
+    remote_hosts: Vec<String>,
     // 桌面卡片（跟 macOS 版的选项一一对应）
     card_show: bool,
     card_on_top: bool,       // 保持在最前；关掉时贴在桌面层（被其他窗口盖住）
@@ -82,6 +85,7 @@ impl Default for Settings {
             notify_run_out: false,
             notify_reset: false,
             notify_credits: false,
+            remote_hosts: vec![],
             card_show: true,
             card_on_top: false,
             card_layout: "horizontal".into(),
@@ -132,6 +136,9 @@ struct AppState {
     stats_loading: Mutex<bool>,
     /// Codex 账号统计（服务端）和上次查的时间：一小时最多查一次
     codex_account: Mutex<Option<(Arc<usage::CodexAccount>, Instant)>>,
+    /// 各台远程机器上次读取的结果，和远程日志里最新的一份 Codex 额度
+    remote_status: Mutex<HashMap<String, remote::RemoteStatus>>,
+    remote_limits: Mutex<Option<(serde_json::Value, i64)>>,
     /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
     card_content: Mutex<HashMap<String, CardContent>>,
 }
@@ -163,6 +170,7 @@ struct Snapshot {
     stats_loading: bool,
     /// 各家周额度当前周期的起点（毫秒）：统计页「重置以来」用
     cycle: HashMap<String, i64>,
+    remote_status: HashMap<String, remote::RemoteStatus>,
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
@@ -181,7 +189,8 @@ fn snapshot(app: &AppHandle) -> Snapshot {
             Some((p.name.clone(), stats::cycle_start(chrono::DateTime::from_timestamp(reset, 0)?).timestamp_millis()))
         })
         .collect();
-    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle }
+    let remote_status = st.remote_status.lock().unwrap().clone();
+    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle, remote_status }
 }
 
 /// 用量卡片的汇总。「重置以来」每家按自己的每周额度重置时间算
@@ -247,7 +256,12 @@ fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
         settings.card_x = cur.card_x;
         settings.card_y = cur.card_y;
         let changed = cur.claude_limit_source != settings.claude_limit_source || cur.codex_limit_source != settings.codex_limit_source;
+        let hosts_changed = cur.remote_hosts != settings.remote_hosts;
         *cur = settings.clone();
+        // 加了或删了远程机器：马上读一次（删掉的那台的记录也清掉）
+        if hosts_changed && !changed {
+            tauri::async_runtime::spawn(refresh_stats(app.clone(), false));
+        }
         changed
     };
     // 换了额度来源：马上按新的来源查一次（统计页的 Codex 服务端统计也跟着查或清掉）
@@ -393,7 +407,8 @@ async fn refresh(app: AppHandle) {
             let s = app.state::<AppState>().settings.lock().unwrap().clone();
             (s.claude_limit_source == "local", s.codex_limit_source == "local")
         };
-        let providers = usage::fetch_all(&client, claude_local, codex_local).await;
+        let remote_limits = app.state::<AppState>().remote_limits.lock().unwrap().clone();
+        let providers = usage::fetch_all(&client, claude_local, codex_local, remote_limits).await;
         let st = app.state::<AppState>();
         {
             let s = st.settings.lock().unwrap().clone();
@@ -461,17 +476,37 @@ async fn refresh_stats(app: AppHandle, force_prices: bool) {
     }
     let pricing = Arc::new(stats::load_pricing(&reqwest::Client::new(), &cache, force_prices).await);
     *st.pricing.lock().unwrap() = pricing.clone();
+    let hosts = st.settings.lock().unwrap().remote_hosts.clone();
+    let s = store.clone();
+    let p = pricing.clone();
+    let keep = hosts.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let mut s = s.lock().unwrap();
+        s.sync_local(&p);
+        // 删掉的远程机器：它的记录和读取进度都清掉
+        s.prune_remote(&keep);
+    })
+    .await;
+    // 远程机器上的 Codex 日志（SSH）：一台一台读，读完一台就更新设置页的状态
+    st.remote_status.lock().unwrap().retain(|h, _| hosts.contains(h));
+    for host in hosts {
+        let (s, p, h) = (store.clone(), pricing.clone(), host.clone());
+        if let Ok(status) = tauri::async_runtime::spawn_blocking(move || remote::read_remote(&s, &h, &p)).await {
+            st.remote_status.lock().unwrap().insert(host, status);
+            let _ = app.emit("state", snapshot(&app));
+        }
+    }
     let s = store.clone();
     let p = pricing.clone();
     let done = tauri::async_runtime::spawn_blocking(move || {
         let mut s = s.lock().unwrap();
-        s.sync_local(&p);
         s.reprice_if_needed(&p);
-        s.records_since(recent_start())
+        (s.records_since(recent_start()), remote::logged_rate_limits(&s))
     })
     .await;
-    if let Ok(recs) = done {
+    if let Ok((recs, limits)) = done {
         *st.records.lock().unwrap() = recs;
+        *st.remote_limits.lock().unwrap() = limits;
         *st.stats_updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
     }
     // 服务端统计要请求 OpenAI 的接口：额度来源选了「仅本地」就不查
@@ -497,9 +532,16 @@ async fn stats_query(app: AppHandle, query: statsview::Query) -> Option<statsvie
     let st = app.state::<AppState>();
     let pricing = st.pricing.lock().unwrap().clone();
     let account = st.codex_account.lock().unwrap().as_ref().map(|(a, _)| a.clone());
-    tauri::async_runtime::spawn_blocking(move || statsview::compute(&store.lock().unwrap(), &pricing, &query, &[], account.as_deref()))
+    let hosts = st.settings.lock().unwrap().remote_hosts.clone();
+    tauri::async_runtime::spawn_blocking(move || statsview::compute(&store.lock().unwrap(), &pricing, &query, &hosts, account.as_deref()))
         .await
         .ok()
+}
+
+/// 设置页添加远程机器时给的选择
+#[tauri::command]
+fn ssh_config_hosts() -> Vec<String> {
+    remote::ssh_config_hosts()
 }
 
 #[tauri::command]
@@ -739,7 +781,7 @@ fn main() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
                                                  card_drag_start, card_drag_move, card_drag_end, card_content,
-                                                 stats_query, refresh_stats_now])
+                                                 stats_query, refresh_stats_now, ssh_config_hosts])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
