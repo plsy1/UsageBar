@@ -1716,6 +1716,8 @@ final class MainNav: ObservableObject {
 /// 主窗口的最小尺寸（所有页面在这个尺寸下都能完整显示）
 final class MainWindowDelegate: NSObject, NSWindowDelegate {
     static let minContent = NSSize(width: 1120, height: 700)
+    var onClose: () -> Void = {}
+    func windowWillClose(_ notification: Notification) { onClose() }
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         let min = sender.frameRect(forContentRect: NSRect(origin: .zero, size: Self.minContent)).size
         return NSSize(width: max(frameSize.width, min.width), height: max(frameSize.height, min.height))
@@ -2618,6 +2620,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let mainWindowDelegate = MainWindowDelegate()
 
     func openMain(_ tab: MainTab?) {
+        // 关窗口时整个释放：留着的话打开过的页面一直占着内存（统计页几十 MB），看不见时也还跟着数据刷新重算
+        mainWindowDelegate.onClose = { [weak self] in
+            DispatchQueue.main.async {
+                self?.mainWindow?.contentViewController = nil
+                self?.mainWindow = nil
+            }
+        }
         if let tab { nav.tab = tab }
         if mainWindow == nil {
             let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model, updater: updater))
