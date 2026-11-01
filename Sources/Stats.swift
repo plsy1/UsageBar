@@ -159,7 +159,7 @@ enum LogReader {
         var inputAt: Date?, start: Date?, first: Date?, end: Date?
     }
     /// 解析规则改了就加一：所有日志重新解析一遍（库里的记录按新结果更新；日志已经删掉的记录保留）
-    static let parserVersion = 4
+    static let parserVersion = 5
     static var dbURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("UsageBar/usage.sqlite")
@@ -188,6 +188,8 @@ enum LogReader {
           input INTEGER, output INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_1h INTEGER,
           duration REAL, first_token REAL, status INTEGER, cost REAL);
         CREATE INDEX IF NOT EXISTS records_time ON records(time);
+        CREATE TABLE IF NOT EXISTS cycles(source TEXT NOT NULL, resets_at INTEGER NOT NULL, used REAL,
+          PRIMARY KEY(source, resets_at));
         """)
         if meta(d, "parser") != "\(parserVersion)" {
             d.exec("DELETE FROM files")
@@ -279,6 +281,7 @@ enum LogReader {
             // 删掉的日志不用再记进度；记录留在库里
             for key in known?.keys.filter({ !seen.contains($0) && !$0.hasPrefix(remotePrefix) }) ?? [] { forget(d, key) }
             saveRateLimits(d)
+            saveCycles(d)
         }
     }
 
@@ -409,6 +412,99 @@ enum LogReader {
               let o = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any],
               let t = o["time"] as? Double, let rl = o["limits"] as? [String: Any] else { return nil }
         return (Date(timeIntervalSince1970: t), rl)
+    }
+
+    // MARK: 每周额度的周期
+    //   一个周期是从上次重置到下次重置：记下每个周期的「下次重置时间」和这期间见到的最高已用比例。
+    //   Codex 从会话日志里取（每次回复都记着额度），两家也都从查官方接口的结果里取
+
+    /// 解析时见到的 Codex 周期（拿着锁时读写），同步完存进库：重置时间（整分钟的秒数）→ 已用比例
+    private static var seenCycles: [Int: Double] = [:]
+
+    /// 重置时间常是 05:59:59.x：差几秒到整分钟就进位，同一个周期的键才一致
+    static func cycleKey(_ t: Double) -> Int { Int((t + 5) / 60) * 60 }
+
+    private static func upsertCycle(_ d: SQLiteDB, _ source: Source, _ key: Int, _ used: Double) {
+        d.run("""
+        INSERT INTO cycles(source, resets_at, used) VALUES(?, ?, ?)
+        ON CONFLICT(source, resets_at) DO UPDATE SET used = max(COALESCE(used, 0), excluded.used)
+        """, [source.rawValue, key, used])
+    }
+
+    private static func saveCycles(_ d: SQLiteDB) {
+        for (k, used) in seenCycles { upsertCycle(d, .codex, k, used) }
+        seenCycles = [:]
+    }
+
+    /// 查官方接口拿到的周额度：记下这个周期和现在的已用比例
+    static func recordCycle(_ source: Source, resetsAt: Date, used: Double) {
+        lock.lock(); defer { lock.unlock() }
+        guard let d = db else { return }
+        upsertCycle(d, source, cycleKey(resetsAt.timeIntervalSince1970), used)
+    }
+
+    /// 一个周期的用量
+    struct CycleStat: Identifiable {
+        let source: Source
+        let start: Date
+        let resets: Date     // 原定的重置时间
+        let end: Date        // 实际结束（提前重置时早于 resets）；进行中的是现在
+        let current: Bool
+        var used: Double?
+        var cost = 0.0
+        var requests = 0
+        var tokens = 0
+        var id: String { "\(source.rawValue)|\(Int(start.timeIntervalSince1970))" }
+    }
+
+    /// 两家的周期，新的在前。Codex 的周期都取自记录（周期从第一次使用开始，提前重置时上一个就截断）；
+    /// Claude 只知道查过的几次，更早的按 7 天往前推。samples：Claude 桌面 app 记下的本周已用比例
+    static func cycles(hidden: Set<String>, claudeSamples: [(Date, Double)]) -> [CycleStat] {
+        lock.lock(); defer { lock.unlock() }
+        guard let d = db else { return [] }
+        let week = 7 * 86400, now = Date()
+        var out: [CycleStat] = []
+        for source in [Source.claude, .codex] {
+            var resets: [(Int, Double?)] = []
+            d.run("SELECT resets_at, used FROM cycles WHERE source = ? ORDER BY resets_at", [source.rawValue]) { r in
+                resets.append((r.int(0), r.optDouble(1)))
+            }
+            // 同一个周期的重置时间在不同记录里会差几秒、跨过整分钟：相差 10 分钟以内的算一个
+            resets = resets.reduce(into: []) { acc, x in
+                if let last = acc.last, x.0 - last.0 < 600 {
+                    acc[acc.count - 1] = (x.0, [last.1, x.1].compactMap { $0 }.max())
+                } else { acc.append(x) }
+            }
+            guard !resets.isEmpty else { continue }
+            if source == .claude {
+                var earliest: Double?
+                d.run("SELECT MIN(time) FROM records WHERE source = ?", [source.rawValue]) { earliest = $0.optDouble(0) }
+                var r = resets[0].0 - week
+                while let e = earliest, Double(r) > e { resets.insert((r, nil), at: 0); r -= week }
+            }
+            let hiddenList = source == .codex ? Array(hidden) : []
+            let filter = hiddenList.isEmpty ? "" : " AND COALESCE(host, '') NOT IN (" + hiddenList.map { _ in "?" }.joined(separator: ",") + ")"
+            for (i, (r, used)) in resets.enumerated() {
+                let start = r - week
+                // 下一个周期提前开始（提前重置过）时，这一个到那里为止
+                let end = i + 1 < resets.count ? min(r, resets[i + 1].0 - week) : r
+                guard end > start, Double(start) < now.timeIntervalSince1970 else { continue }
+                let endDate = min(Date(timeIntervalSince1970: Double(end)), now)
+                var c = CycleStat(source: source, start: Date(timeIntervalSince1970: Double(start)),
+                                  resets: Date(timeIntervalSince1970: Double(r)), end: endDate,
+                                  current: Double(end) > now.timeIntervalSince1970, used: used)
+                d.run("SELECT COUNT(*), SUM(cost), SUM(input + output + cache_read + cache_write) FROM records "
+                      + "WHERE source = ? AND status = 200 AND time >= ? AND time < ?" + filter,
+                      ([source.rawValue, Double(start), endDate.timeIntervalSince1970] as [Any?]) + hiddenList.map { $0 as Any? }) { row in
+                    c.requests = row.int(0); c.cost = row.optDouble(1) ?? 0; c.tokens = row.int(2)
+                }
+                if source == .claude {
+                    for (t, sd) in claudeSamples where t >= c.start && t < c.end { c.used = max(c.used ?? 0, sd) }
+                }
+                if c.requests > 0 || c.used != nil { out.append(c) }
+            }
+        }
+        return out.sorted { $0.start > $1.start }
     }
 
     /// 本机和远程机器的 Codex 日志里最新的一份额度，和它是什么时候记的
@@ -557,10 +653,18 @@ enum LogReader {
                 cwd = p["cwd"] as? String ?? cwd
                 continue
             }
-            // 每次回复后的 token_count 里顺带记着当时的额度：留下见到的最新一份（「仅本地」时用它）
-            if p["type"] as? String == "token_count", let rl = p["rate_limits"] as? [String: Any],
-               let ts = (o["timestamp"] as? String).flatMap(iso.date), ts > (seenRateLimits?.time ?? .distantPast) {
-                seenRateLimits = (ts, rl)
+            // 每次回复后的 token_count 里顺带记着当时的额度：留下见到的最新一份（「仅本地」时用它），
+            // 周额度的重置时间和用到的比例记成周期（统计页「按周期」用）
+            if p["type"] as? String == "token_count", let rl = p["rate_limits"] as? [String: Any] {
+                if let ts = (o["timestamp"] as? String).flatMap(iso.date), ts > (seenRateLimits?.time ?? .distantPast) {
+                    seenRateLimits = (ts, rl)
+                }
+                for case let w as [String: Any] in rl.values {
+                    guard let minutes = w["window_minutes"] as? Double, (8640...11520).contains(minutes),
+                          let reset = w["resets_at"] as? Double, let used = w["used_percent"] as? Double else { continue }
+                    let key = cycleKey(reset)
+                    seenCycles[key] = max(seenCycles[key] ?? 0, used)
+                }
             }
             guard p["type"] as? String == "token_count", let info = p["info"] as? [String: Any],
                   let last = info["last_token_usage"] as? [String: Any],
@@ -764,6 +868,7 @@ extension LogReader {
                         store(d, n.key, mtime: n.mtime.timeIntervalSince1970, size: n.size, e)
                     }
                     saveRateLimits(d)
+                    saveCycles(d)
                 }
             }
             lock.unlock()
@@ -1425,14 +1530,21 @@ struct StatsView: View {
         let models = memo.value("models", memoKey) { modelRows(rows) }
         let apps = memo.value("apps", memoKey) { appRows(rows) }
         let projects = memo.value("projects", memoKey) { projectRows(rows) }
+        // 按周期：不跟时间范围，只跟上面选的应用和机器
+        let cycles = memo.value("cycles", memoKey) {
+            LogReader.cycles(hidden: hiddenMachineSet, claudeSamples: Claude.desktopWeeklySamples()).filter { sources.contains($0.source) }
+        }
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 26) {
                 tabButton(L("按应用"), count: apps.count, tag: "apps")
                 tabButton(L("按模型"), count: models.count, tag: "models")
                 tabButton(L("按项目"), count: projects.count, tag: "projects")
+                tabButton(L("按周期"), count: cycles.count, tag: "cycles")
                 tabButton(L("请求明细"), count: rows.count, tag: "log")
                 Spacer()
-                if tab == "log" {
+                if tab == "cycles" {
+                    EmptyView()
+                } else if tab == "log" {
                     statusMenu(rows)
                     Divider().frame(height: 16)
                     columnMenu
@@ -1446,6 +1558,7 @@ struct StatsView: View {
             case "apps": appTable(apps)
             case "models": modelTable(models)
             case "projects": groupTable(projects, projectLayout)
+            case "cycles": cycleTable(cycles)
             default: logTable(rows)
             }
         }
@@ -1516,6 +1629,70 @@ struct StatsView: View {
     }
 
     func modelTable(_ models: [ModelRow]) -> some View { groupTable(models, modelLayout) }
+
+    /// 按周期：每周额度从上次重置到下次重置为一个周期，新的在前。
+    /// 满额价值 = 估算成本 ÷ 已用比例（用得太少时不准，不算）；环比和同一家的上一个周期比
+    func cycleTable(_ cycles: [LogReader.CycleStat]) -> some View {
+        let widths: [CGFloat] = [90, 100, 80, 80, 90, 100, 90]
+        let titles = [L("应用"), L("成本"), L("请求数"), "Tokens", L("已用额度"), L("满额价值"), L("环比")]
+        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
+        let previous: [String: LogReader.CycleStat] = Dictionary(uniqueKeysWithValues: cycles.enumerated().compactMap { i, c in
+            cycles[(i + 1)...].first { $0.source == c.source }.map { (c.id, $0) }
+        })
+        func cell(_ text: String, _ w: CGFloat, color: Color = .primary) -> some View {
+            Text(text).monospacedDigit().foregroundStyle(color).lineLimit(1)
+                .padding(.leading, Self.cellInset).frame(width: w, alignment: .leading)
+        }
+        func row(_ c: LogReader.CycleStat) -> some View {
+            let value = c.used.flatMap { $0 >= 10 ? c.cost / ($0 / 100) : nil }
+            let change: (String, Color) = {
+                guard !c.current, let p = previous[c.id], p.cost > 0 else { return ("—", .secondary) }
+                let d = (c.cost - p.cost) / p.cost
+                return (String(format: "%@%.0f%%", d >= 0 ? "↑" : "↓", abs(d) * 100), .secondary)
+            }()
+            let early = !c.current && c.end < c.resets.addingTimeInterval(-60)
+            return HStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Text(f.string(from: c.start) + " – " + (c.current ? f.string(from: c.resets) : f.string(from: c.end))).monospacedDigit()
+                    if c.current {
+                        Text(L("进行中")).font(.caption).foregroundStyle(ChartColor.color(chartColor))
+                    } else if early {
+                        Text(L("提前重置")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .lineLimit(1).padding(.leading, Self.cellInset)
+                .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+                cell(c.source.rawValue, widths[0])
+                cell(money(c.cost), widths[1])
+                cell(c.requests.formatted(), widths[2])
+                cell(abbrev(c.tokens), widths[3])
+                cell(c.used.map { "\(Int($0.rounded()))%" } ?? "—", widths[4], color: c.used == nil ? .secondary : .primary)
+                cell(value.map { money($0, digits: 0) } ?? "—", widths[5], color: value == nil ? .secondary : .primary)
+                cell(change.0, widths[6], color: change.1)
+            }
+            .padding(.horizontal, 20 - Self.cellInset)
+            .frame(height: 42)
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Text(L("周期")).padding(.leading, Self.cellInset).frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+                ForEach(Array(titles.enumerated()), id: \.offset) { i, t in
+                    Text(t).padding(.leading, Self.cellInset).frame(width: widths[i], alignment: .leading)
+                }
+            }
+            .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            .padding(.horizontal, 20 - Self.cellInset).frame(height: 38)
+            if cycles.isEmpty { Divider(); emptyRow() }
+            ForEach(cycles) { c in
+                Divider()
+                row(c)
+            }
+            Divider()
+            Text(L("每周额度从上次重置到下次重置算一个周期，不跟上面的时间范围。Codex 的周期取自会话日志；Claude 只记得查过额度的周期，更早的按 7 天往前推算。已用额度是这个周期里见到的最高比例；满额价值 = 估算成本 ÷ 已用额度（不到 10% 时不算），只是粗略参考：网页、桌面 app 聊天、其他电脑和云端任务也占额度但没有记录，周期中途提前重置过也会让它偏高或偏低"))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20).padding(.vertical, 12)
+        }
+    }
     func appTable(_ apps: [ModelRow]) -> some View { groupTable(apps, appLayout) }
 
     var hidden: Set<LogColumn> {

@@ -259,6 +259,14 @@ enum I18n {
         "命中率": ("ヒット率", "Hit Rate"),
         "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
         "服务端数据统计": ("サーバー側の統計", "Server Statistics"),
+        "按周期": ("期間別", "By Cycle"),
+        "周期": ("期間", "Cycle"),
+        "已用额度": ("使用した上限", "Limit Used"),
+        "满额价值": ("上限いっぱいの価値", "Full-Limit Value"),
+        "环比": ("前期比", "vs. Previous"),
+        "进行中": ("進行中", "in progress"),
+        "提前重置": ("早期リセット", "reset early"),
+        "每周额度从上次重置到下次重置算一个周期，不跟上面的时间范围。Codex 的周期取自会话日志；Claude 只记得查过额度的周期，更早的按 7 天往前推算。已用额度是这个周期里见到的最高比例；满额价值 = 估算成本 ÷ 已用额度（不到 10% 时不算），只是粗略参考：网页、桌面 app 聊天、其他电脑和云端任务也占额度但没有记录，周期中途提前重置过也会让它偏高或偏低": ("週間上限の前回リセットから次のリセットまでを 1 期間とし、上の期間の選択には従いません。Codex の期間はセッションログから、Claude は上限を問い合わせた期間だけを記録し、それより前は 7 日ずつさかのぼって推定します。使用した上限はその期間に見られた最大の割合です。上限いっぱいの価値 = 推定コスト ÷ 使用した上限（10% 未満は計算しません）は目安にすぎません：Web、デスクトップアプリのチャット、ほかの PC、クラウドタスクも上限を使いますが記録がなく、期間の途中で早期リセットがあってもずれます", "A cycle runs from one weekly reset to the next and ignores the period selected above. Codex cycles come from the session logs; Claude only remembers cycles whose limits were checked, and earlier ones are counted back in 7-day steps. Limit Used is the highest share seen in that cycle. Full-Limit Value = estimated cost ÷ limit used (left out below 10%) is only a rough guide: the web, desktop-app chats, other computers and cloud tasks also use the limit but leave no records here, and an early reset in the middle of a cycle skews it too"),
         "日均": ("1 日平均", "Daily Avg"),
         "最多的一天": ("最多の日", "Peak Day"),
         "数据截至": ("データの最終日", "Data Through"),
@@ -535,6 +543,18 @@ enum Claude {
         u.note = L("来自 Claude 桌面 app 的记录 · 数据时间 %@", f.string(from: at))
         if u.windows.isEmpty { u.error = L("Claude 桌面 app 最近没有查过用量（最近一次 %@）", f.string(from: at)) }
         return u
+    }
+
+    /// Claude 桌面 app 记下的本周已用比例（时间、百分比）：统计页「按周期」补上 Claude 各周期用到多少
+    static func desktopWeeklySamples() -> [(Date, Double)] {
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Claude/plan-usage-history.json")
+        guard let d = try? Data(contentsOf: url),
+              let samples = ((try? JSONSerialization.jsonObject(with: d)) as? [String: Any])?["samples"] as? [[String: Any]] else { return [] }
+        return samples.compactMap { s in
+            guard let t = s["t"] as? Double, let sd = (s["u"] as? [String: Any])?["sd"] as? Double else { return nil }
+            return (Date(timeIntervalSince1970: t / 1000), sd)
+        }
     }
 
     static func fetch() async -> ProviderUsage {
@@ -2581,6 +2601,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // 接口给的重置时间常是 05:59:59.x 这种：差几秒到整分钟就进位，否则舍去秒数
                     let resetMinute = Date(timeIntervalSince1970: ((reset.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60)
                     self.stats.cycleStarts[src] = resetMinute.addingTimeInterval(-7 * 86400)
+                    // 官方接口直接查到的才记进「按周期」（退回本地缓存的不算）
+                    if u.error == nil, u.note == nil, let w = u.windows.first(where: \.weekly) {
+                        DispatchQueue.global(qos: .utility).async { LogReader.recordCycle(src, resetsAt: reset, used: w.usedPercent) }
+                    }
                 }
                 self.updateTitle()
                 self.rebuildMenu()
