@@ -1,6 +1,7 @@
 // 应用内更新（和 macOS 版 Sources/Updater.swift 一个思路）：从 GitHub Releases 查最新的 Windows / Linux 版，
 // 下载对应的安装包、按发布说明里的 SHA-256 校验，再装上并重启。
-//   版本号：tag 去掉开头的 tauri-v（tauri-v0.4.0 → 0.4.0）；macOS 版的 v* 不算
+//   版本号：tag 去掉开头的 v（v1.7.0 → 1.7.0；三个平台共用一个版本号）；以前的预览版是 tauri-v0.3.0。
+//   只看带 Windows / Linux 安装包的发布，只有 macOS 包的不算
 //   校验值：发布说明 SHA-256 一节里的「<64 位十六进制>  <文件名>」
 //   Windows：运行 NSIS 安装包（/P 只显示进度、/R 装完重新打开、/UPDATE 当作更新）
 //   Linux AppImage：替换正在运行的那个文件再重新打开；deb 要 sudo，只给下载页
@@ -96,7 +97,7 @@ fn client() -> reqwest::Client {
     reqwest::Client::builder().user_agent("UsageBar").build().unwrap_or_default()
 }
 
-/// 查 tauri-v* 里版本号最大的那个（预览版也算）
+/// 查带 Windows / Linux 安装包的发布里版本号最大的那个（以前的预览版也算）
 pub async fn latest() -> Result<Release, String> {
     let resp = client()
         .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
@@ -112,7 +113,15 @@ pub async fn latest() -> Result<Release, String> {
     let r = list
         .iter()
         .filter(|r| !r["draft"].as_bool().unwrap_or(false))
-        .filter_map(|r| Some((r["tag_name"].as_str()?.strip_prefix("tauri-v")?.to_string(), r)))
+        .filter(|r| {
+            r["assets"].as_array().is_some_and(|a| {
+                a.iter().any(|a| a["name"].as_str().is_some_and(|n| n.contains("-windows-") || n.contains("-linux-")))
+            })
+        })
+        .filter_map(|r| {
+            let tag = r["tag_name"].as_str()?;
+            Some((tag.strip_prefix("tauri-v").or_else(|| tag.strip_prefix('v'))?.to_string(), r))
+        })
         .max_by(|a, b| if is_newer(&a.0, &b.0) { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less })
         .ok_or("network")?;
     let (version, r) = r;

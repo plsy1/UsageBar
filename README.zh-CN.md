@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md)
 
-在 macOS 菜单栏和桌面上显示 **Claude** 与 **Codex** 的剩余用量（5 小时额度 / 每周额度）。
+在 macOS 菜单栏、Windows / Linux 托盘和桌面上显示 **Claude** 与 **Codex** 的剩余用量（5 小时额度 / 每周额度）。
 
 - **菜单栏**：`Claude 68%/79%  Codex 0%/47%`，可选显示 5 小时额度、每周额度或两个都显示，单行或双行（名称在上、数值在下）样式；点开看每个额度的进度和重置时间。用得比时间快的额度会标上 ↑，菜单里写出按这个速度预计何时用完
 - **通知**：额度用到 80/90/95%、按现在的速度会在重置前用完、额度重置后、Codex 的重置次数快到期时提醒
@@ -12,9 +12,11 @@
 - **应用内更新**：每天自动检查 GitHub Releases，一键下载新版、校验 SHA-256、替换并重启
 - **语言**：English / 简体中文 / 日本語，默认跟随系统
 - 系统要求 macOS 13 及以上，Apple 芯片和 Intel 都支持
-- **Windows / Linux**：有[预览版](https://github.com/plsy1/UsageBar/releases/tag/tauri-v0.3.0)，包含托盘、两张桌面卡片（额度和用量）、额度和设置（源码在 `tauri/`）
+- **Windows / Linux**：功能和 macOS 版一致，放在系统托盘里：用量统计、通知、两张卡片、远程机器、应用内更新都有。Linux 在托盘图标旁边显示百分比；Windows 把鼠标放在图标上或点开小面板查看。支持 Windows 10/11 x64（Windows on ARM 也能运行）、Linux x64 和 arm64；源码在 `tauri/`
 
 ## 安装
+
+### macOS
 
 1. 从 [Releases](https://github.com/plsy1/UsageBar/releases) 下载 `UsageBar-x.y.z.zip`，解压后把 `UsageBar.app` 拖进「应用程序」。
 2. 本 app 没有 Apple 开发者签名，第一次打开会被系统拦下。任选一种方式放行：
@@ -23,7 +25,17 @@
      ```bash
      xattr -dr com.apple.quarantine /Applications/UsageBar.app
      ```
-3. 打开后在菜单栏点 UsageBar →「打开 UsageBar…」→ 通用，可以开启「开机启动」。
+3. 打开后在菜单栏点 UsageBar →「打开 UsageBar…」→ 通用，可以开启「开机启动」。更新在「关于」里。
+
+### Windows
+
+从 [Releases](https://github.com/plsy1/UsageBar/releases) 下载并运行 `UsageBar-x.y.z-windows-x64-setup.exe`。安装包没有代码签名，SmartScreen 可能提示「Windows 已保护你的电脑」：点「更多信息 → 仍要运行」。开机启动在「设置」里，更新在「关于」里。
+
+### Linux
+
+- **deb**（Ubuntu、Debian）：`sudo apt install ./UsageBar-x.y.z-linux-amd64.deb`（或 `arm64`）。更新时同样装新的 deb。
+- **AppImage**：`chmod +x UsageBar-x.y.z-linux-amd64.AppImage` 后运行，可以在「关于」里自动更新。
+- 托盘需要 AppIndicator 支持（Ubuntu 自带；其他 GNOME 桌面请安装 AppIndicator 扩展）。
 
 ## 数据从哪来
 
@@ -40,6 +52,8 @@
 
 **仅本地**：不发任何请求，也不读钥匙串和 `auth.json`；统计页的 Codex 服务端数据统计和额度重置次数这时不显示。
 
+**Windows 和 Linux 上**：Claude Code 把登录信息存在 `~/.claude/.credentials.json`（Windows 上是 `%USERPROFILE%\.claude`），读这个文件而不是钥匙串；「仅本地」读 `%APPDATA%\Claude` 或 `~/.config/Claude` 里 Claude 桌面 app 的记录。这些选项在「设置 → 数据来源」里。
+
 额度接口不是公开 API，Anthropic 或 OpenAI 改动后可能失效。
 
 ### 用量统计
@@ -48,7 +62,7 @@
 
 - **会话日志**：本机的 `~/.claude/projects`（包括在 Claude 桌面 app 里用 Claude Code 的会话）和 `~/.codex/sessions`；只读新写入的部分。Claude 桌面 app 里的普通聊天不在本地留记录，所以不算在统计里（但算在额度里）。
 - **远程机器**：在「通用 → 数据来源」里添加的机器上的 Codex 日志，用 `ssh` 读取，在远程先过滤再传回（只传原日志的百分之几）。需要能免密登录（比如用密钥）；局域网里的机器还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 UsageBar。
-- **本机数据库**：解析结果存在 `~/Library/Application Support/UsageBar/usage.sqlite`，Claude Code 清理旧日志后统计也还在。
+- **本机数据库**：解析结果存在 `~/Library/Application Support/UsageBar/usage.sqlite`（Windows：`%APPDATA%\io.github.plsy1.usagebar`，Linux：`~/.local/share/io.github.plsy1.usagebar`），Claude Code 清理旧日志后统计也还在。
 - **成本**：按 [models.dev](https://models.dev) 的 API 价格估算（每天下载一次价格表），不是订阅实际扣的钱。
 
 ## 从源码构建
@@ -58,8 +72,12 @@
 ./release.sh          # 打包通用二进制到 dist/UsageBar-<版本>.zip
 ```
 
+Windows / Linux：`cd tauri/src-tauri && cargo tauri build`（需要 Rust 和 [Tauri 的依赖](https://v2.tauri.app/start/prerequisites/)）；每次推送 `tauri/` 的改动，CI 都会编出安装包。
+
 终端里查看用量：`/Applications/UsageBar.app/Contents/MacOS/UsageBar --print`（额度）或 `--stats`（本机 token 统计）
 
 ## 卸载
 
 先在「打开 UsageBar…」→ 通用 里关掉「开机启动」，退出 UsageBar，再删除 `/Applications/UsageBar.app`。
+
+Windows：在「设置 → 应用」里卸载 UsageBar。Linux：deb 用 `sudo apt remove usage-bar`，AppImage 直接删掉文件。
