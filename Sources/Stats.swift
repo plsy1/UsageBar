@@ -2181,9 +2181,13 @@ struct RangePopover: View {
                     }
                 }
                 .frame(width: 230)
-                // 日历改的是当前选中的那一个（开始或结束）
-                DatePicker("", selection: editingEnd ? $end : $start, displayedComponents: .date)
-                    .datePickerStyle(.graphical).labelsHidden()
+                // 日历改的是当前选中的那一个（开始或结束）；选好开始就接着选结束
+                RangeCalendar(start: start, end: endNow ? Date() : end, focus: editingEnd ? end : start) { day in
+                    if editingEnd { end = Self.combine(day, time: end) } else {
+                        start = Self.combine(day, time: start)
+                        if !endNow { editingEnd = true }
+                    }
+                }
             }
         }
         .padding(16)
@@ -2203,6 +2207,13 @@ struct RangePopover: View {
         .simultaneousGesture(TapGesture().onEnded(onTap))
     }
 
+    /// 换成 day 那天，时分保持不变
+    static func combine(_ day: Date, time: Date) -> Date {
+        let cal = Calendar.current
+        let t = cal.dateComponents([.hour, .minute], from: time)
+        return cal.date(bySettingHour: t.hour ?? 0, minute: t.minute ?? 0, second: 0, of: day) ?? day
+    }
+
     func apply() {
         var s = start, e = endNow ? Date() : end
         if e < s { swap(&s, &e) }
@@ -2211,6 +2222,113 @@ struct RangePopover: View {
         customEndNow = endNow
         rangeRaw = StatsRange.custom.rawValue
         isPresented = false
+    }
+}
+
+/// 自选范围用的月历：起止两天是主题色的实心圆，中间一条浅色带，今天的数字用主题色；以后的日子不能选
+struct RangeCalendar: View {
+    let start: Date
+    let end: Date
+    let onPick: (Date) -> Void
+    @State var month: Date
+    @AppStorage("statsChartColor") var chartColor = "pink"
+
+    static let cell: CGFloat = 32
+
+    init(start: Date, end: Date, focus: Date, onPick: @escaping (Date) -> Void) {
+        self.start = start; self.end = end; self.onPick = onPick
+        _month = State(initialValue: Self.monthStart(focus))
+    }
+
+    static func monthStart(_ d: Date) -> Date {
+        Calendar.current.dateInterval(of: .month, for: d)?.start ?? d
+    }
+
+    static var locale: Locale { Locale(identifier: ["zh": "zh_CN", "ja": "ja_JP"][I18n.lang] ?? "en_US") }
+
+    var title: String {
+        let f = DateFormatter()
+        f.locale = Self.locale
+        f.dateFormat = I18n.lang == "en" ? "MMMM yyyy" : "yyyy年M月"
+        return f.string(from: month)
+    }
+
+    /// 星期的简称，从系统设置的一周第一天开始排
+    var weekdays: [String] {
+        let f = DateFormatter()
+        f.locale = Self.locale
+        let names = f.veryShortStandaloneWeekdaySymbols ?? []
+        let first = Calendar.current.firstWeekday - 1
+        return names.indices.map { names[($0 + first) % names.count] }
+    }
+
+    /// 六行七列：这个月前后补上邻月的日子
+    var days: [Date] {
+        let cal = Calendar.current
+        let lead = (cal.component(.weekday, from: month) - cal.firstWeekday + 7) % 7
+        let first = cal.date(byAdding: .day, value: -lead, to: month)!
+        return (0..<42).map { cal.date(byAdding: .day, value: $0, to: first)! }
+    }
+
+    var body: some View {
+        let tint = ChartColor.color(chartColor)
+        VStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Text(title).font(.headline)
+                Spacer()
+                nav("chevron.left") { shift(-1) }
+                Button(L("今天")) { month = Self.monthStart(Date()) }
+                    .buttonStyle(.borderless).font(.callout).foregroundStyle(tint)
+                nav("chevron.right") { shift(1) }
+                    .disabled(month >= Self.monthStart(Date()))
+            }
+            .padding(.horizontal, 4)
+            HStack(spacing: 0) {
+                ForEach(Array(weekdays.enumerated()), id: \.offset) { _, w in
+                    Text(w).font(.caption).foregroundStyle(.secondary).frame(width: Self.cell)
+                }
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(Self.cell), spacing: 0), count: 7), spacing: 2) {
+                ForEach(days, id: \.self) { day in cell(day, tint: tint) }
+            }
+        }
+        .frame(width: Self.cell * 7)
+    }
+
+    func nav(_ symbol: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 12, weight: .semibold)).frame(width: 24, height: 24).contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+    }
+
+    func shift(_ n: Int) {
+        if let m = Calendar.current.date(byAdding: .month, value: n, to: month) { month = m }
+    }
+
+    @ViewBuilder func cell(_ day: Date, tint: Color) -> some View {
+        let cal = Calendar.current
+        let lo = cal.startOfDay(for: min(start, end)), hi = cal.startOfDay(for: max(start, end))
+        let inMonth = cal.isDate(day, equalTo: month, toGranularity: .month)
+        let future = day > cal.startOfDay(for: Date())
+        let edge = day == lo || day == hi
+        let today = cal.isDateInToday(day)
+        ZStack {
+            // 起止之间的浅色带：两端只铺一半，接上圆
+            HStack(spacing: 0) {
+                Rectangle().fill(tint.opacity(day > lo && day <= hi && lo != hi ? 0.16 : 0))
+                Rectangle().fill(tint.opacity(day >= lo && day < hi && lo != hi ? 0.16 : 0))
+            }
+            .frame(height: 28)
+            if edge { Circle().fill(tint).frame(width: 28, height: 28) }
+            Text("\(cal.component(.day, from: day))")
+                .font(.system(size: 13, weight: edge || today ? .semibold : .regular).monospacedDigit())
+                .foregroundStyle(edge ? AnyShapeStyle(.white) : today ? AnyShapeStyle(tint) : AnyShapeStyle(.primary))
+                .opacity(future ? 0.25 : inMonth ? 1 : 0.35)
+        }
+        .frame(width: Self.cell, height: 30)
+        .contentShape(Rectangle())
+        .onTapGesture { if !future { onPick(day) } }
     }
 }
 
