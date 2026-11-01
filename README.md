@@ -25,16 +25,31 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
      ```
 3. Click UsageBar in the menu bar → **Open UsageBar…** → General to turn on **Launch at Login**. Updates are under **About**.
 
-## Requirements for reading usage
+## Where the numbers come from
 
-- **Claude**: the Claude Code CLI must be logged in (`claude auth login`). UsageBar reads Claude Code's login from the Keychain and calls `api.anthropic.com/api/oauth/usage`. When the token expires it refreshes it and writes it back to the Keychain, the same way Claude Code does. macOS may ask once whether to allow Keychain access.
-- **Codex**: Codex must be logged in (`~/.codex/auth.json` exists). UsageBar calls `chatgpt.com/backend-api/wham/usage` and falls back to the latest usage recorded in `~/.codex/sessions` if that fails.
+### Limits
 
-Limits can also come from local files only (General → Data Sources → Local Only): Codex from its session logs, Claude from the desktop app's records (may be out of date); nothing is sent then.
+Choose per service under General → Data Sources; a change takes effect immediately:
 
-Statistics cover session logs on this Mac plus the remote machines added under General → Data Sources (`ssh` must log in without a password, e.g. with a key; if the machine is on your local network, allow UsageBar under System Settings → Privacy & Security → Local Network). Cost is an API-price estimate, not what a subscription actually charges. Prices are downloaded from models.dev once a day.
+| | Official API (default) | Local Only |
+|---|---|---|
+| **Claude** | Reads Claude Code's login from the Keychain and calls `api.anthropic.com/api/oauth/usage` (the endpoint behind the `/usage` command). Needs Claude Code to be logged in (`claude auth login`, or having used Claude Code in the Claude desktop app). macOS may ask once to allow Keychain access. | Reads `~/Library/Application Support/Claude/plan-usage-history.json`, written by the Claude desktop app: 5-hour and weekly percentages only, no reset times, and only updated when the app shows usage, so **it may be out of date**. Values older than their window are hidden. |
+| **Codex** | Reads the login from `~/.codex/auth.json` and calls `chatgpt.com/backend-api/wham/usage`; when resets are available it also asks for their expiry, and the server statistics on the stats page are fetched at most hourly. Falls back to the session logs if a request fails. | Reads the session logs: Codex records the limits (used share and reset time) after every reply, so this is near real-time while you use Codex. Logs on this Mac and on added remote machines both count; the newest wins. |
 
-The limit endpoints are not public APIs and may stop working if Anthropic or OpenAI change them. Data only travels between your Mac and the respective official service.
+**What the official API mode sends:** GET requests without a body, carrying the login token, the Codex account ID and the same User-Agent as the official clients (`claude-code`, `codex-cli`). No conversation content, usage records or other local data is uploaded. When Claude's token expires, UsageBar refreshes it the way Claude Code does and writes it back to the Keychain.
+
+**Local Only** sends no requests and doesn't read the Keychain or `auth.json`; the Codex server statistics and reset counts are not shown then.
+
+The limit endpoints are not public APIs and may stop working if Anthropic or OpenAI change them.
+
+### Usage statistics
+
+Usage statistics need no login; everything stays on this Mac:
+
+- **Session logs:** `~/.claude/projects` (including Claude Code sessions in the Claude desktop app) and `~/.codex/sessions`, read incrementally. Regular chats in the Claude desktop app keep no local records, so they are not in the statistics (they do count toward the limits).
+- **Remote machines:** Codex logs on machines added under General → Data Sources, read over `ssh` and filtered on the remote side (a few percent of each log is transferred). Needs password-less `ssh` (e.g. a key); for machines on your local network, allow UsageBar under System Settings → Privacy & Security → Local Network.
+- **Local database:** parsed records are kept in `~/Library/Application Support/UsageBar/usage.sqlite`, so statistics survive Claude Code's log cleanup.
+- **Cost:** estimated from [models.dev](https://models.dev) API prices (downloaded daily), not what a subscription actually charges.
 
 ## Build from source
 

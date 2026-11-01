@@ -25,16 +25,31 @@
      ```
 3. 打开后在菜单栏点 UsageBar →「打开 UsageBar…」→ 通用，可以开启「开机启动」。
 
-## 读取用量的前提
+## 数据从哪来
 
-- **Claude**：需要 Claude Code 命令行已登录（`claude auth login`）。UsageBar 读取钥匙串里 Claude Code 的登录信息，请求 `api.anthropic.com/api/oauth/usage`；令牌过期时会自动续期并写回钥匙串，和 Claude Code 自己的做法一致。第一次读取时系统可能弹窗询问是否允许访问钥匙串。
-- **Codex**：需要 Codex 已登录（存在 `~/.codex/auth.json`）。请求 `chatgpt.com/backend-api/wham/usage`；失败时退回到 `~/.codex/sessions` 里最近一次记录的用量。
+### 额度
 
-额度也可以只读本机文件（通用 → 数据来源 → 仅本地）：Codex 读会话日志，Claude 读桌面 app 的记录（可能不是最新），这时不发任何请求。
+每家可以分别选择，在「通用 → 数据来源」里切换，切换后立即生效：
 
-用量统计包含这台 Mac 和在 通用 → 数据来源 里添加的远程机器上的会话记录（`ssh` 要能免密登录，比如用密钥；局域网里的机器还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 UsageBar）；成本是按 API 价格的估算，不是订阅实际扣的钱。价格每天从 models.dev 下载一次。
+| | 官方接口（默认） | 仅本地 |
+|---|---|---|
+| **Claude** | 读取钥匙串里 Claude Code 的登录信息，请求 `api.anthropic.com/api/oauth/usage`（和 `/usage` 命令同一个接口）。需要 Claude Code 已登录（`claude auth login`，或在 Claude 桌面 app 里用过 Claude Code）。第一次读取时系统可能询问是否允许访问钥匙串。 | 读 Claude 桌面 app 留下的 `~/Library/Application Support/Claude/plan-usage-history.json`：只有 5 小时和本周的已用百分比，没有重置时间，而且只在 app 查看用量时才更新，**可能不是最新**。超过窗口长度的旧数据不显示。 |
+| **Codex** | 读取 `~/.codex/auth.json` 里的登录信息，请求 `chatgpt.com/backend-api/wham/usage`；有可用的额度重置次数时再查一次到期时间，统计页的服务端数据统计最多一小时查一次。请求失败时退回到会话日志里的数据。 | 读会话日志：Codex 每次回复后都会在日志里记下当时的额度（已用比例和重置时间），只要在用 Codex 就几乎是实时的。本机和添加的远程机器的日志都算，取最新的一份。 |
 
-额度接口不是公开 API，Anthropic 或 OpenAI 改动后可能失效。所有数据只在本机和对应官方服务之间传输。
+**官方接口会发什么**：只发不带请求体的 GET 请求，请求头里是登录令牌、Codex 的账号 ID，以及和官方客户端一样的 User-Agent（`claude-code`、`codex-cli`）；不会上传会话内容、用量记录或其他本地数据。Claude 的令牌过期时，UsageBar 会像 Claude Code 一样用刷新令牌换一个新的并写回钥匙串。
+
+**仅本地**：不发任何请求，也不读钥匙串和 `auth.json`；统计页的 Codex 服务端数据统计和额度重置次数这时不显示。
+
+额度接口不是公开 API，Anthropic 或 OpenAI 改动后可能失效。
+
+### 用量统计
+
+用量统计不需要登录，所有数据都在本机：
+
+- **会话日志**：本机的 `~/.claude/projects`（包括在 Claude 桌面 app 里用 Claude Code 的会话）和 `~/.codex/sessions`；只读新写入的部分。Claude 桌面 app 里的普通聊天不在本地留记录，所以不算在统计里（但算在额度里）。
+- **远程机器**：在「通用 → 数据来源」里添加的机器上的 Codex 日志，用 `ssh` 读取，在远程先过滤再传回（只传原日志的百分之几）。需要能免密登录（比如用密钥）；局域网里的机器还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 UsageBar。
+- **本机数据库**：解析结果存在 `~/Library/Application Support/UsageBar/usage.sqlite`，Claude Code 清理旧日志后统计也还在。
+- **成本**：按 [models.dev](https://models.dev) 的 API 价格估算（每天下载一次价格表），不是订阅实际扣的钱。
 
 ## 从源码构建
 
