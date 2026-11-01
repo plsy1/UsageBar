@@ -811,6 +811,7 @@ struct StatsView: View {
     /// 请求明细每格左边留的空：表头的分隔线在两列交界处，文字不能贴着它
     static let cellInset: CGFloat = 8
     @State var showRange = false
+    @State var showMachines = false
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
     /// 请求明细里隐藏的列（LogColumn 的 rawValue，逗号分隔）
@@ -1006,29 +1007,42 @@ struct StatsView: View {
     }
 
     /// 选看哪几台机器的 Codex 记录（可多选）
+    /// 用弹出面板而不是菜单：菜单点一项就收起，勾几台机器得点开好几次
     var machineMenu: some View {
         let all = machines, hidden = hiddenMachineSet
         let shown = all.filter { !hidden.contains($0) }
-        let name = { (m: String) in m.isEmpty ? L("本机") : m }
-        let set = { (h: Set<String>) in
-            hiddenMachines = h.map { $0.isEmpty ? "@local" : $0 }.sorted().joined(separator: ",")
-            page = 0
-        }
-        return Menu {
-            Button { set([]) } label: { check(hidden.isEmpty, L("全部机器")) }
-            Divider()
-            ForEach(all, id: \.self) { m in
-                Button {
-                    if hidden.contains(m) { set(hidden.subtracting([m])) }
-                    else if shown.count > 1 { set(hidden.union([m])) }  // 至少留一台
-                } label: { check(!hidden.contains(m), name(m)) }
+        return Button { showMachines.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "desktopcomputer")
+                Text(shown.count == all.count ? L("全部机器") : shown.count == 1 ? machineName(shown[0]) : L("%d 台机器", shown.count))
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             }
-        } label: {
-            Label(shown.count == all.count ? L("全部机器") : shown.count == 1 ? name(shown[0]) : L("%d 台机器", shown.count),
-                  systemImage: "desktopcomputer")
         }
-        .menuStyle(.borderlessButton).fixedSize()
         .help(L("Codex 记录来自哪几台机器"))
+        .popover(isPresented: $showMachines, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(L("全部机器"), isOn: Binding(get: { hiddenMachineSet.isEmpty }, set: { _ in setHidden([]) }))
+                Divider()
+                ForEach(machines, id: \.self) { m in
+                    let h = hiddenMachineSet
+                    Toggle(machineName(m), isOn: Binding(get: { !h.contains(m) }, set: { on in
+                        setHidden(on ? h.subtracting([m]) : h.union([m]))
+                    }))
+                    // 至少留一台
+                    .disabled(!h.contains(m) && machines.count - h.count == 1)
+                }
+            }
+            .toggleStyle(.checkbox)
+            .padding(16)
+            .frame(minWidth: 180, alignment: .leading)
+        }
+    }
+
+    func machineName(_ m: String) -> String { m.isEmpty ? L("本机") : m }
+
+    func setHidden(_ h: Set<String>) {
+        hiddenMachines = h.map { $0.isEmpty ? "@local" : $0 }.sorted().joined(separator: ",")
+        page = 0
     }
 
     /// Codex · 服务端数据统计：OpenAI 账号统计，单独显示，不和本机、远程的日志记录混在一起算
