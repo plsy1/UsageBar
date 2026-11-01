@@ -75,9 +75,28 @@ fn ssh(host: &str, script: &str, timeout: Duration) -> (Vec<u8>, Option<String>)
         Some(_) => {
             let msg = String::from_utf8_lossy(&err);
             let last = msg.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("");
-            (out, Some(if last.is_empty() { "unreachable".into() } else { last.to_string() }))
+            (out, Some(error_key(last)))
         }
     }
+}
+
+/// 常见的 ssh 错误换成界面能翻译的 key（Windows 上 ssh 附带的系统原因是本地编码，显示出来是乱码）；其他的原样
+fn error_key(msg: &str) -> String {
+    let m = msg.to_ascii_lowercase();
+    let key = if m.is_empty() {
+        "unreachable"
+    } else if m.contains("could not resolve hostname") {
+        "no_host"
+    } else if m.contains("permission denied") {
+        "ssh_auth"
+    } else if m.contains("host key verification failed") {
+        "host_key"
+    } else if m.contains("timed out") || m.contains("no route to host") || m.contains("connection refused") || m.contains("network is unreachable") {
+        "unreachable"
+    } else {
+        return msg.to_string();
+    };
+    key.into()
 }
 
 /// 列出远程的 Codex 日志：「大小 修改时间 路径」一行一个（Linux 和 macOS 的 stat 参数不一样，两种都试）
@@ -302,5 +321,8 @@ mod tests {
         assert_eq!(hex_bytes("7b0a"), vec![0x7b, 0x0a]);
         assert_eq!(hex_bytes("-"), Vec::<u8>::new());
         assert_eq!(quote("/a/it's"), r"'/a/it'\''s'");
+        assert_eq!(error_key("ssh: Could not resolve hostname jetson: ?????????"), "no_host");
+        assert_eq!(error_key("y@nuc: Permission denied (publickey,password)."), "ssh_auth");
+        assert_eq!(error_key("Connection closed by 203.0.113.9 port 22"), "Connection closed by 203.0.113.9 port 22");
     }
 }
