@@ -1,12 +1,15 @@
 // 排查用：打印今天和最近 7 天每家的汇总，格式和 macOS 版 `UsageBar --stats` 一样，后面附上精确数字
 //   cargo run --example stats_check [缓存目录]
-// 缓存目录默认是系统临时目录下的 usagebar-stats-check（不碰正式版的缓存）
+// 缓存目录默认是系统临时目录下的 usagebar-stats-check（不碰正式版的缓存和数据库）
 // 再加 since=<带小数秒的 ISO 时间> 打印从那时起每家的汇总（对照「重置以来」用）
 
 #[path = "../src/stats.rs"]
 mod stats;
+#[path = "../src/db.rs"]
+#[allow(dead_code)]
+mod db;
 
-use stats::{LogReader, Source, StatsRange, Summary};
+use stats::{Source, StatsRange, Summary};
 use std::time::Instant;
 
 fn abbrev(n: i64) -> String {
@@ -33,9 +36,10 @@ fn main() {
         stats::load_pricing(&client, &dir, false).await
     });
     let t1 = Instant::now();
-    let mut reader = LogReader::new(&dir);
-    let mut recs = reader.read(StatsRange::Week.preset_start());
-    pricing.apply(&mut recs);
+    let mut store = db::Store::open(&dir).expect("open database");
+    store.sync_local(&pricing);
+    let t_sync = Instant::now();
+    let recs: Vec<_> = store.records_since(StatsRange::Week.preset_start().timestamp_millis()).into_iter().filter(|r| r.host.is_none()).collect();
     let t2 = Instant::now();
     for range in [StatsRange::Today, StatsRange::Week] {
         let name = if range == StatsRange::Today { "today" } else { "7d" };
@@ -72,13 +76,16 @@ fn main() {
     if !unpriced.is_empty() {
         println!("unpriced models: {}", unpriced.join(", "));
     }
+    let o = store.overview();
     println!(
-        "cache {} · pricing {}{} · read {} records in {:.0} ms (pricing {:.0} ms)",
+        "cache {} · pricing {}{} · sync {:.0} ms, query {} records {:.0} ms (pricing {:.0} ms) · database {} records",
         dir.display(),
         if pricing.is_empty() { "missing" } else { "ok" },
         if pricing.download_failed { " (download failed)" } else { "" },
+        (t_sync - t1).as_secs_f64() * 1000.0,
         recs.len(),
-        (t2 - t1).as_secs_f64() * 1000.0,
-        (t1 - t0).as_secs_f64() * 1000.0
+        (t2 - t_sync).as_secs_f64() * 1000.0,
+        (t1 - t0).as_secs_f64() * 1000.0,
+        o.count
     );
 }

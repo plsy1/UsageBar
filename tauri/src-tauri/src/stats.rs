@@ -4,7 +4,7 @@
 //   耗时  : 两边日志都不记，按时间戳估算：请求发出（上一条用户消息 / 工具结果）到回复最后一段写入；
 //           首字取第一段内容写入的时间（日志要等一整段生成完才写，所以偏大）
 //   价格  : models.dev/api.json（每天更新一次，缓存在调用方给的缓存目录）
-//   缓存  : 每个文件的解析结果存成 records.json，下次只接着解析新追加的部分
+//   存储  : 解析结果存进 SQLite 数据库（db.rs），每个文件只接着解析新追加的部分
 
 #![allow(dead_code)]
 
@@ -75,6 +75,10 @@ pub struct UsageRecord {
     pub first_token: Option<f64>, // 估算的首字时间（秒）：第一段内容写入日志的时间
     #[serde(default = "ok_status")]
     pub status: i64, // 失败的请求（Claude Code 会记下来）：429、401 等
+    #[serde(default)]
+    pub project: Option<String>, // 会话的工作目录（日志里的 cwd）
+    #[serde(default)]
+    pub host: Option<String>, // 从哪台远程机器读来的（SSH）；本机的为空
 }
 
 fn ok_status() -> i64 {
@@ -97,6 +101,8 @@ impl UsageRecord {
             duration: None,
             first_token: None,
             status: 200,
+            project: None,
+            host: None,
         }
     }
 
@@ -294,22 +300,17 @@ fn strip_date_suffix(model: &str) -> &str {
 
 // MARK: - 读会话记录
 
-/// 解析规则改了就加一，旧缓存作废
-const CACHE_VERSION: u32 = 1;
-pub const RECORDS_FILE: &str = "records.json";
-
-/// 每个文件的解析结果。存到磁盘上，下次启动直接用（全部重读要好几秒）；
-/// 文件变了只接着解析后面新写的部分（会话日志只会往后追加）
+/// 一个日志文件的解析进度（存在数据库的 files 表里）。文件变了只接着解析后面新写的部分（会话日志只会往后追加）
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct Entry {
-    mtime: i64, // 纳秒
-    size: u64,
-    records: Vec<UsageRecord>,
-    offset: u64,      // 已经解析到的字节位置（总在一行末尾）
-    tail: u64,        // offset 之前一小段内容的指纹：对不上说明文件被改写过，得从头读
-    tail_length: u64,
+pub struct Entry {
+    pub offset: u64,      // 已经解析到的字节位置（总在一行末尾）
+    pub tail: u64,        // offset 之前一小段内容的指纹：对不上说明文件被改写过，得从头读
+    pub tail_length: u64,
     claude: ClaudeState,
-    codex: CodexState,
+    pub codex: CodexState,
+    /// 最后几十条记录：Claude 的一个回复分几行写，接着读时后面几段要更新前面那条的耗时
+    #[serde(default)]
+    recent: Vec<UsageRecord>,
 }
 
 /// 解析读到 offset 时的状态，接着读时要用
@@ -327,8 +328,10 @@ impl Default for ClaudeState {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct CodexState {
+pub struct CodexState {
     model: String,
+    #[serde(default)]
+    cwd: Option<String>,
     last_total: i64,
     #[serde(with = "opt_ms")]
     input_at: Option<DateTime<Utc>>,
@@ -342,117 +345,19 @@ struct CodexState {
 
 impl Default for CodexState {
     fn default() -> Self {
-        CodexState { model: "codex".into(), last_total: -1, input_at: None, start: None, first: None, end: None }
+        CodexState { model: "codex".into(), cwd: None, last_total: -1, input_at: None, start: None, first: None, end: None }
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct DiskCache {
-    version: u32,
-    files: HashMap<String, Entry>,
-}
-
-/// 会话记录读取器：内存里留一份各文件的解析结果，磁盘上存在 cache_dir/records.json。
-/// 不是线程安全的，多处用时外面套一层 Mutex
-pub struct LogReader {
-    path: PathBuf,
-    files: HashMap<String, Entry>,
-    loaded: bool,
-}
-
 /// 日志目录（相对用户目录）和来源；Windows 上用户目录是 %USERPROFILE%
-const LOG_DIRS: [(&str, Source); 3] = [
+pub const LOG_DIRS: [(&str, Source); 3] = [
     (".claude/projects", Source::Claude),
     (".codex/sessions", Source::Codex),
     (".codex/archived_sessions", Source::Codex),
 ];
 
-impl LogReader {
-    pub fn new(cache_dir: &Path) -> Self {
-        LogReader { path: cache_dir.join(RECORDS_FILE), files: HashMap::new(), loaded: false }
-    }
-
-    fn load_disk(&mut self) {
-        if self.loaded {
-            return;
-        }
-        self.loaded = true;
-        let Some(disk) = fs::read(&self.path).ok().and_then(|d| serde_json::from_slice::<DiskCache>(&d).ok()) else {
-            return;
-        };
-        if disk.version == CACHE_VERSION {
-            self.files = disk.files;
-        }
-    }
-
-    fn save_disk(&self) {
-        #[derive(Serialize)]
-        struct Out<'a> {
-            version: u32,
-            files: &'a HashMap<String, Entry>,
-        }
-        if let Ok(data) = serde_json::to_vec(&Out { version: CACHE_VERSION, files: &self.files }) {
-            let _ = write_atomic(&self.path, &data);
-        }
-    }
-
-    /// 上次存下的结果，不碰日志文件（启动时先拿它出数）
-    pub fn cached(&mut self) -> Vec<UsageRecord> {
-        self.load_disk();
-        dedupe(self.files.values().flat_map(|e| e.records.iter().cloned()), DateTime::<Utc>::MIN_UTC)
-    }
-
-    /// 读 since 以后改过的日志，返回去重后、按时间倒序的记录（未填 cost）。全部历史传 DateTime::<Utc>::MIN_UTC
-    pub fn read(&mut self, since: DateTime<Utc>) -> Vec<UsageRecord> {
-        self.load_disk();
-        let Some(home) = dirs::home_dir() else { return vec![] };
-        let since_ns = since.timestamp_nanos_opt().unwrap_or(i64::MIN);
-        let mut all: Vec<UsageRecord> = vec![];
-        let mut seen = HashSet::new();
-        let mut changed = false;
-        for (dir, src) in LOG_DIRS {
-            let mut files = vec![];
-            walk(&home.join(dir), &mut files);
-            for path in files {
-                let meta = fs::metadata(&path).ok();
-                let mtime = meta.as_ref().and_then(|m| m.modified().ok()).map_or(i64::MIN, nanos);
-                let size = meta.map_or(0, |m| m.len());
-                let key = path.to_string_lossy().into_owned();
-                seen.insert(key.clone());
-                if mtime < since_ns {
-                    continue;
-                }
-                if let Some(c) = self.files.get(&key) {
-                    if c.mtime == mtime && c.size == size {
-                        all.extend(c.records.iter().cloned());
-                        continue;
-                    }
-                }
-                let mut entry = match self.files.remove(&key) {
-                    Some(e) if can_resume(&e, &path, size) => e,
-                    _ => Entry::default(),
-                };
-                parse(&path, src, &mut entry);
-                entry.mtime = mtime;
-                entry.size = size;
-                all.extend(entry.records.iter().cloned());
-                self.files.insert(key, entry);
-                changed = true;
-            }
-        }
-        // 删掉的日志也从缓存里去掉
-        let before = self.files.len();
-        self.files.retain(|k, _| seen.contains(k));
-        changed |= self.files.len() != before;
-        if changed {
-            self.save_disk();
-        }
-        dedupe(all, since)
-    }
-}
-
 /// 递归找 .jsonl（不跟进目录的符号链接）
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+pub fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let Ok(ft) = e.file_type() else { continue };
@@ -465,7 +370,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn nanos(t: SystemTime) -> i64 {
+pub fn nanos(t: SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_nanos().min(i64::MAX as u128) as i64,
         Err(e) => -(e.duration().as_nanos().min(i64::MAX as u128) as i64),
@@ -487,7 +392,7 @@ fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// 能不能接着上次的位置读：文件没变小，offset 前面那一小段也没变
-fn can_resume(e: &Entry, path: &Path, size: u64) -> bool {
+pub fn can_resume(e: &Entry, path: &Path, size: u64) -> bool {
     if e.offset == 0 || size < e.offset {
         return false;
     }
@@ -496,30 +401,45 @@ fn can_resume(e: &Entry, path: &Path, size: u64) -> bool {
     f.seek(SeekFrom::Start(e.offset - e.tail_length)).is_ok() && f.read_exact(&mut buf).is_ok() && fnv(&buf) == e.tail
 }
 
-/// 从 entry.offset 读到文件末尾最后一个完整行；写到一半的行留到下次
-fn parse(path: &Path, src: Source, e: &mut Entry) {
+/// 从 entry.offset 读到文件末尾最后一个完整行（写到一半的行留到下次），返回新的和更新过的记录
+pub fn parse(path: &Path, src: Source, e: &mut Entry) -> Vec<UsageRecord> {
     let data = if e.offset == 0 {
         match fs::read(path) {
             Ok(d) => d,
-            Err(_) => return,
+            Err(_) => return vec![],
         }
     } else {
         let mut d = vec![];
-        let Ok(mut f) = fs::File::open(path) else { return };
+        let Ok(mut f) = fs::File::open(path) else { return vec![] };
         if f.seek(SeekFrom::Start(e.offset)).is_err() || f.read_to_end(&mut d).is_err() {
-            return;
+            return vec![];
         }
         d
     };
-    let Some(last_newline) = memchr::memrchr(b'\n', &data) else { return };
+    let Some(last_newline) = memchr::memrchr(b'\n', &data) else { return vec![] };
     let chunk = &data[..=last_newline];
+    let mut out = match src {
+        Source::Claude => std::mem::take(&mut e.recent),
+        Source::Codex => vec![],
+    };
     match src {
-        Source::Claude => parse_claude(chunk, &mut e.claude, &mut e.records),
-        Source::Codex => parse_codex(chunk, &mut e.codex, &mut e.records),
+        Source::Claude => parse_claude(chunk, &mut e.claude, &mut out),
+        Source::Codex => parse_codex(chunk, &mut e.codex, &mut out),
+    }
+    if src == Source::Claude {
+        e.recent = out[out.len().saturating_sub(50)..].to_vec();
     }
     e.offset += chunk.len() as u64;
     e.tail_length = chunk.len().min(64) as u64;
     e.tail = fnv(&chunk[chunk.len() - e.tail_length as usize..]);
+    out
+}
+
+/// 远程传回来的一段（已在远程过滤过）：只解析 Codex，进度由调用方按原文件的字节数记
+pub fn parse_codex_chunk(chunk: &[u8], e: &mut Entry) -> Vec<UsageRecord> {
+    let mut out = vec![];
+    parse_codex(chunk, &mut e.codex, &mut out);
+    out
 }
 
 /// FNV-1a：内容指纹（和 Swift 版同一算法）
@@ -672,6 +592,7 @@ fn parse_claude(data: &[u8], state: &mut ClaudeState, out: &mut Vec<UsageRecord>
             let mut r = UsageRecord::new(id.clone(), ts, Source::Claude, model.clone());
             r.status = claude_status(&o);
             r.duration = span(sent_at, ts);
+            r.project = o.get("cwd").and_then(Value::as_str).map(String::from);
             index.insert(id, out.len());
             out.push(r);
             continue;
@@ -686,6 +607,7 @@ fn parse_claude(data: &[u8], state: &mut ClaudeState, out: &mut Vec<UsageRecord>
         r.cache_write_1h = r.cache_write.min(w1h);
         r.duration = span(sent_at, ts);
         r.first_token = r.duration;
+        r.project = o.get("cwd").and_then(Value::as_str).map(String::from);
         index.insert(id, out.len());
         out.push(r);
     }
@@ -731,6 +653,9 @@ fn parse_codex(data: &[u8], state: &mut CodexState, out: &mut Vec<UsageRecord>) 
             if let Some(m) = p.get("model").and_then(Value::as_str) {
                 s.model = m.to_string();
             }
+            if let Some(c) = p.get("cwd").and_then(Value::as_str) {
+                s.cwd = Some(c.to_string());
+            }
             continue;
         }
         if p.get("type").and_then(Value::as_str) != Some("token_count") {
@@ -759,6 +684,7 @@ fn parse_codex(data: &[u8], state: &mut CodexState, out: &mut Vec<UsageRecord>) 
         if let Some(first) = s.first {
             r.first_token = span(s.start, first);
         }
+        r.project = s.cwd.clone();
         s.start = None;
         s.first = None;
         s.end = None;

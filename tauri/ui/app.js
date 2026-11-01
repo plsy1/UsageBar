@@ -1,4 +1,4 @@
-// 窗口界面：「额度」「桌面卡片」「设置」三页；同一个页面也用作托盘小面板（#flyout）和桌面卡片（#card）
+// 窗口界面：「用量统计」「额度」「桌面卡片」「设置」四页（统计页在 stats.js）；同一个页面也用作托盘小面板（#flyout）和桌面卡片（#card）
 // 数据和设置都在 Rust 那边（src-tauri/src/main.rs）
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -95,7 +95,7 @@ const T = {
 };
 
 let state = null;
-let page = 'usage';
+let page = 'stats';
 // 卡片设置页正在看哪张：limits / stats
 let cardTab = 'limits';
 // 两张卡片形状一样时对齐到的内容区大小（Rust 发来的）
@@ -405,8 +405,11 @@ function render() {
     reportCardContent(s[k + 'show'] && ready && count ? `${s[k + 'layout']}|${s[k + 'scale']}|${count}` : '');
     return;
   }
-  const pages = { usage: usagePage, card: cardSettingsPage, settings: settingsPage };
-  document.getElementById('content').innerHTML = pages[page]();
+  const pages = { stats: statsPage, usage: usagePage, card: cardSettingsPage, settings: settingsPage };
+  const main = document.getElementById('content');
+  main.classList.toggle('wide', page === 'stats');
+  main.innerHTML = pages[page]();
+  if (page === 'stats') afterStatsRender();
 }
 
 async function save(patch) {
@@ -484,13 +487,23 @@ function drawGuides([x, y]) {
     await listen('guides', (e) => drawGuides(e.payload));
     return;
   }
+  // 等后面的脚本（stats.js）也加载完再画
+  if (document.readyState === 'loading') await new Promise((r) => document.addEventListener('DOMContentLoaded', r));
   if (FLYOUT) document.body.classList.add('flyout');
   if (ANY_CARD) { document.documentElement.classList.add('card'); document.body.classList.add('card'); }
   document.getElementById('version').textContent = await window.__TAURI__.app.getVersion().catch(() => '');
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
   state = await invoke('get_state');
   render();
-  await listen('state', (e) => { state = e.payload; render(); });
+  await listen('state', (e) => {
+    // 额度刷新后「重置以来」的起点可能变了：统计页重新查
+    const cycleChanged = JSON.stringify(e.payload.cycle) !== JSON.stringify(state?.cycle);
+    state = e.payload;
+    if (page === 'stats' && cycleChanged && statsQ.range === 'cycle') fetchStats();
+    render();
+  });
+  // 日志读进库以后：统计页按自己的条件重新查
+  await listen('stats_changed', () => { if (page === 'stats' && !FLYOUT && !ANY_CARD) fetchStats(); });
   // 卡片右键「卡片设置…」：主窗口切到卡片页
   // 卡片右键「卡片设置…」：主窗口切到卡片页，并切到那张卡片
   await listen('navigate', (e) => {

@@ -12,10 +12,10 @@
       {
         "label": "main",
         "title": "UsageBar",
-        "width": 900,
-        "height": 580,
-        "minWidth": 760,
-        "minHeight": 500,
+        "width": 1180,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
         "visible": false,
         "center": true
       },

@@ -1,13 +1,15 @@
 // UsageBar（Windows / Linux 版）：托盘显示 Claude / Codex 剩余用量
 //   托盘：Linux 顶栏直接显示「Cc 56%  Cx 47%」；Windows 托盘只有图标，悬停看用量，左键点开小面板（flyout）
 //   桌面卡片：跟 macOS 版一样的悬浮卡片，右键菜单；位置和拖动吸附见 cards.rs
-//   窗口：「额度」「桌面卡片」「设置」三页（ui/）
+//   窗口：「用量统计」「额度」「桌面卡片」「设置」四页（ui/）
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cards;
+mod db;
 mod i18n;
 mod stats;
+mod statsview;
 mod usage;
 
 use serde::{Deserialize, Serialize};
@@ -104,10 +106,12 @@ struct AppState {
     flyout_hidden_at: Mutex<Option<Instant>>,
     /// 正在拖的卡片
     drag: Mutex<Option<cards::Drag>>,
-    /// 用量统计：读日志的（带增量缓存）、全部记录（已算好成本，新的在前）、上次读完的时间
-    reader: Mutex<Option<Arc<Mutex<stats::LogReader>>>>,
+    /// 用量统计：数据库（解析好的记录都在里面）、最近几天的记录（用量卡片用，新的在前）、价格表、上次读完的时间
+    store: Mutex<Option<Arc<Mutex<db::Store>>>>,
     records: Mutex<Vec<stats::UsageRecord>>,
+    pricing: Mutex<Arc<stats::Pricing>>,
     stats_updated: Mutex<Option<i64>>,
+    stats_loading: Mutex<bool>,
     /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
     card_content: Mutex<HashMap<String, CardContent>>,
 }
@@ -136,6 +140,9 @@ struct Snapshot {
     loading: bool,
     lang: &'static str,
     usage: UsageCard,
+    stats_loading: bool,
+    /// 各家周额度当前周期的起点（毫秒）：统计页「重置以来」用
+    cycle: HashMap<String, i64>,
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
@@ -146,7 +153,15 @@ fn snapshot(app: &AppHandle) -> Snapshot {
     let loading = *st.loading.lock().unwrap();
     let lang = i18n::resolve(&settings.language);
     let usage = usage_card(&st, &settings, &providers);
-    Snapshot { settings, providers, updated, loading, lang, usage }
+    let stats_loading = *st.stats_loading.lock().unwrap();
+    let cycle = providers
+        .iter()
+        .filter_map(|p| {
+            let reset = p.windows.iter().find(|w| w.kind == "weekly")?.resets_at?;
+            Some((p.name.clone(), stats::cycle_start(chrono::DateTime::from_timestamp(reset, 0)?).timestamp_millis()))
+        })
+        .collect();
+    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle }
 }
 
 /// 用量卡片的汇总。「重置以来」每家按自己的每周额度重置时间算
@@ -356,29 +371,79 @@ async fn refresh(app: AppHandle) {
     let _ = app.emit("state", snapshot(&app));
 }
 
-/// 读用量统计：第一次先拿磁盘缓存马上出数，再读改动过的日志；读日志放到后台线程
-async fn refresh_stats(app: AppHandle, force_prices: bool) {
-    let Ok(dir) = app.path().app_cache_dir() else { return };
+/// 内存里只放用量卡片要的最近几天（「重置以来」最多 7 天）；统计页按需从库里查
+fn recent_start() -> i64 {
+    (chrono::Utc::now() - chrono::Duration::days(8)).timestamp_millis()
+}
+
+fn open_store(app: &AppHandle) -> Option<Arc<Mutex<db::Store>>> {
     let st = app.state::<AppState>();
-    let first = st.reader.lock().unwrap().is_none();
-    let reader = st.reader.lock().unwrap().get_or_insert_with(|| Arc::new(Mutex::new(stats::LogReader::new(&dir)))).clone();
-    if first {
-        let pricing = stats::Pricing::load_cached(&dir);
-        let r = reader.clone();
-        if let Ok(mut recs) = tauri::async_runtime::spawn_blocking(move || r.lock().unwrap().cached()).await {
-            pricing.apply(&mut recs);
+    let mut slot = st.store.lock().unwrap();
+    if slot.is_none() {
+        let dir = app.path().app_data_dir().ok()?;
+        if let Ok(cache) = app.path().app_cache_dir() {
+            db::remove_old_cache(&cache);
+        }
+        *slot = db::Store::open(&dir).map(|s| Arc::new(Mutex::new(s)));
+    }
+    slot.clone()
+}
+
+/// 读用量统计：日志里新写的部分解析进库，再取最近几天给用量卡片；读日志放到后台线程。
+/// 第一次先从库里取上次的结果马上出数
+async fn refresh_stats(app: AppHandle, force_prices: bool) {
+    let Ok(cache) = app.path().app_cache_dir() else { return };
+    let Some(store) = open_store(&app) else { return };
+    let st = app.state::<AppState>();
+    {
+        let mut loading = st.stats_loading.lock().unwrap();
+        if *loading {
+            return;
+        }
+        *loading = true;
+    }
+    if st.records.lock().unwrap().is_empty() {
+        *st.pricing.lock().unwrap() = Arc::new(stats::Pricing::load_cached(&cache));
+        let s = store.clone();
+        if let Ok(recs) = tauri::async_runtime::spawn_blocking(move || s.lock().unwrap().records_since(recent_start())).await {
             *st.records.lock().unwrap() = recs;
             let _ = app.emit("state", snapshot(&app));
         }
     }
-    let pricing = stats::load_pricing(&reqwest::Client::new(), &dir, force_prices).await;
-    let r = reader.clone();
-    if let Ok(mut recs) = tauri::async_runtime::spawn_blocking(move || r.lock().unwrap().read(chrono::DateTime::<chrono::Utc>::MIN_UTC)).await {
-        pricing.apply(&mut recs);
+    let pricing = Arc::new(stats::load_pricing(&reqwest::Client::new(), &cache, force_prices).await);
+    *st.pricing.lock().unwrap() = pricing.clone();
+    let s = store.clone();
+    let p = pricing.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        let mut s = s.lock().unwrap();
+        s.sync_local(&p);
+        s.reprice_if_needed(&p);
+        s.records_since(recent_start())
+    })
+    .await;
+    if let Ok(recs) = done {
         *st.records.lock().unwrap() = recs;
         *st.stats_updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
-        let _ = app.emit("state", snapshot(&app));
     }
+    *st.stats_loading.lock().unwrap() = false;
+    let _ = app.emit("state", snapshot(&app));
+    // 统计页收到后按自己的条件重新查
+    let _ = app.emit("stats_changed", ());
+}
+
+/// 统计页：按条件从库里查好汇总、走势图、热力图、表格（在后台线程里算）
+#[tauri::command]
+async fn stats_query(app: AppHandle, query: statsview::Query) -> Option<statsview::View> {
+    let store = open_store(&app)?;
+    let pricing = app.state::<AppState>().pricing.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || statsview::compute(&store.lock().unwrap(), &pricing, &query, &[]))
+        .await
+        .ok()
+}
+
+#[tauri::command]
+fn refresh_stats_now(app: AppHandle) {
+    tauri::async_runtime::spawn(refresh_stats(app, false));
 }
 
 async fn stats_loop(app: AppHandle) {
@@ -610,7 +675,8 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
-                                                 card_drag_start, card_drag_move, card_drag_end, card_content])
+                                                 card_drag_start, card_drag_move, card_drag_end, card_content,
+                                                 stats_query, refresh_stats_now])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
