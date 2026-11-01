@@ -170,7 +170,7 @@ function tiles(v) {
 // MARK: 走势图（SVG，悬停时显示虚线、圆点和小卡片）
 
 function niceMax(v) {
-  if (v <= 0) return 1;
+  if (v <= 4) return 4; // 刻度是四等分取整，至少 4 才不会出现重复的刻度
   const p = Math.pow(10, Math.floor(Math.log10(v)));
   for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
   return 10 * p;
