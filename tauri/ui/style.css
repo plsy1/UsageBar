@@ -73,7 +73,9 @@ body {
   background: transparent; color: var(--text);
   font: inherit; text-align: left; cursor: pointer;
 }
-.nav .ico { width: 18px; text-align: center; color: var(--accent); }
+.nav .ico { width: 18px; height: 18px; display: inline-flex; color: var(--accent); }
+.nav .ico svg { width: 18px; height: 18px; }
+.nav-section { color: var(--secondary); font-size: 12px; font-weight: 600; padding: 14px 10px 4px; }
 .nav.active { background: var(--accent); color: var(--accent-text); }
 .nav.active .ico { color: var(--accent-text); }
 .version { margin-top: auto; padding: 0 10px; color: var(--tertiary); font-size: 12px; }
@@ -106,7 +108,7 @@ main { flex: 1; overflow: auto; padding: 26px 30px; }
 .footnote { color: var(--tertiary); font-size: 12px; margin-top: 16px; }
 
 /* 设置：分组表单 */
-.group-title { color: var(--secondary); font-size: 12px; font-weight: 600; margin: 22px 4px 8px; }
+.group-title { color: var(--text); font-size: 13px; font-weight: 650; margin: 22px 2px 8px; }
 .group { padding: 0 16px; max-width: 620px; }
 .field { display: flex; align-items: center; justify-content: space-between; min-height: 48px; gap: 16px; }
 .field + .field { border-top: 1px solid var(--border); }
@@ -161,7 +163,7 @@ body.flyout .row { margin-top: 10px; }
 
 .field .hint { margin-top: 2px; }
 .slider { display: inline-flex; align-items: center; gap: 10px; }
-.slider input { width: 180px; accent-color: var(--accent); }
+.slider input { width: 140px; accent-color: var(--accent); }
 .slider .pct { width: 40px; text-align: right; color: var(--secondary); font-variant-numeric: tabular-nums; }
 
 /* 桌面卡片：尺寸都按 --s 缩放，数值跟 macOS 版 CardView 一样 */
@@ -336,3 +338,28 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
   --sw-pink: #ff2d55; --sw-purple: #af52de; --sw-blue: #007aff; --sw-teal: #30b0c7; --sw-green: #34c759; --sw-orange: #ff9500; --sw-gray: #8e8e93; }
 .swatches button { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; background-clip: content-box; }
 .swatches button.on { border-color: var(--text); }
+/* 页头图标（和 macOS 版一样放在浅灰圆角方块里） */
+.page-icon { width: 42px; height: 42px; border-radius: 10px; background: rgba(127, 127, 127, 0.12); display: grid; place-items: center; flex-shrink: 0; }
+.page-icon svg { width: 22px; height: 22px; }
+.info-ico svg { width: 20px; height: 20px; }
+/* 设置页：两列各自往下排，窄了就上下排；每组是标题、面板、说明 */
+.cols { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.col { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 26px; }
+.col .group { max-width: none; }
+.sgroup > .group-title { margin-top: 0; }
+.sgroup > .footnote { margin-top: 8px; line-height: 1.5; }
+.field { flex-wrap: wrap; row-gap: 6px; padding: 8px 0; }
+.field > :first-child { flex: 1 1 100px; min-width: 0; }
+.field > :last-child { margin-left: auto; flex-shrink: 0; }
+.card-tabs { margin-bottom: 18px; }
+/* 卡片预览：桌面一样的底色 */
+.card-preview { border-radius: 12px; padding: 24px; min-height: 320px; display: flex; align-items: center; justify-content: center; overflow: auto;
+  background: linear-gradient(135deg, #5b6b82, #2f3a4b); }
+/* 托盘预览：上面一条像顶栏，下面是点开的面板 */
+.tray-bar { display: flex; justify-content: flex-end; align-items: center; gap: 14px; height: 30px; padding: 0 12px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--border); font-size: 13px; }
+.tray-text { padding: 2px 8px; border-radius: 5px; background: rgba(127, 127, 127, 0.15); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tray-panel { width: 340px; max-width: 100%; margin: 8px 12px 0 auto; padding: 12px; border-radius: 10px; background: var(--bg);
+  border: 1px solid var(--border); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); }
+.tray-panel .providers { grid-template-columns: 1fr; gap: 10px; }
+.tray-panel .provider { padding: 14px 16px; }

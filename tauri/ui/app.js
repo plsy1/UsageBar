@@ -7,8 +7,18 @@ const { listen } = window.__TAURI__.event;
 const T = {
   nav_usage: ['额度', '上限', 'Limits'],
   nav_settings: ['设置', '設定', 'Settings'],
-  nav_card: ['桌面卡片', 'デスクトップカード', 'Desktop Card'],
-  card_sub: ['布局、外观和大小，改动会马上显示在卡片上', 'レイアウト、外観、サイズ。変更はすぐカードに反映されます', 'Layout, look and size. Changes show on the card right away'],
+  nav_card: ['卡片', 'カード', 'Cards'],
+  nav_general: ['通用', '一般', 'General'],
+  nav_tray: ['托盘', 'トレイ', 'Tray'],
+  tray_sub: ['托盘上显示的文字，右边是点开后的面板', 'トレイに表示する文字。右側はクリックで開くパネル', 'What the tray shows; on the right, the panel it opens'],
+  g_basic: ['基本', '基本', 'Basics'],
+  g_show: ['显示内容', '表示内容', 'Contents'],
+  g_tray_text: ['托盘文字', 'トレイの文字', 'Tray Text'],
+  g_menu: ['菜单和面板', 'メニューとパネル', 'Menu and Panel'],
+  reset_time_menu: ['重置时间', 'リセット時刻', 'Reset Time'],
+  preview: ['预览', 'プレビュー', 'Preview'],
+  tray_preview_note: ['Linux 在顶栏显示这段文字；Windows 托盘只有图标，鼠标放上去显示这段文字，点开是下面的面板', 'Linux ではトップバーにこの文字を表示します。Windows のトレイはアイコンだけで、マウスを重ねるとこの文字、クリックすると下のパネルが開きます', 'Linux shows this text in the top bar; on Windows the tray shows only the icon, with this text on hover and the panel below on click'],
+  card_sub: ['额度卡片和用量卡片分开设置，改动会实时显示在右边的预览里', '上限カードと使用量カードは個別に設定します。変更は右のプレビューにすぐ反映されます', 'The limits card and the usage card are set up separately; changes show in the preview on the right'],
   g_card: ['卡片', 'カード', 'Card'],
   g_look: ['外观', '外観', 'Appearance'],
   show_card: ['显示额度卡片', '上限カードを表示', 'Show Limits Card'],
@@ -54,7 +64,7 @@ const T = {
   expires: ['%s 到期', '%s まで', 'expires %s'],
   earliest: ['最早 %s 到期', '最も早いもの %s まで', 'earliest expires %s'],
   usage_sub: ['Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量', 'Remaining Claude and Codex usage'],
-  settings_sub: ['托盘、语言和刷新频率', 'トレイ、言語、更新頻度', 'Tray, language and refresh frequency'],
+  settings_sub: ['开机启动、外观、刷新频率和数据来源', 'ログイン時の起動、外観、更新頻度、データソース', 'Launch at login, appearance, refresh and data sources'],
   refresh: ['立即刷新', '今すぐ更新', 'Refresh Now'],
   open_window: ['打开窗口', 'ウィンドウを開く', 'Open Window'],
   refreshing: ['正在刷新…', '更新中…', 'Refreshing…'],
@@ -154,7 +164,7 @@ const T = {
   stats_detail: ['读取本机和远程机器的会话记录', 'この PC とリモートマシンのセッション記録を読み込みます', 'Reads session logs on this computer and remote machines'],
   refresh_note: ['用量统计只读取新写入的日志，刷新很快', '使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります', 'Usage statistics only read newly written logs, so refreshing is quick'],
   g_tray: ['托盘', 'トレイ', 'Tray'],
-  tray_note: ['只影响托盘、托盘菜单和「额度」页，两张卡片在「桌面卡片」里各自设置', 'トレイ、トレイメニュー、「上限」ページだけに反映されます。2 枚のカードは「デスクトップカード」で個別に設定します', 'Only affects the tray, its menu and the Limits page; each desktop card has its own settings'],
+  tray_note: ['只影响托盘，两张卡片在「卡片」里各自设置', 'トレイだけに反映されます。2 枚のカードは「カード」で個別に設定します', 'Only affects the tray; each card has its own settings under Cards'],
   tray_limit: ['显示的额度', '表示する上限', 'Limit Shown'],
   both: ['都显示', '両方', 'Both'],
   tray_reset: ['菜单里的重置时间', 'メニューのリセット時刻', 'Reset Time in Menu'],
@@ -297,20 +307,6 @@ function providerHTML(p) {
   }
   if (p.note) html += `<div class="note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>`;
   return html + '</div>';
-}
-
-function usagePage() {
-  const s = state.settings;
-  const shown = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex));
-  const status = state.loading ? t('refreshing') : state.updated ? t('updated', clock(state.updated)) : '';
-  return `<div class="header">
-      <div><h1>${t('nav_usage')}</h1><div class="sub">${t('usage_sub')}</div></div>
-      <div class="spacer"></div>
-      <span class="sub">${status}</span>
-      <button class="btn" id="refresh" ${state.loading ? 'disabled' : ''}>${t('refresh')}</button>
-    </div>
-    ${state.providers.length === 0 ? `<div class="sub">${t('loading')}</div>` : `<div class="providers">${shown.map(providerHTML).join('')}</div>`}
-    <div class="footnote">${t('footnote')}</div>`;
 }
 
 function flyoutPage() {
@@ -461,6 +457,15 @@ const toggle = (id, on) => `<label class="switch"><input type="checkbox" id="${i
 // 百分比滑块：拖动时只更新数字，松手再保存
 const slider = (key, min, max, step) => `<span class="slider"><input type="range" data-num="${key}" min="${min}" max="${max}" step="${step}" value="${state.settings[key]}"><span class="pct">${Math.round(state.settings[key] * 100)}%</span></span>`;
 
+// 卡片比预览框宽（大尺寸、左右布局）时缩小显示，免得被裁掉
+function fitCardPreview() {
+  const frame = document.querySelector('.card-preview'), box = frame?.querySelector('.card-box');
+  if (!box) return;
+  const room = frame.clientWidth - 32, w = box.offsetWidth;
+  box.style.zoom = w > room ? room / w : '';
+}
+window.addEventListener('resize', () => { if (page === 'card' && !ANY_CARD) fitCardPreview(); });
+
 function cardSettingsPage() {
   const s = state.settings, stats = cardTab === 'stats', k = stats ? 'stats_card_' : 'card_';
   const tabs = `<div class="seg card-tabs">${[['limits', t('limits_card')], ['stats', t('usage_card')]].map(([v, l]) =>
@@ -473,28 +478,23 @@ function cardSettingsPage() {
        <div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>
        <div class="field"><span>Claude</span>${toggle('card_show_claude', s.card_show_claude)}</div>
        <div class="field"><span>Codex</span>${toggle('card_show_codex', s.card_show_codex)}</div>`;
-  return `<div class="header"><div><h1>${t('nav_card')}</h1><div class="sub">${t('card_sub')}</div></div></div>
-    ${tabs}
-    <div class="group-title">${t(stats ? 'usage_card' : 'limits_card')}</div>
-    <div class="panel group">
+  const form = group(t(stats ? 'usage_card' : 'limits_card'), `
       <div class="field"><span>${t(stats ? 'show_usage_card' : 'show_card')}</span>${toggle(k + 'show', s[k + 'show'])}</div>
       <div class="field"><span>${t('on_top')}<div class="hint">${t('on_top_hint')}</div></span>${toggle(k + 'on_top', s[k + 'on_top'])}</div>
-      ${own}
-    </div>
-    <div class="footnote">${t(stats ? 'usage_card_desc' : 'limits_card_desc')}</div>
-    <div class="group-title">${t('layout')}</div>
-    <div class="panel group">
+      ${own}`, t(stats ? 'usage_card_desc' : 'limits_card_desc'))
+    + group(t('layout'), `
       <div class="field"><span>${t('layout')}</span>${seg(k + 'layout', [['horizontal', t('l_horizontal')], ['vertical', t('l_vertical')], ['compact', t('l_compact')]])}</div>
-      <div class="field"><span>${t('size')}</span>${slider(k + 'scale', 0.8, 2.5, 0.1)}</div>
-    </div>
-    <div class="group-title">${t('g_look')}</div>
-    <div class="panel group">
+      <div class="field"><span>${t('size')}</span>${slider(k + 'scale', 0.8, 2.5, 0.1)}</div>`)
+    + group(t('g_look'), `
       <div class="field"><span>${t('background')}</span>${seg(k + 'background', [['none', t('bg_none')], ['dark', t('bg_dark')], ['light', t('bg_light')]])}</div>
       ${s[k + 'background'] !== 'none' ? `<div class="field"><span>${t('bg_opacity')}</span>${slider(k + 'bg_opacity', 0.1, 1, 0.05)}</div>` : ''}
       <div class="field"><span>${t('text_color')}</span>${seg(k + 'text', [['white', t('white')], ['black', t('black')]])}</div>
-      <div class="field"><span>${t('opacity')}</span>${slider(k + 'opacity', 0.3, 1, 0.05)}</div>
-    </div>
-    <div class="footnote">${t('card_hint')}</div>`;
+      <div class="field"><span>${t('opacity')}</span>${slider(k + 'opacity', 0.3, 1, 0.05)}</div>`);
+  // 预览：和桌面上的卡片同一套画法，放在一块像桌面的底色上
+  const preview = `<section class="sgroup"><div class="group-title">${t('preview')}</div>
+    <div class="card-preview">${stats ? statsCardPage() : cardPage()}</div>
+    <div class="footnote">${t('card_hint')}</div></section>`;
+  return `${pageHeader('card', t('nav_card'), t('card_sub'))}${tabs}${columns(form, preview)}`;
 }
 
 const minutesSelect = (id, list) => `<select id="${id}">${list.map((m) => `<option value="${m}" ${state.settings[id] === m ? 'selected' : ''}>${t('minutes', m)}</option>`).join('')}</select>`;
@@ -502,61 +502,78 @@ const minutesSelect = (id, list) => `<select id="${id}">${list.map((m) => `<opti
 function settingsPage() {
   const s = state.settings;
   const langs = [['auto', t('lang_auto')], ['zh', '中文'], ['ja', '日本語'], ['en', 'English']];
-  return `<div class="header"><div><h1>${t('nav_settings')}</h1><div class="sub">${t('settings_sub')}</div></div></div>
-    <div class="group-title">${t('g_general')}</div>
-    <div class="panel group">
+  const basic = group(t('g_basic'), `
       <div class="field"><span>${t('launch')}</span>${toggle('autostart', autostart)}</div>
       <div class="field"><span>${t('language')}</span>
         <select id="language">${langs.map(([v, l]) => `<option value="${v}" ${s.language === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
       <div class="field"><span>${t('appearance_l')}</span>${seg('appearance', [['auto', t('ap_auto')], ['light', t('ap_light')], ['dark', t('ap_dark')]])}</div>
       <div class="field"><span>${t('accent_l')}</span><span class="swatches">${Object.keys(ACCENTS).map((k) =>
-        `<button data-set="accent" data-val="${k}" class="${s.accent === k ? 'on' : ''}" title="${esc(t('c_' + k))}" style="background-color:var(--sw-${k})"></button>`).join('')}</span></div>
-    </div>
-    <div class="group-title">${t('g_refresh')}</div>
-    <div class="panel group">
-      <div class="field"><span>${t('nav_usage')}<div class="hint">${t('limits_detail')}</div></span>${minutesSelect('refresh_minutes', [1, 2, 5, 10, 15, 30])}</div>
-      <div class="field"><span>${t('nav_stats')}<div class="hint">${t('stats_detail')}</div></span>${minutesSelect('stats_refresh_minutes', [1, 2, 5, 10, 15, 30, 60])}</div>
-    </div>
-    <div class="footnote">${t('refresh_note')}</div>
-    <div class="group-title">${t('g_tray')}</div>
-    <div class="panel group">
-      <div class="field"><span>${t('display')}</span>${seg('display', [['remaining', t('remaining')], ['used', t('used_opt')]])}</div>
-      <div class="field"><span>${t('tray_label')}</span>${seg('menu_label', [['short', t('short')], ['full', t('full')]])}</div>
-      <div class="field"><span>${t('tray_limit')}</span>${seg('tray_limit', [['session', t('five_hour')], ['weekly', t('weekly')], ['both', t('both')]])}</div>
-      <div class="field"><span>${t('tray_reset')}</span>${seg('tray_reset', [['full', t('r_full')], ['relative', t('r_relative')], ['absolute', t('r_absolute')], ['hidden', t('r_hidden')]])}</div>
-      <div class="field"><span>Claude</span>${toggle('show_claude', s.show_claude)}</div>
-      <div class="field"><span>Codex</span>${toggle('show_codex', s.show_codex)}</div>
-    </div>
-    <div class="footnote">${t('tray_note')}</div>
-    <div class="group-title">${t('g_notify')}</div>
-    <div class="panel group">
+        `<button data-set="accent" data-val="${k}" class="${s.accent === k ? 'on' : ''}" title="${esc(t('c_' + k))}" style="background-color:var(--sw-${k})"></button>`).join('')}</span></div>`);
+  const notify = group(t('g_notify'), `
       <div class="field"><span>${t('n_threshold')}</span>
         <select id="notify_threshold">${[[0, t('n_off')], [80, '80%'], [90, '90%'], [95, '95%']].map(([v, l]) => `<option value="${v}" ${s.notify_threshold === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><span>${t('n_run_out')}<div class="hint">${t('n_run_out_hint')}</div></span>${toggle('notify_run_out', s.notify_run_out)}</div>
       <div class="field"><span>${t('n_reset')}<div class="hint">${t('n_reset_hint')}</div></span>${toggle('notify_reset', s.notify_reset)}</div>
-      <div class="field"><span>${t('n_credits')}<div class="hint">${t('n_credits_hint')}</div></span>${toggle('notify_credits', s.notify_credits)}</div>
-    </div>
-    <div class="group-title">${t('g_stats')}</div>
-    <div class="panel group">
+      <div class="field"><span>${t('n_credits')}<div class="hint">${t('n_credits_hint')}</div></span>${toggle('notify_credits', s.notify_credits)}</div>`);
+  const usage = group(t('g_stats'), `
       <div class="field"><span>${t('price_table')}<div class="hint">${state.pricing_updated ? t('price_updated', dateTime(state.pricing_updated)) : t('not_loaded')}</div></span>
         ${state.stats_loading ? `<span class="sub">${t('refreshing')}</span>` : `<button class="btn" id="update-prices">${t('update_now')}</button>`}</div>
       <div class="field"><span>${t('session_logs')}</span><span class="sub">${state.overview?.earliest
-        ? t('records_since', state.overview.count.toLocaleString(), new Date(state.overview.earliest).toLocaleDateString()) : t('reading_logs')}</span></div>
-    </div>
-    <div class="group-title">${t('g_sources')}</div>
-    <div class="panel group">${['Claude', 'Codex'].map(sourceRow).join('')}</div>
-    <div class="footnote">${t('sources_note')}</div>
-    <div class="group-title">${t('remote')}</div>
-    <div class="panel group">
+        ? t('records_since', state.overview.count.toLocaleString(), new Date(state.overview.earliest).toLocaleDateString()) : t('reading_logs')}</span></div>`);
+  const refresh = group(t('g_refresh'), `
+      <div class="field"><span>${t('nav_usage')}<div class="hint">${t('limits_detail')}</div></span>${minutesSelect('refresh_minutes', [1, 2, 5, 10, 15, 30])}</div>
+      <div class="field"><span>${t('nav_stats')}<div class="hint">${t('stats_detail')}</div></span>${minutesSelect('stats_refresh_minutes', [1, 2, 5, 10, 15, 30, 60])}</div>`, t('refresh_note'));
+  // 数据来源：两家的额度来源，下面是远程机器（和 macOS 版一样放在同一组）
+  const others = sshHosts.filter((h) => !s.remote_hosts.includes(h));
+  const sources = group(t('g_sources'), `
+      ${['Claude', 'Codex'].map(sourceRow).join('')}
       ${s.remote_hosts.map(hostRow).join('')}
-      <div class="field"><span>${t('add_machine')}<div class="hint">${t('remote_hint')}</div></span>
+      <div class="field"><span>${t('remote')}<div class="hint">${t('remote_hint')}</div></span>
         <span class="host-add">
           <input id="new-host" type="text" placeholder="${t('host')}" spellcheck="false" autocomplete="off">
-          ${sshHosts.filter((h) => !s.remote_hosts.includes(h)).length ? `<select id="ssh-pick" title="${esc(t('ssh_config_hosts'))}"><option value="">~/.ssh/config</option>${sshHosts.filter((h) => !s.remote_hosts.includes(h)).map((h) => `<option>${esc(h)}</option>`).join('')}</select>` : ''}
+          ${others.length ? `<select id="ssh-pick" title="${esc(t('ssh_config_hosts'))}"><option value="">~/.ssh/config</option>${others.map((h) => `<option>${esc(h)}</option>`).join('')}</select>` : ''}
           <button class="btn" id="add-host">${t('add')}</button>
-        </span></div>
+        </span></div>`, `${t('sources_note')}<br>${t('remote_note')}`);
+  return `${pageHeader('settings', t('nav_general'), t('settings_sub'))}${columns(basic + notify + usage, refresh + sources)}`;
+}
+
+// 托盘页：左边设置，右边是托盘文字和点开后面板的预览
+function trayText() {
+  const s = state.settings, used = s.display === 'used';
+  const pct = (w) => `${Math.round(used ? Math.min(100, w.used) : Math.max(0, 100 - w.used))}%${w.fast ? '↑' : ''}`;
+  const parts = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex)).map((p) => {
+    const name = s.menu_label === 'full' ? p.name : p.name === 'Claude' ? 'Cc' : 'Cx';
+    const session = p.windows.find((w) => !w.kind.startsWith('weekly') && w.kind !== 'days');
+    const weekly = p.windows.find((w) => w.kind === 'weekly');
+    const v = s.tray_limit === 'session' ? (session || weekly) : s.tray_limit === 'weekly' ? (weekly || session) : null;
+    const text = v ? pct(v) : session && weekly ? `${pct(session)}/${pct(weekly)}` : (session || weekly) ? pct(session || weekly) : '–';
+    return `${name} ${text}`;
+  });
+  return parts.length ? parts.join('  ') : 'UsageBar';
+}
+
+function trayPage() {
+  const s = state.settings;
+  const left = group(t('g_show'), `
+      <div class="field"><span>${t('display')}</span>${seg('display', [['remaining', t('remaining')], ['used', t('used_opt')]])}</div>
+      <div class="field"><span>Claude</span>${toggle('show_claude', s.show_claude)}</div>
+      <div class="field"><span>Codex</span>${toggle('show_codex', s.show_codex)}</div>`, t('tray_note'))
+    + group(t('g_tray_text'), `
+      <div class="field"><span>${t('tray_label')}</span>${seg('menu_label', [['short', t('short')], ['full', t('full')]])}</div>
+      <div class="field"><span>${t('tray_limit')}</span>${seg('tray_limit', [['session', t('five_hour')], ['weekly', t('weekly')], ['both', t('both')]])}</div>`)
+    + group(t('g_menu'), `
+      <div class="field"><span>${t('reset_time_menu')}</span>${seg('tray_reset', [['full', t('r_full')], ['relative', t('r_relative')], ['absolute', t('r_absolute')], ['hidden', t('r_hidden')]])}</div>`);
+  const shown = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex));
+  const status = state.loading ? t('refreshing') : state.updated ? t('updated', clock(state.updated)) : t('loading');
+  const right = `<section class="sgroup"><div class="group-title">${t('preview')}</div>
+    <div class="tray-bar"><span class="tray-text">${esc(trayText())}</span><span class="sub">${clock(Date.now() / 1000)}</span></div>
+    <div class="tray-panel">
+      ${state.providers.length ? `<div class="providers">${shown.map(providerHTML).join('')}</div>` : `<div class="sub">${t('loading')}</div>`}
+      <div class="fly-foot"><span class="sub">${status}</span><span class="spacer"></span>
+        <button class="btn" id="refresh" ${state.loading ? 'disabled' : ''}>${t('refresh')}</button></div>
     </div>
-    <div class="footnote">${t('remote_note')}</div>`;
+    <div class="footnote">${t('tray_preview_note')}</div></section>`;
+  return `${pageHeader('tray', t('nav_tray'), t('tray_sub'))}${columns(left, right)}`;
 }
 
 // 一台远程机器：左边是 SSH 和日志文件数（连不上时是红色的原因），右边是请求数和移除
@@ -584,6 +601,26 @@ function sourceRow(name) {
     : p.plan ? `<div class="hint">${esc(p.plan)}</div>` : '';
   return `<div class="field"><span>${name}${status}</span>${seg(key, [['api', t('src_api')], ['local', t('src_local')]])}</div>`;
 }
+
+// MARK: 页面框架：侧边栏和页头的图标（线条图标，和 macOS 版的 SF Symbols 对应）、分组、两列
+
+const ICONS = {
+  stats: '<path d="M4 4v16h16"/><path d="M8 16v-5M12 16V7M16 16v-8"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  tray: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9h18"/>',
+  card: '<rect x="8" y="9" width="13" height="10" rx="2"/><path d="M16 9V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h3"/>',
+  about: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+};
+const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+
+// 页头：图标、标题、一句说明（extra 放在右边）
+const pageHeader = (name, title, sub, extra = '') => `<div class="header"><div class="page-icon">${icon(name)}</div>
+  <div><h1>${title}</h1><div class="sub">${sub}</div></div>${extra ? `<div class="spacer"></div>${extra}` : ''}</div>`;
+// 一组设置：标题、圆角面板、底下的说明
+const group = (title, rows, footer) => `<section class="sgroup">${title ? `<div class="group-title">${title}</div>` : ''}
+  <div class="panel group">${rows}</div>${footer ? `<div class="footnote">${footer}</div>` : ''}</section>`;
+// 两列各自往下排（窄了就上下排）
+const columns = (left, right) => `<div class="cols"><div class="col">${left}</div><div class="col">${right}</div></div>`;
 
 // MARK: 关于：图标、版本、检查更新；有新版或出错时下面展开说明；再下面是数据说明和链接
 
@@ -614,7 +651,7 @@ function aboutPage() {
       ? `<div class="update-fail"><span class="sub">${esc(t('update_failed', err))}</span><span class="spacer"></span><a class="link" data-github="/releases">${t('download_page')}</a></div>`
       : '';
   const info = (ico, title, text) => `<div class="info-row"><span class="info-ico">${ico}</span><div><div>${title}</div><div class="sub">${text}</div></div></div>`;
-  return `<div class="header"><div><h1>${t('nav_about')}</h1><div class="sub">${t('about_sub')}</div></div></div>
+  return `${pageHeader('about', t('nav_about'), t('about_sub'))}
     <div class="panel about-card">
       <div class="about-top">
         <img src="icon.png" alt="" width="64" height="64">
@@ -626,9 +663,9 @@ function aboutPage() {
     </div>
     <div class="group-title">${t('data_info')}</div>
     <div class="panel group info">
-      ${info('◔', t('nav_usage'), t('info_limits'))}
-      ${info('▥', t('nav_stats'), t('info_stats'))}
-      ${info('⛨', t('privacy'), t('info_privacy'))}
+      ${info(icon('tray'), t('nav_usage'), t('info_limits'))}
+      ${info(icon('stats'), t('nav_stats'), t('info_stats'))}
+      ${info('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/></svg>', t('privacy'), t('info_privacy'))}
     </div>
     <div class="about-links">
       <a class="link" data-github="">GitHub</a>
@@ -642,7 +679,11 @@ function render() {
   document.documentElement.lang = state.lang;
   applyTheme();
   document.querySelectorAll('[data-t]').forEach((el) => (el.textContent = t(el.dataset.t)));
-  document.querySelectorAll('.nav').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  document.querySelectorAll('.nav').forEach((b) => {
+    b.classList.toggle('active', b.dataset.page === page);
+    const ico = b.querySelector('.ico');
+    if (ico && !ico.firstChild) ico.innerHTML = icon(b.dataset.page);
+  });
   if (FLYOUT) {
     document.getElementById('content').innerHTML = flyoutPage();
     fitFlyout();
@@ -657,11 +698,12 @@ function render() {
     reportCardContent(s[k + 'show'] && ready && count ? `${s[k + 'layout']}|${s[k + 'scale']}|${count}` : '');
     return;
   }
-  const pages = { stats: statsPage, usage: usagePage, card: cardSettingsPage, settings: settingsPage, about: aboutPage };
+  const pages = { stats: statsPage, settings: settingsPage, tray: trayPage, card: cardSettingsPage, about: aboutPage };
   const main = document.getElementById('content');
   const focused = document.activeElement?.id === 'new-host';
   main.classList.toggle('wide', page === 'stats');
   main.innerHTML = pages[page]();
+  if (page === 'card') fitCardPreview();
   // 远程机器读完一台就会重绘：输入框里打到一半的字和焦点留着
   const input = document.getElementById('new-host');
   if (input) {
@@ -786,5 +828,5 @@ function drawGuides([x, y]) {
   });
   if (ANY_CARD) await listen('card_sync', (e) => { synced = e.payload; render(); });
   // 重置倒计时每分钟走一次
-  setInterval(() => { if (FLYOUT || ANY_CARD || page === 'usage') render(); }, 60000);
+  setInterval(() => { if (FLYOUT || ANY_CARD || page === 'tray' || page === 'card') render(); }, 60000);
 })();
