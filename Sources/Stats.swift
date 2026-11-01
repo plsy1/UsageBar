@@ -682,6 +682,8 @@ func median(_ xs: [Double]) -> Double? {
 struct Bucket: Identifiable {
     let date: Date
     let tokens: Int
+    var requests = 0
+    var cost = 0.0
     var id: Date { date }
 }
 
@@ -812,6 +814,7 @@ struct StatsView: View {
     static let cellInset: CGFloat = 8
     @State var showRange = false
     @State var showMachines = false
+    @State var hoverDate: Date?  // 图表上鼠标所在的时段
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
     /// 请求明细里隐藏的列（LogColumn 的 rawValue，逗号分隔）
@@ -1088,10 +1091,11 @@ struct StatsView: View {
     func buckets(_ rows: [UsageRecord]) -> [Bucket] {
         let cal = Calendar.current
         let hourly = hourly
-        var sums: [Date: Int] = [:]
-        for r in rows {
+        var sums: [Date: Bucket] = [:]
+        for r in rows where !r.failed {
             let key = hourly ? cal.dateInterval(of: .hour, for: r.time)!.start : cal.startOfDay(for: r.time)
-            sums[key, default: 0] += r.tokens
+            let b = sums[key] ?? Bucket(date: key, tokens: 0)
+            sums[key] = Bucket(date: key, tokens: b.tokens + r.tokens, requests: b.requests + 1, cost: b.cost + (r.cost ?? 0))
         }
         // 补齐没有用量的时段，曲线才连续
         var out: [Bucket] = []
@@ -1100,7 +1104,7 @@ struct StatsView: View {
         let first = max(sources.map(since).min() ?? end, end.addingTimeInterval(-730 * 86400))
         var t = hourly ? cal.dateInterval(of: .hour, for: first)!.start : cal.startOfDay(for: first)
         while t <= end {
-            out.append(Bucket(date: t, tokens: sums[t] ?? 0))
+            out.append(sums[t] ?? Bucket(date: t, tokens: 0))
             t = cal.date(byAdding: hourly ? .hour : .day, value: 1, to: t)!
         }
         return out
@@ -1123,19 +1127,59 @@ struct StatsView: View {
                 Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 170)
             } else {
-                Chart(buckets(rows)) { b in
-                    let c = ChartColor.color(chartColor)
-                    if chartStyle == "bar" {
-                        BarMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                            .foregroundStyle(c.opacity(0.8))
-                            .cornerRadius(2)
-                    } else {
-                        AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                            .foregroundStyle(LinearGradient(colors: [c.opacity(0.28), c.opacity(0.03)], startPoint: .top, endPoint: .bottom))
-                            .interpolationMethod(.monotone)
-                        LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                            .foregroundStyle(c)
-                            .interpolationMethod(.monotone)
+                let data = buckets(rows), c = ChartColor.color(chartColor)
+                let hovered = hoverDate.flatMap { d in data.first { $0.date == d } }
+                Chart {
+                    ForEach(data) { b in
+                        if chartStyle == "bar" {
+                            BarMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                                .foregroundStyle(c.opacity(hovered == nil || hovered?.date == b.date ? 0.8 : 0.45))
+                                .cornerRadius(2)
+                        } else {
+                            AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                                .foregroundStyle(LinearGradient(colors: [c.opacity(0.28), c.opacity(0.03)], startPoint: .top, endPoint: .bottom))
+                                .interpolationMethod(.monotone)
+                            LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                                .foregroundStyle(c)
+                                .interpolationMethod(.monotone)
+                        }
+                    }
+                    // 鼠标所在的时段：竖向虚线，曲线图再加个点
+                    if let h = hovered {
+                        RuleMark(x: .value("t", h.date, unit: unit))
+                            .foregroundStyle(Color.secondary)
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        if chartStyle != "bar" {
+                            PointMark(x: .value("t", h.date, unit: unit), y: .value("tokens", h.tokens))
+                                .foregroundStyle(c)
+                                .symbolSize(45)
+                        }
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        let plot = geo[proxy.plotAreaFrame]
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                guard case .active(let p) = phase, let d: Date = proxy.value(atX: p.x - plot.minX) else {
+                                    hoverDate = nil; return
+                                }
+                                let cal = Calendar.current
+                                let key = hourly ? cal.dateInterval(of: .hour, for: d)?.start : cal.startOfDay(for: d)
+                                hoverDate = data.contains { $0.date == key } ? key : nil
+                            }
+                        if let h = hovered,
+                           let mid = Calendar.current.date(byAdding: unit, value: 1, to: h.date).map({ h.date.addingTimeInterval($0.timeIntervalSince(h.date) / 2) }),
+                           let x = proxy.position(forX: mid) {
+                            // 卡片放在虚线右边，靠近右边缘时放左边
+                            let px = plot.minX + x, right = px < geo.size.width * 0.62
+                            chartTooltip(h, color: c)
+                                .fixedSize()
+                                .alignmentGuide(.leading) { d in right ? -(px + 12) : -(px - 12 - d.width) }
+                                .alignmentGuide(.top) { _ in -(plot.minY + 4) }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
                 .chartYAxis {
@@ -1149,6 +1193,36 @@ struct StatsView: View {
         }
         .padding(16)
         .modifier(Panel())
+    }
+
+    /// 图表悬停时的小卡片：时段和这段时间的用量
+    func chartTooltip(_ b: Bucket, color: Color) -> some View {
+        let f = DateFormatter()
+        f.dateFormat = hourly ? "yyyy/M/d HH:00" : "yyyy/M/d"
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(f.string(from: b.date)).font(.headline).monospacedDigit()
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+                GridRow {
+                    RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+                    Text("Tokens").foregroundStyle(.secondary)
+                    Text(b.tokens.formatted()).monospacedDigit().gridColumnAlignment(.trailing).padding(.leading, 28)
+                }
+                GridRow {
+                    Color.clear.frame(width: 10, height: 10)
+                    Text(L("请求数")).foregroundStyle(.secondary)
+                    Text(b.requests.formatted()).monospacedDigit()
+                }
+                GridRow {
+                    Color.clear.frame(width: 10, height: 10)
+                    Text(L("估算成本")).foregroundStyle(.secondary)
+                    Text(money(b.cost)).monospacedDigit()
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor))
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 2))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(nsColor: .separatorColor).opacity(0.6)))
     }
 
     func modelRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { "\($0.source.rawValue)|\($0.model)" } }

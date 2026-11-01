@@ -957,6 +957,7 @@ struct GeneralSettings: View {
                             .foregroundStyle(s?.ok == false ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                         Button { setHosts(hosts.filter { $0 != host }) } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).help(L("移除"))
+                            .frame(width: Self.removeWidth)
                     }
                 }
             }
@@ -1008,10 +1009,16 @@ struct GeneralSettings: View {
     /// 一家一行：名字和读取的地方，右边是连接状态
     func provider(_ name: String, source: String) -> some View {
         SettingsRow(name, detail: source) {
-            Text(status(model.results.first { $0.name == name }))
-                .multilineTextAlignment(.trailing).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(status(model.results.first { $0.name == name }))
+                    .multilineTextAlignment(.trailing).foregroundStyle(.secondary)
+                // 有远程机器时，给它们的「移除」按钮留出同样的位置，状态文字才对得齐
+                if !hosts.isEmpty { Color.clear.frame(width: Self.removeWidth, height: 1) }
+            }
         }
     }
+
+    static let removeWidth: CGFloat = 18
 
     func status(_ u: ProviderUsage?) -> String {
         guard let u else { return L("正在获取用量…") }
