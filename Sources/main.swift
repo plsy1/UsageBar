@@ -262,6 +262,17 @@ enum I18n {
         "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
         "服务端数据统计": ("サーバー側の統計", "Server Statistics"),
         "可用重置": ("使えるリセット", "Resets Available"),
+        "隐藏 UsageBar": ("UsageBar を隠す", "Hide UsageBar"),
+        "隐藏其他": ("ほかを隠す", "Hide Others"),
+        "编辑": ("編集", "Edit"),
+        "撤销": ("取り消す", "Undo"),
+        "重做": ("やり直す", "Redo"),
+        "剪切": ("カット", "Cut"),
+        "拷贝": ("コピー", "Copy"),
+        "粘贴": ("ペースト", "Paste"),
+        "全选": ("すべてを選択", "Select All"),
+        "窗口": ("ウインドウ", "Window"),
+        "最小化": ("しまう", "Minimize"),
         "1 次": ("1 回", "1"),
         "%d 次": ("%d 回", "%d"),
         "按周期": ("期間別", "By Cycle"),
@@ -2296,6 +2307,8 @@ final class CardWindow: NSWindow {
         let host = NSHostingController(rootView: view)
         host.sizingOptions = .preferredContentSize
         contentViewController = host
+        // 主窗口里按 ⌘H 隐藏 UsageBar 时，桌面卡片留着
+        canHide = false
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
@@ -2484,6 +2497,7 @@ final class GuideWindow: NSWindow {
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: true)
+        canHide = false
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
@@ -2766,6 +2780,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mainWindow = w
         }
         stats.reload()
+        // ⌘H 隐藏过的话先取消隐藏
+        NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
     }
@@ -2928,8 +2944,45 @@ if CommandLine.arguments.contains("--print") {
     exit(0)
 }
 
+/// 应用菜单：菜单栏 app 不显示它，但 ⌘H、⌘W、⌘M、⌘Q 和输入框里的 ⌘C / ⌘V / ⌘A / ⌘Z 这些快捷键都要靠它
+func installMainMenu() {
+    let bar = NSMenu()
+    func submenu(_ title: String, _ items: [NSMenuItem]) {
+        let item = NSMenuItem()
+        item.submenu = NSMenu(title: title)
+        items.forEach { item.submenu?.addItem($0) }
+        bar.addItem(item)
+    }
+    func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        i.keyEquivalentModifierMask = mods
+        return i
+    }
+    submenu("UsageBar", [
+        item(L("隐藏 UsageBar"), #selector(NSApplication.hide(_:)), "h"),
+        item(L("隐藏其他"), #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
+        .separator(),
+        item(L("退出"), #selector(NSApplication.terminate(_:)), "q"),
+    ])
+    submenu(L("编辑"), [
+        item(L("撤销"), Selector(("undo:")), "z"),
+        item(L("重做"), Selector(("redo:")), "z", [.command, .shift]),
+        .separator(),
+        item(L("剪切"), #selector(NSText.cut(_:)), "x"),
+        item(L("拷贝"), #selector(NSText.copy(_:)), "c"),
+        item(L("粘贴"), #selector(NSText.paste(_:)), "v"),
+        item(L("全选"), #selector(NSText.selectAll(_:)), "a"),
+    ])
+    submenu(L("窗口"), [
+        item(L("最小化"), #selector(NSWindow.performMiniaturize(_:)), "m"),
+        item(L("关闭"), #selector(NSWindow.performClose(_:)), "w"),
+    ])
+    NSApp.mainMenu = bar
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)
+installMainMenu()
 app.run()
