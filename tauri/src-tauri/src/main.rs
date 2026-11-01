@@ -167,15 +167,6 @@ struct AppState {
     overview: Mutex<Option<db::Overview>>,
     update_release: Mutex<Option<update::Release>>,
     update_checked: Mutex<Option<Instant>>,
-    /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
-    card_content: Mutex<HashMap<String, CardContent>>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct CardContent {
-    width: f64,
-    height: f64,
-    shape: String,
 }
 
 /// 用量卡片要的：每家在所选范围内的汇总
@@ -382,23 +373,6 @@ fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
             save_settings(app, &s);
         }
     }
-}
-
-/// 卡片报来内容区的自然大小；两张形状一样时都撑到较大的那个（发 card_sync 给两张卡片）
-#[tauri::command]
-fn card_content(app: AppHandle, window: tauri::WebviewWindow, content: CardContent) {
-    let st = app.state::<AppState>();
-    let mut all = st.card_content.lock().unwrap();
-    if all.get(window.label()) == Some(&content) {
-        return;
-    }
-    all.insert(window.label().to_string(), content);
-    let (a, b) = (all.get("card"), all.get("stats_card"));
-    let synced = match (a, b) {
-        (Some(a), Some(b)) if !a.shape.is_empty() && a.shape == b.shape => Some((a.width.max(b.width), a.height.max(b.height))),
-        _ => None,
-    };
-    let _ = app.emit("card_sync", synced);
 }
 
 /// 卡片的拖动：按下、拖动中、松开（每一步由这边按光标位置算，好做吸附）
@@ -1086,7 +1060,7 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
-                                                 card_drag_start, card_drag_move, card_drag_end, card_content,
+                                                 card_drag_start, card_drag_move, card_drag_end,
                                                  stats_query, refresh_stats_now, ssh_config_hosts, check_update_now,
                                                  install_update, open_github, refresh_prices, data_info, reveal_db,
                                                  backup_db, import_db])

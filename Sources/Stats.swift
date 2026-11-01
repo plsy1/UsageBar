@@ -2218,7 +2218,6 @@ struct RequestDetail: View {
 struct StatsCardView: View {
     @ObservedObject var stats: StatsStore
     @ObservedObject var model: UsageModel
-    var report = true  // 设置页的预览传 false
     @AppStorage(Pref.showStatsCard) var visible = false
     @AppStorage(Pref.statsCardOnTop) var onTop = false
     @AppStorage(Pref.statsCardBackground) var background = "none"
@@ -2274,18 +2273,13 @@ struct StatsCardView: View {
                     default: arranged(shown, column)
                     }
                 }
-                // 和额度卡片布局、大小、家数一样时，对齐到较大的那张
-                .modifier(CardHeightSync(kind: "stats",
-                                         shape: visible && !shown.isEmpty ? "\(style)|\(layout)|\(scale)|\(shown.count)" : "",
-                                         scale: s, model: model, report: report))
             }
             if let t = stats.updated {
                 Text(rangeTitle + " · " + L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
                     .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
-        .padding(16 * s)
-        .fixedSize()
+        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout) * s, padding: 16 * s))
         .environment(\.colorScheme, white ? .dark : .light)
         // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
         .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)

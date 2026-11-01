@@ -234,8 +234,6 @@ let state = null;
 let page = 'stats';
 // 卡片设置页正在看哪张：limits / stats
 let cardTab = 'limits';
-// 两张卡片形状一样时对齐到的内容区大小（Rust 发来的）
-let synced = null;
 // 托盘点开的小面板（Windows）和桌面卡片：同一个页面，地址带 #flyout / #card
 const FLYOUT = location.hash === '#flyout';
 const CARD = location.hash === '#card';
@@ -478,23 +476,31 @@ function abbrev(n) {
 }
 const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
 
-// 卡片外框：中间内容区按对齐后的大小撑开（多出来的空在右边和下面），下面是更新时间
+// 卡片的固定大小（大小 100% 时，含内边距），和 macOS 版 CardSize 一样：每家一块的样式按左右、上下排，
+// 紧凑、细条、占比条是一条。同一种排列的卡片一样大，两张卡片摆在一起也整齐
+function cardBase(style, layout) {
+  if (['compact', 'slim', 'share'].includes(style)) return [340, 150];
+  return layout === 'vertical' ? [296, 340] : [480, 200];
+}
+
+// 卡片外框：固定大小，内容（连同更新时间）居中，放不下由 fitCardContent 等比缩小
 function cardFrame(prefix, body, footer) {
-  const s = state.settings;
-  const style = `--s:${s[prefix + 'scale']};--bgop:${s[prefix + 'bg_opacity']};opacity:${s[prefix + 'opacity']}`;
-  const min = synced ? `min-width:${synced[0]}px;min-height:${synced[1]}px` : '';
+  const s = state.settings, k = s[prefix + 'scale'];
+  const [w, h] = cardBase(s[prefix + 'style'], s[prefix + 'layout']);
+  const style = `--s:${k};--bgop:${s[prefix + 'bg_opacity']};opacity:${s[prefix + 'opacity']};width:${w * k}px;height:${h * k}px`;
   return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" style="${style}">
-    <div class="c-area" style="${min}"><div class="c-content">${body}</div></div>
-    ${footer}
+    <div class="c-fit">${body}${footer}</div>
   </div>`;
 }
 
-// 报给 Rust 内容区的自然大小和形状（布局|大小|几家），两张一样时它会让两边对齐
-function reportCardContent(shape) {
-  const el = document.querySelector('.c-content');
-  if (!el) return;
-  const r = el.getBoundingClientRect();
-  invoke('card_content', { content: { width: Math.ceil(r.width), height: Math.ceil(r.height), shape } });
+// 内容比卡片大时整体缩小（按内容原本的大小算，transform 不影响 offsetWidth）
+function fitCardContent(root = document) {
+  for (const box of root.querySelectorAll('.card-box')) {
+    const el = box.querySelector('.c-fit'), cs = getComputedStyle(box);
+    const room = [box.clientWidth - parseFloat(cs.paddingLeft) * 2, box.clientHeight - parseFloat(cs.paddingTop) * 2];
+    const fit = Math.min(1, room[0] / el.offsetWidth, room[1] / el.offsetHeight);
+    el.style.transform = fit < 1 ? `scale(${fit})` : '';
+  }
 }
 
 // MARK: 用量卡片
@@ -865,11 +871,8 @@ function render() {
   }
   if (ANY_CARD) {
     document.getElementById('content').innerHTML = STATS_CARD ? statsCardPage() : cardPage();
+    fitCardContent();
     fitCard();
-    const s = state.settings, k = STATS_CARD ? 'stats_card_' : 'card_';
-    const count = STATS_CARD ? usageShown().length : shownProviders().length;
-    const ready = STATS_CARD ? state.usage.updated != null : state.providers.length > 0;
-    reportCardContent(s[k + 'show'] && ready && count ? `${s[k + 'style']}|${s[k + 'layout']}|${s[k + 'scale']}|${count}` : '');
     return;
   }
   const pages = { stats: statsPage, settings: settingsPage, tray: trayPage, card: cardSettingsPage, data: dataPage, about: aboutPage };
@@ -877,7 +880,7 @@ function render() {
   const focused = document.activeElement?.id === 'new-host';
   main.classList.toggle('wide', page === 'stats');
   main.innerHTML = pages[page]();
-  if (page === 'card') fitCardPreview();
+  if (page === 'card') { fitCardContent(); fitCardPreview(); }
   // 远程机器读完一台就会重绘：输入框里打到一半的字和焦点留着
   const input = document.getElementById('new-host');
   if (input) {
@@ -1004,7 +1007,6 @@ function drawGuides([x, y]) {
     if (which) cardTab = which;
     render();
   });
-  if (ANY_CARD) await listen('card_sync', (e) => { synced = e.payload; render(); });
   // 重置倒计时每分钟走一次
   setInterval(() => { if (FLYOUT || ANY_CARD || page === 'tray' || page === 'card') render(); }, 60000);
 })();

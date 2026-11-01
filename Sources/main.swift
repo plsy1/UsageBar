@@ -1765,25 +1765,8 @@ struct CardPreview: View {
         _textColor = AppStorage(wrappedValue: "white", keys.text)
     }
 
-    /// 卡片实际尺寸：卡片显示着就用桌面上那张的窗口尺寸，否则按布局估算
-    var cardSize: CGSize {
-        let live = keys.stats ? model.statsCardSize : model.cardSize
-        if show, live.width > 0 { return live }
-        let base: CGSize
-        let v = layout == "vertical"
-        switch (keys.stats, style) {
-        case (_, "compact"): base = CGSize(width: keys.stats ? 330 : 273, height: 93)
-        case (false, "slim"): base = CGSize(width: 300, height: 120)
-        case (true, "share"): base = CGSize(width: 252, height: 160)
-        case (false, "big"): base = v ? CGSize(width: 252, height: 330) : CGSize(width: 472, height: 190)
-        case (false, "rings"): base = v ? CGSize(width: 180, height: 330) : CGSize(width: 330, height: 175)
-        case (true, "big"): base = v ? CGSize(width: 252, height: 300) : CGSize(width: 472, height: 170)
-        case (true, "trend"): base = v ? CGSize(width: 252, height: 250) : CGSize(width: 520, height: 140)
-        case (false, _): base = v ? CGSize(width: 292, height: 295) : CGSize(width: 476, height: 167)
-        default: base = v ? CGSize(width: 292, height: 330) : CGSize(width: 476, height: 180)
-        }
-        return CGSize(width: base.width * scale, height: base.height * scale)
-    }
+    /// 卡片尺寸：每种排列一个固定尺寸，乘上大小比例
+    var cardSize: CGSize { CardSize.base(style: style, layout: layout) * scale }
 
     var body: some View {
         GeometryReader { g in
@@ -1798,7 +1781,7 @@ struct CardPreview: View {
                     .fill(LinearGradient(colors: dark ? [Color(white: 0.32), Color(white: 0.14)] : [Color(white: 0.92), Color(white: 0.78)],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
                 Group {
-                    if keys.stats { StatsCardView(stats: stats, model: model, report: false) } else { CardView(model: model, report: false) }
+                    if keys.stats { StatsCardView(stats: stats, model: model) } else { CardView(model: model) }
                 }
                 .allowsHitTesting(false)
                 .scaleEffect(fit)
@@ -2169,24 +2152,6 @@ final class UsageModel: ObservableObject {
     @Published var lastUpdate: Date?
     var onRefresh: () -> Void = {}
     var onHide: () -> Void = {}
-    /// 桌面卡片窗口的当前尺寸（设置页预览按它缩放）
-    @Published var cardSize = CGSize.zero
-    @Published var statsCardSize = CGSize.zero
-    /// 两张卡片中间内容的大小（按 100% 算）和「形状」（布局|大小|几家；不参与对齐时为空）
-    @Published var cardContent: [String: CardContent] = [:]
-    struct CardContent: Equatable { var size: CGSize; var shape: String }
-
-    /// 两张卡片布局、大小、显示几家都一样时，内容区对齐到较宽、较高的那张，两张就一样大了
-    func syncedSize(_ kind: String) -> CGSize? {
-        guard let a = cardContent[kind], let b = cardContent[kind == "limits" ? "stats" : "limits"],
-              !a.shape.isEmpty, a.shape == b.shape else { return nil }
-        return CGSize(width: max(a.size.width, b.size.width), height: max(a.size.height, b.size.height))
-    }
-
-    func reportCard(_ kind: String, _ c: CardContent) {
-        // 放到下一轮：在视图更新途中改发布的值会有警告
-        DispatchQueue.main.async { if self.cardContent[kind] != c { self.cardContent[kind] = c } }
-    }
     var onOpen: () -> Void = {}
     var onCardSettings: () -> Void = {}
     // 用量卡片的右键菜单
@@ -2195,35 +2160,36 @@ final class UsageModel: ObservableObject {
     var onHideStats: () -> Void = {}
 }
 
-/// 卡片中间内容：量出自然大小报给 model，再按两张卡片对齐后的大小撑开（多出来的空在右边和下面）
-struct CardHeightSync: ViewModifier {
-    let kind: String     // limits / stats
-    let shape: String    // 空：这张卡片不参与对齐（隐藏、还没数据）
-    let scale: CGFloat
-    @ObservedObject var model: UsageModel
-    let report: Bool     // 设置页的预览只读不报
+/// 卡片的固定大小（大小 100% 时，含内边距）：每家一块的样式按左右、上下排，紧凑、细条、占比条是一条。
+/// 同一种排列的卡片一样大，两张卡片摆在一起也整齐
+enum CardSize {
+    static func base(style: String, layout: String) -> CGSize {
+        if ["compact", "slim", "share"].contains(style) { return CGSize(width: 340, height: 150) }
+        return layout == "vertical" ? CGSize(width: 296, height: 340) : CGSize(width: 480, height: 200)
+    }
+}
 
-    /// 量到的自然大小。先存下来，在外层和 shape 一起盯着变化——
-    /// 放在 GeometryReader 里的 onChange 拿到的 shape 可能还是旧的
-    @State var measured = CGSize.zero
+extension CGSize {
+    static func * (a: CGSize, k: CGFloat) -> CGSize { CGSize(width: a.width * k, height: a.height * k) }
+}
+
+/// 把内容按原本大小居中放进固定尺寸的卡片，放不下就等比缩小
+struct CardFrame: ViewModifier {
+    let size: CGSize      // 已乘过大小比例
+    let padding: CGFloat
+    @State var natural = CGSize.zero
 
     func body(content: Content) -> some View {
-        let synced = model.syncedSize(kind)
+        let inner = CGSize(width: size.width - padding * 2, height: size.height - padding * 2)
+        let fit = natural.width > 0 && natural.height > 0 ? min(1, inner.width / natural.width, inner.height / natural.height) : 1
         return content
+            .fixedSize()
             .background(GeometryReader { g in
-                Color.clear
-                    .onAppear { measured = g.size }
-                    .onChange(of: g.size) { measured = $0 }
+                Color.clear.onAppear { natural = g.size }.onChange(of: g.size) { natural = $0 }
             })
-            .frame(minWidth: synced.map { $0.width * scale }, minHeight: synced.map { $0.height * scale }, alignment: .topLeading)
-            .onAppear { send() }
-            .onChange(of: "\(measured)|\(shape)") { _ in send() }
-    }
-
-    func send() {
-        if report {
-            model.reportCard(kind, .init(size: CGSize(width: measured.width / scale, height: measured.height / scale), shape: shape))
-        }
+            .scaleEffect(fit)
+            .frame(width: inner.width, height: inner.height)
+            .padding(padding)
     }
 }
 
@@ -2309,7 +2275,6 @@ struct CardView: View {
     @AppStorage(Pref.cardLevelColors) var levelColors = false
     @AppStorage(Pref.showCard) var visible = true
     @AppStorage(Pref.cardOnTop) var onTop = false
-    var report = true  // 设置页的预览传 false
 
     var s: CGFloat { CGFloat(scale) }
     var used: Bool { displayMode == "used" }
@@ -2338,16 +2303,12 @@ struct CardView: View {
                 default: arranged(shown, column)
                 }
             }
-            .modifier(CardHeightSync(kind: "limits",
-                                     shape: visible && !shown.isEmpty ? "\(style)|\(layout)|\(scale)|\(shown.count)" : "",
-                                     scale: s, model: model, report: report))
             if let t = model.lastUpdate {
                 Text(L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
                     .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
-        .padding(16 * s)
-        .fixedSize()
+        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout) * s, padding: 16 * s))
         .environment(\.colorScheme, white ? .dark : .light)
         // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
         .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
@@ -2629,8 +2590,6 @@ extension NSScreen {
 /// 启动时、显示器插拔或改排列时重新摆：那块屏还在就放回去；不在就放到主屏（不动那块屏的记录，接回来时自动回去）。
 /// 无论怎么摆都限制在屏幕可见范围内——无边框窗口系统不会帮忙挪，跑到屏幕外就再也找不回来
 final class CardWindow: NSWindow {
-    /// 尺寸变了（额度卡片拿来给设置页预览）
-    var onResize: (CGSize) -> Void = { _ in }
     /// 偏好里记位置的键：「每块屏的偏移」和「最后在哪块屏」
     let placementKey: String
     var lastScreenKey: String { placementKey + ".screen" }
@@ -2824,12 +2783,8 @@ final class CardWindow: NSWindow {
             r.origin.y = frame.maxY - r.height
         }
         super.setFrame(r, display: display)
-        // 尺寸变了就告诉设置页预览；变大后可能超出屏幕，挪回来。放到下一轮，免得在布局途中改
-        let size = frame.size
-        DispatchQueue.main.async { [weak self] in
-            self?.onResize(size)
-            if resized { self?.clampToScreen() }
-        }
+        // 变大后可能超出屏幕，挪回来。放到下一轮，免得在布局途中改
+        if resized { DispatchQueue.main.async { [weak self] in self?.clampToScreen() } }
     }
 }
 
@@ -2989,7 +2944,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if on {
             if card == nil {
                 let w = CardWindow(CardView(model: model), name: "UsageCard", onTopKey: Pref.cardOnTop)
-                w.onResize = { [weak model] size in if let model, model.cardSize != size { model.cardSize = size } }
                 card = w
             }
             card?.orderFront(nil)
@@ -3003,7 +2957,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if statsCard == nil {
                 let w = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard", onTopKey: Pref.statsCardOnTop,
                                    near: card?.isVisible == true ? card : nil)
-                w.onResize = { [weak model] size in if let model, model.statsCardSize != size { model.statsCardSize = size } }
                 statsCard = w
             }
             statsCard?.orderFront(nil)

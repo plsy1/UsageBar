@@ -173,7 +173,11 @@ body.card .sidebar { display: none; }
 body.card main { padding: 0; overflow: hidden; }
 .card-box {
   --u: calc(var(--s) * 1px);
-  display: inline-block;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
   padding: calc(16 * var(--u));
   border-radius: calc(20 * var(--u));
   cursor: default;
@@ -187,6 +191,7 @@ body.card main { padding: 0; overflow: hidden; }
 .card-box.bg-none .c-bar { box-shadow: 0 1px 2px var(--cshadow); }
 .card-box.bg-dark { background: rgba(30, 30, 32, calc(0.78 * var(--bgop))); }
 .card-box.bg-light { background: rgba(246, 246, 248, calc(0.82 * var(--bgop))); }
+.c-fit { flex: none; }
 
 .c-cols { display: flex; gap: calc(24 * var(--u)); align-items: flex-start; }
 .c-cols.vertical { flex-direction: column; gap: calc(20 * var(--u)); }
