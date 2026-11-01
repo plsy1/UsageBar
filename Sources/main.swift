@@ -739,12 +739,15 @@ enum Pref {
     static let statsCardBgOpacity = "statsCardBgOpacity"
 
     /// 主窗口和菜单的外观；桌面卡片有自己的文字颜色和背景，不受影响
+    /// 只在真的变了时才设：每次赋一个新的外观对象，哪怕还是同一种，所有窗口都会整个重新画一遍
     static func applyAppearance() {
-        switch UserDefaults.standard.string(forKey: appearance) {
-        case "light": NSApp.appearance = NSAppearance(named: .aqua)
-        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-        default: NSApp.appearance = nil  // 跟随系统
+        let want: NSAppearance.Name? = switch UserDefaults.standard.string(forKey: appearance) {
+        case "light": .aqua
+        case "dark": .darkAqua
+        default: nil  // 跟随系统
         }
+        guard NSApp.appearance?.name != want else { return }
+        NSApp.appearance = want.map { NSAppearance(named: $0) } ?? nil
     }
     static var menuUsed: Bool { UserDefaults.standard.string(forKey: menuDisplayMode) == "used" }
 
@@ -800,9 +803,12 @@ struct PercentControl: View {
 
 /// 开机启动（系统设置 → 通用 → 登录项）
 enum LoginItem {
-    static var status: SMAppService.Status { SMAppService.mainApp.status }
+    /// 要跨进程去问系统（每次几十毫秒），存一份：改开关时、app 回到前台时（可能在系统设置里改过）才重新问
+    private(set) static var status: SMAppService.Status = SMAppService.mainApp.status
+    static func refresh() { status = SMAppService.mainApp.status }
     static func set(_ on: Bool) {
         try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+        refresh()
     }
 }
 
@@ -920,8 +926,9 @@ struct GeneralSettings: View {
     @AppStorage(Notifier.resetKey) var notifyReset = false
     @AppStorage(Notifier.creditsKey) var notifyCredits = false
     @State var notifyAllowed = true
-    @State var launchAtLogin = LoginItem.status == .enabled
-    @State var needsApproval = LoginItem.status == .requiresApproval
+    // 开机启动的状态要跨进程去问系统，页面出现时问一次就好（写在初始值里的话，每次重建页面都会问）
+    @State var launchAtLogin = false
+    @State var needsApproval = false
 
     var body: some View {
         SettingsScroll(.general, L("开机启动、外观、刷新频率和数据来源")) {
@@ -932,6 +939,10 @@ struct GeneralSettings: View {
                 VStack(alignment: .leading, spacing: 26) { refresh; sources }
                     .frame(maxWidth: .infinity, alignment: .top)
             }
+        }
+        .onAppear {
+            launchAtLogin = LoginItem.status == .enabled
+            needsApproval = LoginItem.status == .requiresApproval
         }
     }
 
@@ -1702,6 +1713,117 @@ final class MainNav: ObservableObject {
     }
 }
 
+/// 主窗口的最小尺寸（所有页面在这个尺寸下都能完整显示）
+final class MainWindowDelegate: NSObject, NSWindowDelegate {
+    static let minContent = NSSize(width: 1120, height: 700)
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        let min = sender.frameRect(forContentRect: NSRect(origin: .zero, size: Self.minContent)).size
+        return NSSize(width: max(frameSize.width, min.width), height: max(frameSize.height, min.height))
+    }
+}
+
+/// 主窗口的一页。输入都是不变的对象，判等只看是哪一页：页面自己的数据（设置、统计）变了照样会更新
+struct PageHost: View, Equatable {
+    let tab: MainTab
+    let stats: StatsStore
+    let model: UsageModel
+    let updater: Updater
+    let language: String  // 换语言时要重画
+    static func == (a: PageHost, b: PageHost) -> Bool { a.tab == b.tab && a.language == b.language }
+
+    var body: some View {
+        switch tab {
+        case .stats: StatsView(store: stats)
+        case .general: GeneralSettings(updater: updater, model: model, stats: stats)
+        case .menuBar: MenuBarSettings(model: model)
+        case .card: CardSettings(model: model, stats: stats)
+        case .about: AboutSettings(updater: updater)
+        }
+    }
+}
+
+/// 主窗口右边的页面。打开过的留着，切走只是藏起来：每次切换都重建整页的话，开关、下拉菜单这些原生控件多的页面
+/// 要等两三百毫秒才出来。PageHost 判等时只看是哪一页，切换时 SwiftUI 就不会把藏着的页面重算一遍
+struct MainPages: View {
+    @ObservedObject var nav: MainNav
+    let stats: StatsStore
+    let model: UsageModel
+    let updater: Updater
+    @AppStorage(Pref.language) var language = "auto"
+    @AppStorage("statsChartColor") var themeColor = "pink"
+    @State var visited: Set<MainTab> = []
+    /// 藏起来的页面停在切走时的大小：拖窗口大小时只有正在看的那页跟着重新排版
+    @State var frozen: [MainTab: CGSize] = [:]
+    @State var size = CGSize.zero
+
+    var body: some View {
+        let _ = language  // 切换语言时重绘
+        PagesLayout(current: nav.tab, frozen: frozen) {
+            ForEach([MainTab.stats, .general, .menuBar, .card, .about]) { t in
+                if visited.contains(t) || nav.tab == t {
+                    PageHost(tab: t, stats: stats, model: model, updater: updater, language: language).equatable()
+                        .opacity(nav.tab == t ? 1 : 0)
+                        .allowsHitTesting(nav.tab == t)
+                        .accessibilityHidden(nav.tab != t)
+                        .layoutValue(key: PageTab.self, value: t)
+                }
+            }
+        }
+        .background(GeometryReader { g in
+            Color.clear.onAppear { size = g.size }.onChange(of: g.size) { size = $0 }
+        })
+        .onAppear { visited.insert(nav.tab) }
+        // 拖窗口大小时，藏着的页面里的开关、下拉菜单这些原生控件也要跟着更新，很卡：开始拖时只留正在看的那页，
+        // 其他的等切过去时再建
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willStartLiveResizeNotification)) { _ in
+            visited = [nav.tab]
+            frozen = [:]
+        }
+        .onChange(of: nav.tab) { [old = nav.tab] new in
+            visited.insert(new)
+            frozen[old] = size
+            frozen[new] = nil
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea(.container, edges: .top)
+        // 单独的托管视图不继承外面的主题色，这里再设一次
+        .tint(themeColor == "system" ? nil : ChartColor.color(themeColor))
+        .accentColor(themeColor == "system" ? nil : ChartColor.color(themeColor))
+    }
+}
+
+struct PageTab: LayoutValueKey { static let defaultValue: MainTab? = nil }
+
+/// 页面叠在一起：正在看的那页按给的空间排，其他页按切走时的大小排（大小不变，SwiftUI 就不用重新排它们）
+struct PagesLayout: Layout {
+    let current: MainTab
+    let frozen: [MainTab: CGSize]
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for s in subviews {
+            let t = s[PageTab.self]
+            let size = t == current ? bounds.size : t.flatMap { frozen[$0] } ?? bounds.size
+            s.place(at: bounds.origin, proposal: ProposedViewSize(size))
+        }
+    }
+}
+
+/// 把内容放进一个不量尺寸的 NSHostingController，外面量它时直接按给的空间算
+struct IsolatedHost<Content: View>: NSViewControllerRepresentable {
+    let content: Content
+    func makeNSViewController(context: Context) -> NSHostingController<Content> {
+        let c = NSHostingController(rootView: content)
+        c.sizingOptions = []
+        return c
+    }
+    func updateNSViewController(_ c: NSHostingController<Content>, context: Context) { c.rootView = content }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: NSHostingController<Content>, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 900, height: proposal.height ?? 700)
+    }
+}
+
 struct MainView: View {
     @ObservedObject var nav: MainNav
     @ObservedObject var stats: StatsStore
@@ -1726,15 +1848,9 @@ struct MainView: View {
             .modifier(HideSidebarToggle())
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
-            Group {
-                switch nav.tab {
-                case .stats: StatsView(store: stats)
-                case .general: GeneralSettings(updater: updater, model: model, stats: stats)
-                case .menuBar: MenuBarSettings(model: model)
-                case .card: CardSettings(model: model, stats: stats)
-                case .about: AboutSettings(updater: updater)
-                }
-            }
+            // 页面放在单独的托管视图里：NavigationSplitView 每次布局都要量一遍详情区的最小尺寸，
+            // 直接放 SwiftUI 内容的话要把页面完整排一遍；隔一层后它只量这个空壳
+            IsolatedHost(content: MainPages(nav: nav, stats: stats, model: model, updater: updater))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .ignoresSafeArea(.container, edges: .top)  // 内容顶到窗口最上面，不再空出标题栏那一条
         }
@@ -1752,7 +1868,7 @@ struct MainView: View {
     /// 侧边栏一行：图标用主题色，选中时整行填主题色、文字变白
     func row(_ t: MainTab) -> some View {
         let selected = nav.tab == t
-        return Button { nav.tab = t } label: {
+        return Button { if nav.tab != t { nav.tab = t } } label: {
             HStack(spacing: 8) {
                 Image(systemName: t.symbol)
                     .font(.system(size: 13))
@@ -2369,6 +2485,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.scheduleSync()
         }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            LoginItem.refresh()
+        }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.refresh() }
@@ -2472,9 +2591,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastLang = I18n.lang
             refresh()
         }
-        updateTitle()
-        rebuildMenu()
+        // 菜单栏文字和下拉菜单只在跟它们有关的设置变了时才重画：任何设置一变（包括切换主窗口的页面）都会走到这里
+        let d = UserDefaults.standard
+        let menuKey = [Pref.menuLabel, Pref.menuStyle, Pref.menuDisplayMode, Pref.menuShowClaude, Pref.menuShowCodex,
+                       Pref.menuLimit, Pref.menuResetStyle, Pref.showCard, Pref.showStatsCard, Pref.language]
+            .map { "\(d.object(forKey: $0) ?? "")" }.joined(separator: "|")
+        if menuKey != lastMenuKey {
+            lastMenuKey = menuKey
+            updateTitle()
+            rebuildMenu()
+        }
     }
+    var lastMenuKey = ""
 
     /// 统计和设置都在主窗口里，菜单只留一个入口，打开时回到上次看的页
     @objc func openApp() { openMain(nil) }
@@ -2487,11 +2615,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openUpdate() { openMain(.about) }
 
     /// 主窗口：统计和设置都在这里，左侧边栏切换
+    let mainWindowDelegate = MainWindowDelegate()
+
     func openMain(_ tab: MainTab?) {
         if let tab { nav.tab = tab }
         if mainWindow == nil {
             let host = NSHostingController(rootView: MainView(nav: nav, stats: stats, model: model, updater: updater))
-            host.sizingOptions = .minSize  // 最小尺寸来自 MainView 根部的 frame(minWidth:minHeight:)
+            // 不让窗口从 SwiftUI 内容量最小尺寸：量一次要把整页完整排一遍，每切一个 tab 都要量，切换就慢。
+            // 最小尺寸是固定的，直接设在窗口上
+            host.sizingOptions = []
             let w = NSWindow(contentViewController: host)
             // 标题留空：SwiftUI 会把 titleVisibility 改回可见，留空才能保证标题栏上不出现文字
             w.title = ""
@@ -2502,6 +2634,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.titlebarSeparatorStyle = .none
             // 不开「拖背景移动窗口」：开了的话表头上拖列宽、拖顺序都会变成拖整个窗口；窗口靠顶上的标题栏区域拖
             w.isReleasedWhenClosed = false
+            // 最小尺寸：只设 contentMinSize 会被 NavigationSplitView 的约束盖掉，拖动时由代理卡住
+            w.contentMinSize = MainWindowDelegate.minContent
+            w.delegate = mainWindowDelegate
             // 宽高随便拖，只有最小尺寸（MainView 的 frame(minWidth:minHeight:)）
             w.setContentSize(NSSize(width: 1280, height: 800))
             w.center()

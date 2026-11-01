@@ -836,6 +836,16 @@ struct StatsView: View {
     @State var showRange = false
     @State var showMachines = false
     @State var showAllGroups = false  // 按应用、模型、项目的表：行很多时是否全部列出
+    /// 筛选、分组、热力图这些从全部记录算出来的结果：输入没变就用上次的。
+    /// 拖窗口大小时表格宽度一直在变，整页每一帧都要重画，不缓存的话每帧都要把几万条记录重算一遍
+    @State var memo = StatsMemo()
+    var memoKey: String {
+        [store.updated.map { "\($0.timeIntervalSince1970)" } ?? "-", "\(store.all.count)", source, rangeRaw,
+         "\(customStart)", "\(customEnd)", "\(customEndNow)", hiddenMachines, LogReader.hosts.joined(separator: ","),
+         store.cycleStarts.sorted { $0.key.rawValue < $1.key.rawValue }.map { "\($0.key.rawValue)\($0.value.timeIntervalSince1970)" }.joined(),
+         "\(Int(Date().timeIntervalSince1970 / 60))"]  // 「今天」「近 7 天」这些终点是现在，每分钟变一次
+            .joined(separator: "|")
+    }
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
     /// 请求明细里隐藏的列（LogColumn 的 rawValue，逗号分隔）
@@ -889,7 +899,9 @@ struct StatsView: View {
         }
     }
     /// Codex 的机器：本机（""）加上设置里添加的、读到过记录的远程机器
-    var machines: [String] { [""] + Set(store.all.compactMap(\.host)).union(LogReader.hosts).sorted() }
+    var machines: [String] {
+        memo.value("machines", memoKey) { [""] + Set(store.all.compactMap(\.host)).union(LogReader.hosts).sorted() }
+    }
     /// 只算现在还在的机器；删掉了远程机器、剩下的全被隐藏时就全看
     var hiddenMachineSet: Set<String> {
         let all = machines
@@ -915,8 +927,8 @@ struct StatsView: View {
 
     var body: some View {
         let _ = language  // 切换语言时重绘
-        let rows = rows
-        let sum = Summary(rows)
+        let rows = memo.value("rows", memoKey) { self.rows }
+        let sum = memo.value("sum", memoKey) { Summary(rows) }
         VStack(spacing: 0) {
         VStack(alignment: .leading, spacing: 10) {
             toolbar
@@ -1146,10 +1158,12 @@ struct StatsView: View {
         return out
     }
 
-    func heatmap() -> some View { UsageHeatmap(days: dailyTotals(), color: ChartColor.color(chartColor), locale: locale) }
+    func heatmap() -> some View {
+        UsageHeatmap(days: memo.value("daily", memoKey) { dailyTotals() }, color: ChartColor.color(chartColor), locale: locale)
+    }
 
     func chart(_ rows: [UsageRecord]) -> some View {
-        UsageChart(data: buckets(rows), hourly: hourly, loading: store.loading && store.all.isEmpty,
+        UsageChart(data: memo.value("buckets", memoKey) { buckets(rows) }, hourly: hourly, loading: store.loading && store.all.isEmpty,
                    color: ChartColor.color(chartColor), style: $chartStyle)
     }
 
@@ -1204,7 +1218,9 @@ struct StatsView: View {
 
     /// 下方的明细面板：顶部是带数量的下划线标签，下面是表格
     func tables(_ rows: [UsageRecord]) -> some View {
-        let models = modelRows(rows), apps = appRows(rows), projects = projectRows(rows)
+        let models = memo.value("models", memoKey) { modelRows(rows) }
+        let apps = memo.value("apps", memoKey) { appRows(rows) }
+        let projects = memo.value("projects", memoKey) { projectRows(rows) }
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 26) {
                 tabButton(L("按应用"), count: apps.count, tag: "apps")
@@ -2053,6 +2069,19 @@ func printStats() async {
     }
 }
 
+/// 统计页的计算结果缓存（引用类型：存进去不会触发重画）
+final class StatsMemo {
+    private var key = ""
+    private var values: [String: Any] = [:]
+    func value<T>(_ name: String, _ k: String, _ make: () -> T) -> T {
+        if k != key { key = k; values = [:] }
+        if let v = values[name] as? T { return v }
+        let v = make()
+        values[name] = v
+        return v
+    }
+}
+
 /// 每日热力图。悬停状态放在它自己身上：鼠标划过格子时只重画热力图，不牵动整个统计页
 struct UsageHeatmap: View {
     let days: [Date: Bucket]
@@ -2073,6 +2102,8 @@ struct UsageHeatmap: View {
         let monthF = DateFormatter(), dayF = DateFormatter()
         monthF.locale = locale; monthF.setLocalizedDateFormatFromTemplate("MMM")
         dayF.dateFormat = "yyyy/M/d"
+        // 星期跟着界面语言（Calendar.current 跟的是系统的区域设置）
+        let weekdays = { let f = DateFormatter(); f.locale = locale; return f.shortStandaloneWeekdaySymbols ?? cal.shortWeekdaySymbols }()
         let labelWidth: CGFloat = 30, gap: CGFloat = 3
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -2114,7 +2145,7 @@ struct UsageHeatmap: View {
                         // 星期：只写第 2、4、6 行，和 GitHub 一样
                         VStack(alignment: .leading, spacing: gap) {
                             ForEach(0..<7, id: \.self) { d in
-                                Text(d % 2 == 1 ? cal.shortWeekdaySymbols[(cal.firstWeekday - 1 + d) % 7] : "")
+                                Text(d % 2 == 1 ? weekdays[(cal.firstWeekday - 1 + d) % 7] : "")
                                     .font(.system(size: 9)).foregroundStyle(.secondary)
                                     .frame(width: labelWidth - gap, height: cell, alignment: .leading)
                             }
