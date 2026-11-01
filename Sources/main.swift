@@ -274,8 +274,9 @@ enum I18n {
         "正在读取本机会话记录…": ("ローカルのセッション記録を読み込み中…", "Reading local session logs…"),
         "该时间段内没有记录": ("この期間の記録はありません", "No usage in this period"),
         "成本按 models.dev 的 API 价格估算，统计本机和已添加的远程机器上的会话记录": ("コストは models.dev の API 価格による推定で、この Mac と追加したリモートマシンのセッション記録を集計しています", "Cost is estimated from models.dev API prices and covers session logs on this Mac and the remote machines you added"),
-        "远程 Codex 日志（SSH）": ("リモートの Codex ログ（SSH）", "Remote Codex logs (SSH)"),
-        "读取中…": ("読み込み中…", "Reading…"),
+        "SSH · %d 个日志文件": ("SSH · ログ %d 件", "SSH · %d log files"),
+        "SSH · 读取中…": ("SSH · 読み込み中…", "SSH · Reading…"),
+        "%@ 条请求": ("%@ リクエスト", "%@ requests"),
         "移除": ("削除", "Remove"),
         "远程机器": ("リモートマシン", "Remote Machines"),
         "Codex 跑在远程时日志只在那边，用 SSH 读回来": ("Codex をリモートで動かすとログはそちらにだけ残るので、SSH で読み込みます", "Codex keeps its logs on the machine it runs on; read them over SSH"),
@@ -285,7 +286,6 @@ enum I18n {
         "超时": ("タイムアウト", "Timed out"),
         "连不上": ("接続できません", "Can't connect"),
         "连不上：请在 系统设置 → 隐私与安全性 → 本地网络 中允许 UsageBar": ("接続できません：システム設定 → プライバシーとセキュリティ → ローカルネットワーク で UsageBar を許可してください", "Can't connect: allow UsageBar in System Settings → Privacy & Security → Local Network"),
-        "%d 个日志文件 · %d 条请求": ("ログ %d 件 · リクエスト %d 件", "Logs %d · Requests %d"),
         "第 %d / %d 页 · 共 %d 条": ("%d / %d ページ · 全 %d 件", "Page %d of %d · %d total"),
         "上一页": ("前のページ", "Previous Page"),
         "下一页": ("次のページ", "Next Page"),
@@ -808,15 +808,19 @@ struct SettingsGroup<Content: View>: View {
 struct SettingsRow<Control: View>: View {
     let title: String
     let detail: String?
+    var warning = false  // detail 用红色（出错的说明）
     let control: Control
-    init(_ title: String, detail: String? = nil, @ViewBuilder control: () -> Control) {
-        self.title = title; self.detail = detail; self.control = control()
+    init(_ title: String, detail: String? = nil, warning: Bool = false, @ViewBuilder control: () -> Control) {
+        self.title = title; self.detail = detail; self.warning = warning; self.control = control()
     }
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(warning ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                        .lineLimit(2).help(detail)
+                }
             }
             Spacer(minLength: 12)
             control
@@ -949,12 +953,13 @@ struct GeneralSettings: View {
             provider("Codex", source: "~/.codex/auth.json")
             ForEach(hosts, id: \.self) { host in
                 Divider()
-                SettingsRow(host, detail: L("远程 Codex 日志（SSH）")) {
+                // 左边小字：SSH 和日志文件数（连不上时是红色的原因）；右边和上面两行一样只放一项：请求数
+                let s = stats.remoteStatus[host]
+                SettingsRow(host, detail: s.map { $0.error ?? L("SSH · %d 个日志文件", $0.files ?? 0) } ?? L("SSH · 读取中…"),
+                            warning: s?.error != nil) {
                     HStack(spacing: 8) {
-                        let s = stats.remoteStatus[host]
-                        Text(s?.text ?? L("读取中…"))
-                            .lineLimit(2).multilineTextAlignment(.trailing)
-                            .foregroundStyle(s?.ok == false ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                        Text(s.map { L("%@ 条请求", $0.requests.formatted()) } ?? "—")
+                            .monospacedDigit().foregroundStyle(.secondary)
                         Button { setHosts(hosts.filter { $0 != host }) } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).help(L("移除"))
                             .frame(width: Self.removeWidth)

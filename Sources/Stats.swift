@@ -415,6 +415,13 @@ enum LogReader {
     }
 }
 
+/// 一台远程机器上次读取的结果（设置页显示）。连不上时 files 为空，requests 是缓存里上次读到的
+struct RemoteStatus {
+    var files: Int?
+    var requests: Int
+    var error: String?
+}
+
 // MARK: - 远程机器（SSH）上的 Codex 日志
 //   Codex 在哪台机器上跑，日志就只留在哪台（Claude 用 app 连远程时日志存在本机，不用管）。
 //   用系统的 ssh 去读：先列出远程的日志文件和大小，再把有变化的文件从上次读到的位置往后、在远程过滤后传回来。
@@ -510,9 +517,12 @@ extension LogReader {
     }
 
     /// 读一台远程机器上的 Codex 日志，返回记录和一句状态（设置页显示）
-    static func readRemote(_ host: String) -> (records: [UsageRecord], status: String, ok: Bool) {
+    static func readRemote(_ host: String) -> (records: [UsageRecord], status: RemoteStatus) {
         let list = ssh(host, listScript, timeout: 60)
-        if let error = list.error { return (remoteRecords(host), error, false) }
+        if let error = list.error {
+            let recs = remoteRecords(host)
+            return (recs, RemoteStatus(files: nil, requests: recs.filter { !$0.failed }.count, error: error))
+        }
         let files: [(size: Int, mtime: Date, path: String)] = String(decoding: list.out, as: UTF8.self)
             .split(separator: "\n").compactMap { line in
                 let parts = line.split(separator: " ", maxSplits: 2)
@@ -590,8 +600,7 @@ extension LogReader {
         }
         if changed { lock.lock(); saveDisk(); lock.unlock() }
         let recs = remoteRecords(host)
-        if let error { return (recs, error, false) }
-        return (recs, L("%d 个日志文件 · %d 条请求", files.count, recs.filter { !$0.failed }.count), true)
+        return (recs, RemoteStatus(files: files.count, requests: recs.filter { !$0.failed }.count, error: error))
     }
 
     /// 缓存里这台机器的记录（连不上时也照样显示上次读到的）
@@ -730,7 +739,7 @@ final class StatsStore: ObservableObject {
     /// Codex 账号统计：一天才更新一次，最多一小时拉一次
     @Published var codexAccount: CodexAccount?
     /// 每台远程机器上次读取的结果（设置页显示）
-    @Published var remoteStatus: [String: (text: String, ok: Bool)] = [:]
+    @Published var remoteStatus: [String: RemoteStatus] = [:]
     private var accountFetchedAt: Date?
     /// 各家周额度当前周期的起点，由额度刷新时填入
     @Published var cycleStarts: [Source: Date] = [:]
@@ -759,11 +768,11 @@ final class StatsStore: ObservableObject {
             // 远程机器上的 Codex 日志（SSH）
             let hosts = LogReader.hosts
             LogReader.pruneRemote(keep: hosts)
-            var status: [String: (text: String, ok: Bool)] = [:]
+            var status: [String: RemoteStatus] = [:]
             for host in hosts {
                 let r = LogReader.readRemote(host)
                 records += r.records
-                status[host] = (r.status, r.ok)
+                status[host] = r.status
             }
             let result = priced(records), remote = status
             await MainActor.run { self.remoteStatus = remote }
@@ -1168,9 +1177,7 @@ struct StatsView: View {
                                 let key = hourly ? cal.dateInterval(of: .hour, for: d)?.start : cal.startOfDay(for: d)
                                 hoverDate = data.contains { $0.date == key } ? key : nil
                             }
-                        if let h = hovered,
-                           let mid = Calendar.current.date(byAdding: unit, value: 1, to: h.date).map({ h.date.addingTimeInterval($0.timeIntervalSince(h.date) / 2) }),
-                           let x = proxy.position(forX: mid) {
+                        if let h = hovered, let x = proxy.position(forX: midpoint(h.date)) {
                             // 卡片放在虚线右边，靠近右边缘时放左边
                             let px = plot.minX + x, right = px < geo.size.width * 0.62
                             chartTooltip(h, color: c)
@@ -1188,11 +1195,39 @@ struct StatsView: View {
                         AxisValueLabel { if let n = v.as(Int.self) { Text(abbrev(n)) } }
                     }
                 }
+                // 柱子和数据点都画在时段中间，刻度也放在时段中间，日期才和点、虚线对得上
+                .chartXAxis {
+                    AxisMarks(values: axisTicks(data)) { v in
+                        AxisGridLine()
+                        AxisValueLabel(anchor: .top) {
+                            if let d = v.as(Date.self) { Text(axisLabel(d)) }
+                        }
+                    }
+                }
                 .frame(height: 170)
             }
         }
         .padding(16)
         .modifier(Panel())
+    }
+
+    /// 时段的中点（柱子、数据点画在这里）
+    func midpoint(_ d: Date) -> Date {
+        let next = Calendar.current.date(byAdding: hourly ? .hour : .day, value: 1, to: d) ?? d
+        return d.addingTimeInterval(next.timeIntervalSince(d) / 2)
+    }
+
+    /// 横轴刻度：每隔几个时段一个，放在时段中点；间隔从常用的几档里挑，最多七八个
+    func axisTicks(_ data: [Bucket]) -> [Date] {
+        let steps = hourly ? [1, 2, 3, 4, 6, 12, 24] : [1, 2, 3, 7, 14, 30, 61, 91, 182]
+        let step = steps.first { data.count <= $0 * 8 } ?? steps.last!
+        return stride(from: 0, to: data.count, by: step).map { midpoint(data[$0].date) }
+    }
+
+    func axisLabel(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = hourly ? "HH:00" : "M/d"
+        return f.string(from: d)
     }
 
     /// 图表悬停时的小卡片：时段和这段时间的用量
@@ -2078,6 +2113,6 @@ func printStats() async {
     for host in LogReader.hosts {
         let r = LogReader.readRemote(host)
         let s = Summary(r.records.map { var x = $0; x.cost = Pricing.cost(x); return x })
-        print("remote \(host): \(r.status) · all time cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
+        print("remote \(host): \(r.status.error ?? "\(r.status.files ?? 0) files") · all time cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
     }
 }
