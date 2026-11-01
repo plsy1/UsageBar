@@ -2265,7 +2265,12 @@ struct StatsCardView: View {
                     case "compact":
                         // 网格：各行的同一列上下对齐
                         Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
-                            ForEach(shown, id: \.self, content: compactRow)
+                            ForEach(shown, id: \.self) { compactRow($0.rawValue, summary($0)) }
+                            // 两家都显示时多一行合计
+                            if shown.count > 1 {
+                                Divider().gridCellUnsizedAxes(.horizontal)
+                                compactRow(L("合计"), Summary(shown.flatMap(records)))
+                            }
                         }
                     case "share": shareBlock(shown)
                     case "big": arranged(shown, bigBlock)
@@ -2384,10 +2389,16 @@ struct StatsCardView: View {
         return out
     }
 
-    /// 走势图：成本，下面是每个时段的成本柱（最近的一根实一些）
+    /// 走势图第一根柱子的时间：今天是 0 点，其他范围是起始那天
+    func trendStartLabel(_ src: Source) -> String {
+        if range == "today" { return Calendar.current.startOfDay(for: Date()).formatted(date: .omitted, time: .shortened) }
+        return start(src).formatted(.dateTime.month(.defaultDigits).day())
+    }
+
+    /// 走势图：成本，下面是每个时段的成本柱（最近的一根实一些）和起止时间。左右排时卡片矮而宽，柱子画高一些
     func trendBlock(_ src: Source) -> some View {
         let sum = summary(src), buckets = trendBuckets(src)
-        let top = max(buckets.max() ?? 0, 0.0001), width: CGFloat = 220, height: CGFloat = 38
+        let top = max(buckets.max() ?? 0, 0.0001), width: CGFloat = 220, height: CGFloat = layout == "vertical" ? 38 : 56
         let gap: CGFloat = buckets.count > 12 ? 2 : 4
         let barWidth = max(2, (width - gap * CGFloat(buckets.count - 1)) / CGFloat(buckets.count))
         return VStack(alignment: .leading, spacing: 8 * s) {
@@ -2404,6 +2415,13 @@ struct StatsCardView: View {
                 }
             }
             .frame(width: width * s, height: height * s, alignment: .bottomLeading)
+            HStack {
+                Text(trendStartLabel(src))
+                Spacer()
+                Text(L("现在"))
+            }
+            .font(.system(size: 9 * s)).foregroundStyle(.tertiary).monospacedDigit()
+            .padding(.top, -4 * s)
             Text("\(sum.requests.formatted()) \(L("请求数")) · \(abbrev(sum.tokens)) Tokens")
                 .font(.system(size: 10 * s)).foregroundStyle(.secondary).monospacedDigit()
         }
@@ -2456,10 +2474,9 @@ struct StatsCardView: View {
     }
 
     /// 紧凑：一家一行（放在 Grid 里，各列上下对齐）
-    func compactRow(_ src: Source) -> some View {
-        let sum = summary(src)
-        return GridRow(alignment: .firstTextBaseline) {
-            Text(src.rawValue).font(.system(size: 13 * s, weight: .semibold))
+    func compactRow(_ name: String, _ sum: Summary) -> some View {
+        GridRow(alignment: .firstTextBaseline) {
+            Text(name).font(.system(size: 13 * s, weight: .semibold))
             Text(money(sum.cost)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
             pair(L("请求数"), sum.requests.formatted())
             pair("Tokens", abbrev(sum.tokens))

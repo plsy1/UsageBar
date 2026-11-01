@@ -2174,15 +2174,17 @@ extension CGSize {
     static func * (a: CGSize, k: CGFloat) -> CGSize { CGSize(width: a.width * k, height: a.height * k) }
 }
 
-/// 把内容按原本大小居中放进固定尺寸的卡片，放不下就等比缩小
+/// 把内容居中放进固定尺寸的卡片，等比缩放到正好填满一边
 struct CardFrame: ViewModifier {
     let size: CGSize      // 已乘过大小比例
     let padding: CGFloat
     @State var natural = CGSize.zero
+    static let maxGrow: CGFloat = 1.6
 
     func body(content: Content) -> some View {
         let inner = CGSize(width: size.width - padding * 2, height: size.height - padding * 2)
-        let fit = natural.width > 0 && natural.height > 0 ? min(1, inner.width / natural.width, inner.height / natural.height) : 1
+        // 放不下就缩小，有空就放大（最多 CardFrame.maxGrow 倍），尽量把卡片填满
+        let fit = natural.width > 0 && natural.height > 0 ? min(Self.maxGrow, inner.width / natural.width, inner.height / natural.height) : 1
         return content
             .fixedSize()
             .background(GeometryReader { g in
@@ -2507,24 +2509,31 @@ extension CardView {
         }
     }
 
-    /// 紧凑：一家一行，只有数字
+    /// 紧凑：一家一行，每个额度是数字加下面一行小字的重置时间
     func compactRow(_ u: ProviderUsage) -> some View {
         GridRow(alignment: .firstTextBaseline) {
-            Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+            // 名字下面一行是重置次数（「↻ 2」），不另占一列
+            VStack(alignment: .leading, spacing: 2 * s) {
+                Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+                if let rc = u.resetCredits {
+                    Text("↻ \(rc.count)").font(.system(size: 9.5 * s).monospacedDigit()).foregroundStyle(.secondary).help(rc.text)
+                }
+            }
             if let e = u.error, u.windows.isEmpty {
                 Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(1)
                     .frame(maxWidth: 260 * s, alignment: .leading)
                     .gridCellColumns(2)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
-                    Text(w.label).font(.system(size: 11 * s)).foregroundStyle(.secondary)
-                    Text(w.shownText(used)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
-                        .foregroundStyle(w.levelColor(levelColors).map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+                VStack(alignment: .leading, spacing: 2 * s) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
+                        Text(w.label).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+                        Text(w.shownText(used)).font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+                            .foregroundStyle(w.levelColor(levelColors).map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary))
+                    }
+                    resetLabel(w, size: 9.5)
                 }
-            }
-            if let rc = u.resetCredits {
-                Text(rc.countText).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+                .fixedSize()
             }
         }
     }

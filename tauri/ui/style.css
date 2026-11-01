@@ -217,6 +217,9 @@ html.grip, html.grip * { cursor: nwse-resize !important; }
 .c-lab { font-size: calc(11 * var(--u)); color: var(--c2); }
 .c-num { font-size: calc(12 * var(--u)); }
 .card-box:has(.c-lines) .c-updated { margin-top: calc(10 * var(--u)); }
+/* 紧凑：名字、额度下面的小字（重置次数、重置时间） */
+.c-sub { display: block; font-size: calc(9.5 * var(--u)); color: var(--c2); margin-top: calc(2 * var(--u)); font-variant-numeric: tabular-nums; }
+.c-sep { grid-column: 1 / -1; align-self: center; height: 1px; background: var(--ctrack); }
 
 /* 拖卡片时的对齐线（铺满屏幕的透明窗口） */
 html.guides, body.guides { background: transparent; margin: 0; overflow: hidden; }
@@ -407,6 +410,8 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .c-trend.dense { gap: calc(2 * var(--u)); }
 .c-tbar { flex: 1; border-radius: calc(2 * var(--u)); background: var(--cfill); opacity: 0.55; }
 .c-tbar.now { opacity: 0.95; }
+.c-trend.tall { height: calc(56 * var(--u)); }
+.c-axis { display: flex; justify-content: space-between; font-size: calc(9 * var(--u)); color: var(--c3); margin-top: calc(-4 * var(--u)); font-variant-numeric: tabular-nums; }
 .c-sharebar { display: flex; gap: 2px; height: calc(8 * var(--u)); border-radius: 99px; overflow: hidden; }
 .c-sharebar > div { background: var(--cfill); min-width: 2px; }
 .c-dot { display: inline-block; width: calc(7 * var(--u)); height: calc(7 * var(--u)); border-radius: 50%; background: var(--cfill); margin-right: calc(6 * var(--u)); }

@@ -59,6 +59,7 @@ const T = {
   level_colors: ['按余量着色', '残りで色分け', 'Color by Level'],
   level_colors_hint: ['剩不到 30% 变黄，不到 10% 变红', '残り 30% 未満で黄、10% 未満で赤', 'Amber under 30% left, red under 10%'],
   size: ['大小', 'サイズ', 'Size'],
+  now_label: ['现在', '現在', 'Now'],
   size_hint: ['也可以拖动桌面上卡片的右下角调整', 'デスクトップのカードの右下隅をドラッグしても変えられます', 'You can also drag the bottom-right corner of the card on the desktop'],
   background: ['背景', '背景', 'Background'],
   bg_none: ['无', 'なし', 'None'],
@@ -417,13 +418,16 @@ function cardCompactRow(p, cols) {
   if (p.error && p.windows.length === 0) {
     return `<span class="c-name">${esc(p.name)}</span><span class="c-err" style="grid-column: span ${cols - 1}">${esc(errorText(p))}</span>`;
   }
+  // 每个额度：数字，下面一行小字是重置时间
   const cells = p.windows.map((w) => {
     const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
-    return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num" style="${tintStyle(w)}">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></span>`;
+    const r = resetShort(w.resets_at, state.settings.card_reset);
+    return `<span><span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num" style="${tintStyle(w)}">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></span>${r ? `<span class="c-sub">↻ ${esc(r)}</span>` : ''}</span>`;
   });
-  if (p.resets) cells.push(`<span class="c-lab">${esc(resetCountText(p.resets))}</span>`);
   while (cells.length < cols - 1) cells.push('<span></span>');
-  return `<span class="c-name">${esc(p.name)}</span>${cells.join('')}`;
+  // 名字下面一行是重置次数（「↻ 2」），不另占一列
+  const credits = p.resets ? `<span class="c-sub" title="${esc(resetCountText(p.resets))}">↻ ${p.resets.count}</span>` : '';
+  return `<span><span class="c-name">${esc(p.name)}</span>${credits}</span>${cells.join('')}`;
 }
 // MARK: 大数字、圆环、细条
 
@@ -468,7 +472,7 @@ function slimRows(p) {
     ${barHTML(w, 'slim')}<span class="c-num" style="${tintStyle(w)}">${t(used ? 'used' : 'left', Math.round(shownValue(w)))}${w.fast ? '↑' : ''}</span>`).join('');
 }
 
-const compactCells = (p) => 1 + (p.error && p.windows.length === 0 ? 1 : p.windows.length) + (p.resets ? 1 : 0);
+const compactCells = (p) => 1 + (p.error && p.windows.length === 0 ? 1 : p.windows.length);
 
 const money = (v) => '$' + (v || 0).toFixed(2);
 function abbrev(n) {
@@ -485,7 +489,7 @@ function cardBase(style, layout) {
   return layout === 'vertical' ? [296, 340] : [480, 200];
 }
 
-// 卡片外框：固定大小，内容（连同更新时间）居中，放不下由 fitCardContent 等比缩小
+// 卡片外框：固定大小，内容（连同更新时间）居中，由 fitCardContent 等比缩放填满
 function cardFrame(prefix, body, footer) {
   const s = state.settings, k = s[prefix + 'scale'];
   const [w, h] = cardBase(s[prefix + 'style'], s[prefix + 'layout']);
@@ -495,13 +499,14 @@ function cardFrame(prefix, body, footer) {
   </div>`;
 }
 
-// 内容比卡片大时整体缩小（按内容原本的大小算，transform 不影响 offsetWidth）
+// 内容等比缩放到正好填满一边：放不下就缩小，有空就放大（最多 1.6 倍）。按内容原本的大小算，transform 不影响 offsetWidth
+const CARD_MAX_GROW = 1.6;
 function fitCardContent(root = document) {
   for (const box of root.querySelectorAll('.card-box')) {
     const el = box.querySelector('.c-fit'), cs = getComputedStyle(box);
     const room = [box.clientWidth - parseFloat(cs.paddingLeft) * 2, box.clientHeight - parseFloat(cs.paddingTop) * 2];
-    const fit = Math.min(1, room[0] / el.offsetWidth, room[1] / el.offsetHeight);
-    el.style.transform = fit < 1 ? `scale(${fit})` : '';
+    const fit = Math.min(CARD_MAX_GROW, room[0] / el.offsetWidth, room[1] / el.offsetHeight);
+    el.style.transform = fit !== 1 ? `scale(${fit})` : '';
   }
 }
 
@@ -522,8 +527,10 @@ function statsColumn(name) {
   </div>`;
 }
 
-function statsCompactRow(name) {
-  const u = usageOf(name);
+// 几家加起来（紧凑样式的合计行）
+const usageTotal = (names) => names.map(usageOf).reduce((a, u) => ({ cost: a.cost + (u.cost || 0), requests: a.requests + u.requests, tokens: a.tokens + u.tokens }), { cost: 0, requests: 0, tokens: 0 });
+
+function statsCompactRow(name, u = usageOf(name)) {
   const pair = (k, v) => `<span class="c-pair"><span class="c-lab">${k}</span><span class="c-num">${v}</span></span>`;
   return `<span class="c-name">${esc(name)}</span><span class="c-num">${money(u.cost)}</span>${pair(t('requests'), u.requests.toLocaleString())}${pair('Tokens', abbrev(u.tokens))}`;
 }
@@ -537,13 +544,18 @@ function statsBigBlock(name) {
   return `<div class="c-block big">${usageHead(name)}<div class="c-grid2">${cell(money(u.cost), t('col_cost'))}${cell(u.requests.toLocaleString(), t('requests'))}${cell(abbrev(u.tokens), 'Tokens')}${cell(pct(u.hit_rate), t('hit_rate'))}</div></div>`;
 }
 
-// 走势图：成本，下面是每个时段的成本柱（最近的一根实一些）
+// 走势图：成本，下面是每个时段的成本柱（最近的一根实一些）和起止时间。左右排时卡片矮而宽，柱子画高一些
 function statsTrendBlock(name) {
   const u = usageOf(name), b = state.usage[name.toLowerCase() + '_trend'] || [];
   const top = Math.max(...b, 0.0001);
   const bars = b.map((v, i) => `<div class="c-tbar ${i === b.length - 1 ? 'now' : ''}" style="height:${Math.max(4, (v / top) * 100)}%"></div>`).join('');
+  // 第一根柱子的时间：今天是 0 点，其他范围是起始那天
+  const first = new Date();
+  if (state.settings.stats_card_range === 'today') first.setHours(0, 0, 0, 0); else first.setDate(first.getDate() - (b.length - 1));
+  const from = state.settings.stats_card_range === 'today' ? clock(first / 1000) : first.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
   return `<div class="c-block trend"><div class="c-head">${usageHead(name)}<span class="c-cost small">${money(u.cost)}</span></div>
-    <div class="c-trend ${b.length > 12 ? 'dense' : ''}">${bars}</div>
+    <div class="c-trend ${b.length > 12 ? 'dense' : ''} ${state.settings.stats_card_layout === 'vertical' ? '' : 'tall'}">${bars}</div>
+    <div class="c-axis"><span>${esc(from)}</span><span>${t('now_label')}</span></div>
     <div class="c-lab">${u.requests.toLocaleString()} ${t('requests')} · ${abbrev(u.tokens)} Tokens</div></div>`;
 }
 
@@ -564,7 +576,7 @@ function statsCardPage() {
   const body = state.usage.updated == null && !state.usage.claude.requests && !state.usage.codex.requests
     ? `<div class="c-reset">${t('reading_logs')}</div>`
     : st === 'compact'
-      ? `<div class="c-lines" style="grid-template-columns: repeat(4, max-content)">${shown.map(statsCompactRow).join('')}</div>`
+      ? `<div class="c-lines" style="grid-template-columns: repeat(4, max-content)">${shown.map((n) => statsCompactRow(n)).join('')}${shown.length > 1 ? `<div class="c-sep"></div>${statsCompactRow(t('total'), usageTotal(shown))}` : ''}</div>`
       : st === 'share' ? statsShareBlock(shown)
       : arranged(s.stats_card_layout, shown.map(st === 'big' ? statsBigBlock : st === 'trend' ? statsTrendBlock : statsColumn));
   const footer = state.usage.updated ? `<div class="c-updated">${rangeTitle()} · ${t('updated', clock(state.usage.updated))}</div>` : '';
