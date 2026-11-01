@@ -131,6 +131,9 @@ enum I18n {
         "本机会话记录": ("ローカルのセッション記録", "Local Session Logs"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
+        "样式": ("スタイル", "Style"),
+        "单行": ("1 行", "One Line"),
+        "双行": ("2 行", "Two Lines"),
         "左右": ("横並び", "Side by Side"),
         "上下": ("縦並び", "Stacked"),
         "紧凑": ("コンパクト", "Compact"),
@@ -642,6 +645,7 @@ enum Pref {
     static let refreshMinutes = "refreshMinutes"
     static let statsRefreshMinutes = "statsRefreshMinutes"
     static let menuLabel = "menuLabel"         // short / full
+    static let menuStyle = "menuStyle"         // inline 一行 / stacked 名称在上、数值在下两行
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
     static let cardLayout = "cardLayout"       // horizontal / vertical / compact
@@ -1036,6 +1040,7 @@ struct GeneralSettings: View {
 struct MenuBarSettings: View {
     @ObservedObject var model: UsageModel
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
+    @AppStorage(Pref.menuStyle) var menuStyle = "inline"
     @AppStorage(Pref.menuDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.menuShowClaude) var showClaude = true
     @AppStorage(Pref.menuShowCodex) var showCodex = true
@@ -1074,6 +1079,14 @@ struct MenuBarSettings: View {
                         SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }
                     }
                     SettingsGroup(L("菜单栏文字")) {
+                        SettingsRow(L("样式")) {
+                            Picker("", selection: $menuStyle) {
+                                Text(L("单行")).tag("inline")
+                                Text(L("双行")).tag("stacked")
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        }
+                        Divider()
                         SettingsRow(L("名称")) {
                             Picker("", selection: $menuLabel) {
                                 Text(L("简写（Cc / Cx）")).tag("short")
@@ -1124,12 +1137,30 @@ struct MenuBarSettings: View {
         .pickerStyle(.segmented).labelsHidden()
     }
 
+    /// 和菜单栏上一样：单行文字，或每家一块、名称在上数值在下
+    @ViewBuilder var titleView: some View {
+        if menuStyle == "stacked", !shown.isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(shown, id: \.name) { u in
+                    VStack(alignment: .leading, spacing: -1.5) {
+                        Text(menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx")
+                            .font(.system(size: 8.5, weight: .semibold)).opacity(0.65)
+                        Text(u.menuValue(limit, used: used) ?? "–")
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    }
+                }
+            }
+        } else {
+            Text(title).font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+        }
+    }
+
     /// 一段模拟的菜单栏，下面挂着点开后的菜单
     var preview: some View {
         VStack(alignment: .trailing, spacing: 6) {
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
-                Text(title).font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+                titleView
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.1)))
                 Image(systemName: "wifi")
@@ -2384,6 +2415,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = NSMutableAttributedString()
         let full = UserDefaults.standard.string(forKey: Pref.menuLabel) == "full"
         let which = UserDefaults.standard.string(forKey: Pref.menuLimit) ?? "both"
+        let shown = results.filter { Pref.menuVisible($0.name) }
+        if UserDefaults.standard.string(forKey: Pref.menuStyle) == "stacked", !shown.isEmpty {
+            item.button?.attributedTitle = NSAttributedString()
+            item.button?.image = stackedTitle(shown.map { u in
+                (full ? u.name : u.name == "Claude" ? "Cc" : "Cx", u.menuValue(which, used: Pref.menuUsed))
+            })
+            return
+        }
+        item.button?.image = nil
         for (i, u) in results.filter({ Pref.menuVisible($0.name) }).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
             let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
@@ -2395,6 +2435,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         item.button?.attributedTitle = s.length > 0 ? s : NSAttributedString(string: "UsageBar", attributes: [.font: font])
+    }
+
+    /// 双行样式：每家一块，上面小字是名称，下面是百分比。画成模板图，菜单栏深色浅色都跟着变
+    func stackedTitle(_ blocks: [(name: String, value: String?)]) -> NSImage {
+        let h = max(22, item.button?.bounds.height ?? 22)
+        let tall = h >= 30  // 刘海屏的菜单栏更高，字也放大一点
+        let nameFont = NSFont.systemFont(ofSize: tall ? 10.5 : 8.5, weight: .semibold)
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: tall ? 14 : 11, weight: .semibold)
+        let nameAttrs: [NSAttributedString.Key: Any] = [.font: nameFont, .foregroundColor: NSColor.black.withAlphaComponent(0.65)]
+        let valueAttrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: NSColor.black]
+        let texts = blocks.map { (NSString(string: $0.name), NSString(string: $0.value ?? "–")) }
+        let widths = texts.map { max($0.0.size(withAttributes: nameAttrs).width, $0.1.size(withAttributes: valueAttrs).width) }
+        let gap: CGFloat = tall ? 14 : 10
+        let width = ceil(widths.reduce(0, +) + gap * CGFloat(max(0, blocks.count - 1)))
+        let nameH = ceil(nameFont.ascender - nameFont.descender), valueH = ceil(valueFont.ascender - valueFont.descender)
+        let overlap: CGFloat = tall ? 0 : 1.5  // 两行字的行距收紧一点，22pt 高的菜单栏才放得下
+        let top = floor((h - nameH - valueH + overlap) / 2)
+        let image = NSImage(size: NSSize(width: max(1, width), height: h), flipped: true) { _ in
+            var x: CGFloat = 0
+            for ((name, value), w) in zip(texts, widths) {
+                name.draw(at: NSPoint(x: x, y: top), withAttributes: nameAttrs)
+                value.draw(at: NSPoint(x: x, y: top + nameH - overlap), withAttributes: valueAttrs)
+                x += w + gap
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 
     func rebuildMenu() {
