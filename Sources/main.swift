@@ -15,7 +15,28 @@ struct LimitWindow {
     let resetsAt: Date?
     /// 主要的周额度（Claude 的 seven_day、Codex 的 7 天窗口）；用量统计按它算「重置以来」
     var weekly = false
+    /// 窗口总长（秒）：5 小时或 7 天；不知道时为 0，不算速度
+    var length: TimeInterval = 0
     var remaining: Double { max(0, 100 - usedPercent) }
+
+    /// 这个窗口已经过去的比例（0~1）
+    var elapsed: Double? {
+        guard length > 0, let r = resetsAt else { return nil }
+        return min(1, max(0, 1 - r.timeIntervalSinceNow / length))
+    }
+    /// 用得比时间快：已用的比例明显超过已过去的比例。窗口刚开始的一成时间不算，样本太少
+    var fast: Bool {
+        guard let e = elapsed, e >= 0.1, usedPercent < 100 else { return false }
+        let u = usedPercent / 100
+        return u - e >= 0.05 && u > e * 1.15
+    }
+    /// 按这个窗口开始以来的平均速度，什么时候用完；重置前用不完就是 nil
+    var runsOutAt: Date? {
+        guard let e = elapsed, e >= 0.1, usedPercent > 0, usedPercent < 100, let r = resetsAt else { return nil }
+        let spent = length * e
+        let t = Date().addingTimeInterval((100 - usedPercent) / (usedPercent / spent))
+        return t < r ? t : nil
+    }
     /// 按设置显示剩余还是已使用（进度条和百分比都跟着变）
     func shown(_ used: Bool) -> Double { used ? min(100, usedPercent) : remaining }
     func shownText(_ used: Bool) -> String {
@@ -38,7 +59,8 @@ struct ProviderUsage {
     var weekly: LimitWindow? { windows.first(where: \.weekly) }
     /// 菜单栏上的百分比：session 5 小时 / weekly 本周 / both「11%/86%」；没有就 nil
     func menuValue(_ which: String, used: Bool) -> String? {
-        let pct = { (w: LimitWindow) in "\(Int(w.shown(used).rounded()))%" }
+        // 用得比时间快的额度后面加个 ↑
+        let pct = { (w: LimitWindow) in "\(Int(w.shown(used).rounded()))%" + (w.fast ? "↑" : "") }
         switch which {
         case "session": return (session ?? weekly).map(pct)
         case "weekly": return (weekly ?? session).map(pct)
@@ -131,6 +153,8 @@ enum I18n {
         "本机会话记录": ("ローカルのセッション記録", "Local Session Logs"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
+        "用得比时间快：已用的比例超过了这个周期已经过去的比例": ("時間の進みより速いペース：使用した割合がこの期間の経過割合を上回っています", "Ahead of pace: you've used more of this limit than the share of the period that has passed"),
+        "预计 %@ 用完": ("%@ に使い切る見込み", "runs out %@"),
         "样式": ("スタイル", "Style"),
         "单行": ("1 行", "One Line"),
         "双行": ("2 行", "Two Lines"),
@@ -481,7 +505,8 @@ enum Claude {
                 guard let w = json[key] as? [String: Any], let util = w["utilization"] as? Double else { continue }
                 u.windows.append(LimitWindow(label: labels[key].map { L($0) } ?? key, usedPercent: util,
                                              resetsAt: (w["resets_at"] as? String).flatMap(parseISODate),
-                                             weekly: key == "seven_day"))
+                                             weekly: key == "seven_day",
+                                             length: key == "five_hour" ? 5 * 3600 : key.hasPrefix("seven_day") ? 7 * 86400 : 0))
             }
             return u
         }
@@ -543,7 +568,7 @@ enum Codex {
                         label: windowLabel(seconds: seconds),
                         usedPercent: used,
                         resetsAt: (w["reset_at"] as? Double).map { Date(timeIntervalSince1970: $0) },
-                        weekly: seconds == 7 * 86400))
+                        weekly: seconds == 7 * 86400, length: seconds))
                 }
                 // 有可用的重置次数才去查详情（只读，拿最早到期的时间）
                 if let rc = json["rate_limit_reset_credits"] as? [String: Any], let n = rc["available_count"] as? Int, n > 0 {
@@ -571,7 +596,7 @@ enum Codex {
                 let seconds = (w["window_minutes"] as? Double ?? 0) * 60
                 u.windows.append(LimitWindow(label: windowLabel(seconds: seconds),
                                              usedPercent: expired ? 0 : used, resetsAt: expired ? nil : reset,
-                                             weekly: seconds == 7 * 86400))
+                                             weekly: seconds == 7 * 86400, length: seconds))
             }
             let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
             u.note = L("%@ · 数据时间 %@", u.note ?? L("本地缓存"), f.string(from: mtime))
@@ -611,6 +636,14 @@ func bar(_ percent: Double, width: Int = 12) -> String {
 }
 
 /// style：full（菜单，「3小时21分后重置（03:30）」）/ relative（「3小时21分后重置」）/ absolute（「03:30 重置」「周一 06:00 重置」）
+/// 今天内只写几点，否则带上星期几
+func shortTime(_ d: Date) -> String {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: ["zh": "zh_CN", "ja": "ja_JP"][I18n.lang] ?? "en_US")
+    f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : (I18n.lang == "ja" ? "EEEE HH:mm" : "EEE HH:mm")
+    return f.string(from: d)
+}
+
 func resetText(_ d: Date?, style: String = "full") -> String {
     guard var d else { return "" }
     // 接口给的重置时间常是 05:59:59.x：差几秒到整分钟就进位，和统计页的「重置以来」一致
@@ -1753,13 +1786,19 @@ struct UsageRow: View {
     var resetStyle = "full"  // 菜单用完整的；桌面卡片按设置用 relative / absolute
     /// 不显示重置时间时仍占着那一行的位置（桌面卡片用：布局不动，只是字不见了）
     var keepResetSpace = false
+    /// 重置时间后面加上「预计几点用完」（菜单里有地方写；卡片太窄不写）
+    var showRunOut = false
     var body: some View {
         VStack(alignment: .leading, spacing: 3 * s) {
-            HStack {
+            HStack(spacing: 3 * s) {
                 Text(w.label).font(.system(size: 12 * s))
                 Spacer()
                 Text(w.shownText(used))
                     .font(.system(size: 12 * s, weight: .medium).monospacedDigit())
+                if w.fast {
+                    Image(systemName: "arrow.up").font(.system(size: 9 * s, weight: .bold))
+                        .help(L("用得比时间快：已用的比例超过了这个周期已经过去的比例"))
+                }
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
@@ -1769,7 +1808,8 @@ struct UsageRow: View {
             }
             .frame(height: 4 * s)
             if showReset, w.resetsAt != nil {
-                Text(resetText(w.resetsAt, style: resetStyle)).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+                Text(resetText(w.resetsAt, style: resetStyle) + (showRunOut ? w.runsOutAt.map { " · " + L("预计 %@ 用完", shortTime($0)) } ?? "" : ""))
+                    .font(.system(size: 10 * s)).foregroundStyle(.secondary)
             } else if keepResetSpace {
                 Text(" ").font(.system(size: 10 * s)).hidden()
             }
@@ -1914,7 +1954,7 @@ struct MenuUsageBlock: View {
                 Text(e).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                UsageRow(w: w, s: 1.08, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle)
+                UsageRow(w: w, s: 1.08, showReset: resetStyle != "hidden", used: used, resetStyle: resetStyle, showRunOut: true)
             }
             if let rc = u.resetCredits {
                 VStack(alignment: .leading, spacing: 2) {
