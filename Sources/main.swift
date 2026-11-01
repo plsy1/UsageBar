@@ -153,8 +153,11 @@ enum I18n {
         "更新失败，继续使用旧价格": ("更新に失敗しました。以前の価格を使用中", "Update failed, using cached prices"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
-        "提前重置（用了重置次数）时，或之前用了一半以上时": ("予定より早くリセットされたとき（リセットを使ったとき）、またはそれまでに半分以上使っていたとき", "When reset early (a reset was used), or after over half had been used"),
-        "%@ 已提前重置": ("%@ が予定より早くリセットされました", "%@ was reset early"),
+        "%@ 的额度被提前重置了": ("%@ の上限が予定より早くリセットされました", "%@ limits were reset early"),
+        "%@ 的额度已重置": ("%@ の上限がリセットされました", "%@ limits have reset"),
+        "%@（之前用了 %d%%）": ("%@（それまで %d%% 使用）", "%@ (was %d%% used)"),
+        "、": ("、", ", "),
+        "提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时": ("予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき", "When reset early (an across-the-board reset or a reset you used), or after over half had been used"),
         "Codex 额度重置次数": ("Codex の上限リセット", "Codex Resets"),
         "新获得时，以及到期前 24 小时": ("新たにもらったとき、期限の 24 時間前", "When you get one, and 24 hours before one expires"),
         "Codex 获得了 1 次额度重置": ("Codex の上限リセットを 1 回もらいました", "Codex gave you a limit reset"),
@@ -179,8 +182,6 @@ enum I18n {
         "%@ 已用 %d%%": ("%@ を %d%% 使用", "%@ is %d%% used"),
         "%@ 用得比时间快": ("%@ が速いペースです", "%@ is ahead of pace"),
         "按现在的速度预计 %@ 用完，%@": ("このペースだと %@ に使い切ります。%@", "At this pace it runs out %@; %@"),
-        "%@ 已重置": ("%@ がリセットされました", "%@ has reset"),
-        "重置前用了 %d%%": ("リセット前は %d%% 使用", "%d%% had been used before the reset"),
         "Codex 的额度重置次数快到期了": ("Codex のリセットがまもなく期限切れ", "A Codex reset is about to expire"),
         "有 1 次重置将在 %@ 到期，用不掉就作废": ("リセット 1 回分が %@ に期限切れになります。使わないと失効します", "One reset expires %@; it's lost if unused"),
         "用得比时间快：已用的比例超过了这个周期已经过去的比例": ("時間の進みより速いペース：使用した割合がこの期間の経過割合を上回っています", "Ahead of pace: you've used more of this limit than the share of the period that has passed"),
@@ -1008,7 +1009,7 @@ struct GeneralSettings: View {
             Divider()
             SettingsRow(L("预计在重置前用完"), detail: L("用了三成以上、用得比时间快时")) { SwitchControl(isOn: asking($notifyRunOut)) }
             Divider()
-            SettingsRow(L("额度重置后"), detail: L("提前重置（用了重置次数）时，或之前用了一半以上时")) { SwitchControl(isOn: asking($notifyReset)) }
+            SettingsRow(L("额度重置后"), detail: L("提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时")) { SwitchControl(isOn: asking($notifyReset)) }
             Divider()
             SettingsRow(L("Codex 额度重置次数"), detail: L("新获得时，以及到期前 24 小时")) { SwitchControl(isOn: asking($notifyCredits)) }
         }

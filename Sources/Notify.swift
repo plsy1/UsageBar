@@ -53,6 +53,7 @@ enum Notifier {
             send(key, title, body)
         }
         for u in results where u.error == nil {
+            var resets: [(label: String, used: Double, early: Bool)] = []
             // 用位置当键，不用显示名：显示名跟着界面语言变，换了语言会重复提醒
             for (i, w) in u.windows.enumerated() {
                 let id = "\(u.name)|\(i)"
@@ -68,17 +69,23 @@ enum Notifier {
                     once("runout|\(id)|\(cycle)", L("%@ 用得比时间快", name),
                          L("按现在的速度预计 %@ 用完，%@", shortTime(t), resetText(w.resetsAt)))
                 }
-                // 重置时间往后跳了、用量也降下来了，就是重置了。
-                // 还没到原定时间就重置的（用了 Codex 的重置次数）总要提醒；按时重置的，之前用了一半以上才值得说
-                if d.bool(forKey: resetKey), let old = last[id], let o = old.resetsAt, let n = w.resetsAt,
-                   n.timeIntervalSince(o) > 60, w.usedPercent < old.usedPercent {
-                    let early = o.timeIntervalSinceNow > 60
-                    if early || old.usedPercent >= 50 {
-                        once("reset|\(id)|\(cycle)", early ? L("%@ 已提前重置", name) : L("%@ 已重置", name),
-                             L("重置前用了 %d%%", Int(old.usedPercent.rounded())))
-                    }
+                // 用量降下来了就是重置了（不看重置时间变没变：统一重置时可能只清零用量）。
+                // 原定时间还没到就降了的是提前重置——OpenAI 时不时给所有人重置一次，或者用了重置次数——总要提醒；
+                // 按时重置的，之前用了一半以上才值得说。退回本地缓存时的数据不可靠，不拿来比
+                if u.note == nil, let old = last[id], w.usedPercent < old.usedPercent - 0.5 {
+                    let early = (old.resetsAt?.timeIntervalSinceNow ?? 0) > 60
+                    if early || old.usedPercent >= 50 { resets.append((w.label, old.usedPercent, early)) }
                 }
-                last[id] = w
+                if u.note == nil { last[id] = w }
+            }
+            // 5 小时和本周常常一起重置：合成一条
+            if d.bool(forKey: resetKey), !resets.isEmpty {
+                let early = resets.contains { $0.early }
+                let cycles = u.windows.map { w in w.resetsAt.map { String(Int(($0.timeIntervalSince1970 + 5) / 60)) } ?? "-" }
+                // 键里带上重置前的用量：统一重置时重置时间可能不变，同一周期里被重置两次也要各提醒一次
+                once("reset|\(u.name)|" + cycles.joined(separator: ",") + "|" + resets.map { String(Int($0.used.rounded())) }.joined(separator: ","),
+                     early ? L("%@ 的额度被提前重置了", u.name) : L("%@ 的额度已重置", u.name),
+                     resets.map { L("%@（之前用了 %d%%）", $0.label, Int($0.used.rounded())) }.joined(separator: L("、")))
             }
             // 新拿到重置次数。只看接口直接查到的（退回本地缓存时不知道次数）；第一次只记下不提醒
             if u.name == "Codex", u.note == nil, canSend {
