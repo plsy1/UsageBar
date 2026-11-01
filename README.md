@@ -30,6 +30,8 @@ Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) i
 - **Claude**: the Claude Code CLI must be logged in (`claude auth login`). UsageBar reads Claude Code's login from the Keychain and calls `api.anthropic.com/api/oauth/usage`. When the token expires it refreshes it and writes it back to the Keychain, the same way Claude Code does. macOS may ask once whether to allow Keychain access.
 - **Codex**: Codex must be logged in (`~/.codex/auth.json` exists). UsageBar calls `chatgpt.com/backend-api/wham/usage` and falls back to the latest usage recorded in `~/.codex/sessions` if that fails.
 
+Limits can also come from local files only (General → Data Sources → Local Only): Codex from its session logs, Claude from the desktop app's records (may be out of date); nothing is sent then.
+
 Statistics cover session logs on this Mac plus the remote machines added under General → Data Sources (`ssh` must log in without a password, e.g. with a key; if the machine is on your local network, allow UsageBar under System Settings → Privacy & Security → Local Network). Cost is an API-price estimate, not what a subscription actually charges. Prices are downloaded from models.dev once a day.
 
 The limit endpoints are not public APIs and may stop working if Anthropic or OpenAI change them. Data only travels between your Mac and the respective official service.

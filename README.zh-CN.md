@@ -30,6 +30,8 @@
 - **Claude**：需要 Claude Code 命令行已登录（`claude auth login`）。UsageBar 读取钥匙串里 Claude Code 的登录信息，请求 `api.anthropic.com/api/oauth/usage`；令牌过期时会自动续期并写回钥匙串，和 Claude Code 自己的做法一致。第一次读取时系统可能弹窗询问是否允许访问钥匙串。
 - **Codex**：需要 Codex 已登录（存在 `~/.codex/auth.json`）。请求 `chatgpt.com/backend-api/wham/usage`；失败时退回到 `~/.codex/sessions` 里最近一次记录的用量。
 
+额度也可以只读本机文件（通用 → 数据来源 → 仅本地）：Codex 读会话日志，Claude 读桌面 app 的记录（可能不是最新），这时不发任何请求。
+
 用量统计包含这台 Mac 和在 通用 → 数据来源 里添加的远程机器上的会话记录（`ssh` 要能免密登录，比如用密钥；局域网里的机器还要在 系统设置 → 隐私与安全性 → 本地网络 里允许 UsageBar）；成本是按 API 价格的估算，不是订阅实际扣的钱。价格每天从 models.dev 下载一次。
 
 额度接口不是公开 API，Anthropic 或 OpenAI 改动后可能失效。所有数据只在本机和对应官方服务之间传输。

@@ -153,6 +153,14 @@ enum I18n {
         "更新失败，继续使用旧价格": ("更新に失敗しました。以前の価格を使用中", "Update failed, using cached prices"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
+        "官方接口": ("公式 API", "Official API"),
+        "仅本地": ("ローカルのみ", "Local Only"),
+        "额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志": ("上限：「公式 API」はこの Mac のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの Mac のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。使用量の統計はいずれもローカルのログだけを読みます", "Limits: Official API asks Anthropic and OpenAI using the logins on this Mac and is the most accurate; Local Only reads files on this Mac and sends no requests (Codex from its session logs, Claude from the desktop app's records, which may be out of date). Usage statistics always read local logs only"),
+        "本机没有 Claude 的额度记录（Claude 桌面 app 查看过用量后才会有）": ("この Mac に Claude の上限の記録がありません（Claude デスクトップアプリで使用量を表示すると作られます）", "No Claude limit records on this Mac (the Claude desktop app writes one when it shows usage)"),
+        "Claude 桌面 app 最近没有查过用量（最近一次 %@）": ("Claude デスクトップアプリが最近使用量を取得していません（最後は %@）", "The Claude desktop app hasn't checked usage recently (last at %@)"),
+        "来自 Claude 桌面 app 的记录 · 数据时间 %@": ("Claude デスクトップアプリの記録 · %@ 時点", "From the Claude desktop app · as of %@"),
+        "来自会话日志": ("セッションログより", "From session logs"),
+        "会话日志里还没有额度记录（用一次 Codex 就有）": ("セッションログにまだ上限の記録がありません（Codex を一度使うと記録されます）", "No limits in the session logs yet (they appear after using Codex once)"),
         "共 %d 行": ("全 %d 行", "%d rows"),
         "前 %d 行 · 共 %d 行": ("上位 %d 行 · 全 %d 行", "Top %d of %d rows"),
         "显示全部": ("すべて表示", "Show All"),
@@ -282,14 +290,13 @@ enum I18n {
         "隐私": ("プライバシー", "Privacy"),
         "所有版本": ("すべてのリリース", "All Releases"),
         "反馈问题": ("問題を報告", "Report an Issue"),
-        "用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询": ("この Mac の Claude Code と Codex のログイン情報を使い、Anthropic と OpenAI の使用量 API に問い合わせます", "Uses this Mac's Claude Code and Codex logins to ask Anthropic's and OpenAI's usage endpoints"),
+        "默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「通用 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求": ("既定ではこの Mac の Claude Code と Codex のログイン情報で Anthropic・OpenAI の使用量 API に問い合わせます。「一般 → データソース」で「ローカルのみ」にすると、この Mac のファイルだけを読みリクエストを送りません", "By default, queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this Mac; switch to Local Only under General → Data Sources to read files on this Mac only and send no requests"),
         "卡片": ("カード", "Cards"),
         "额度卡片": ("上限カード", "Limits Card"),
         "用量卡片": ("使用量カード", "Usage Card"),
         "显示额度卡片": ("上限カードを表示", "Show Limits Card"),
         "隐藏额度卡片": ("上限カードを隠す", "Hide Limits Card"),
         "额度": ("上限", "Limits"),
-        "数据从哪里来，见「关于」": ("データの取得元は「情報」を参照", "See About for where the data comes from"),
         "版本、更新和数据说明": ("バージョン、アップデート、データについて", "Version, updates and where the data comes from"),
         "数据说明": ("データについて", "About the Data"),
         "开机启动、外观、额度显示和数据来源": ("ログイン時の起動、外観、上限の表示、データソース", "Launch at login, appearance, limits and data sources"),
@@ -503,7 +510,35 @@ enum Claude {
         return false
     }
 
+    /// 「仅本地」：Claude 桌面 app 查过用量后会在这里留一条采样（5 小时、本周已用的百分比），不发请求。
+    /// 只在 app 查看用量时才写，可能是很久以前的；没有重置时间
+    static func fetchLocal() -> ProviderUsage {
+        var u = ProviderUsage(name: "Claude")
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Claude/plan-usage-history.json")
+        guard let d = try? Data(contentsOf: url),
+              let samples = ((try? JSONSerialization.jsonObject(with: d)) as? [String: Any])?["samples"] as? [[String: Any]],
+              let last = samples.max(by: { ($0["t"] as? Double ?? 0) < ($1["t"] as? Double ?? 0) }),
+              let t = last["t"] as? Double, let usage = last["u"] as? [String: Any] else {
+            u.error = L("本机没有 Claude 的额度记录（Claude 桌面 app 查看过用量后才会有）")
+            return u
+        }
+        let at = Date(timeIntervalSince1970: t / 1000), age = Date().timeIntervalSince(at)
+        // 过了一个窗口的长度，那时的数肯定已经重置过了，不再显示
+        if age < 5 * 3600, let fh = usage["fh"] as? Double {
+            u.windows.append(LimitWindow(label: L("5 小时"), usedPercent: fh, resetsAt: nil, length: 5 * 3600))
+        }
+        if age < 7 * 86400, let sd = usage["sd"] as? Double {
+            u.windows.append(LimitWindow(label: L("本周"), usedPercent: sd, resetsAt: nil, weekly: true, length: 7 * 86400))
+        }
+        let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
+        u.note = L("来自 Claude 桌面 app 的记录 · 数据时间 %@", f.string(from: at))
+        if u.windows.isEmpty { u.error = L("Claude 桌面 app 最近没有查过用量（最近一次 %@）", f.string(from: at)) }
+        return u
+    }
+
     static func fetch() async -> ProviderUsage {
+        if Pref.localLimits("Claude") { return fetchLocal() }
         var u = ProviderUsage(name: "Claude")
         let loginHint = L("在终端运行 claude auth login 登录一次")
         guard var creds = readCreds(), let oauth = creds["claudeAiOauth"] as? [String: Any] else {
@@ -581,7 +616,8 @@ enum Codex {
 
     static func fetch() async -> ProviderUsage {
         var u = ProviderUsage(name: "Codex")
-        if let d = try? Data(contentsOf: home.appendingPathComponent("auth.json")),
+        let local = Pref.localLimits("Codex")
+        if !local, let d = try? Data(contentsOf: home.appendingPathComponent("auth.json")),
            let auth = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
            let tokens = auth["tokens"] as? [String: Any],
            let at = tokens["access_token"] as? String {
@@ -616,8 +652,8 @@ enum Codex {
             u.note = status == 401 ? L("登录过期，显示本地缓存（打开 Codex 会自动刷新）")
                                    : L("接口请求失败（HTTP %d），显示本地缓存", status)
         }
-        // 退回：最近一次会话日志里的 rate_limits
-        if let (rl, mtime) = latestLocalRateLimits() {
+        // 「仅本地」，或接口查不到：用会话日志里最新的一份额度（本机和远程机器的都算）
+        if let (rl, mtime) = newestLoggedRateLimits() {
             u.plan = u.plan ?? planName(rl["plan_type"] as? String)
             for key in ["primary", "secondary"] {
                 guard let w = rl[key] as? [String: Any], let used = w["used_percent"] as? Double else { continue }
@@ -630,11 +666,22 @@ enum Codex {
                                              weekly: seconds == 7 * 86400, length: seconds))
             }
             let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
-            u.note = L("%@ · 数据时间 %@", u.note ?? L("本地缓存"), f.string(from: mtime))
+            u.note = L("%@ · 数据时间 %@", u.note ?? (local ? L("来自会话日志") : L("本地缓存")), f.string(from: mtime))
         } else if u.windows.isEmpty {
-            u.error = L("读不到 Codex 登录信息或会话记录")
+            u.error = local ? L("会话日志里还没有额度记录（用一次 Codex 就有）") : L("读不到 Codex 登录信息或会话记录")
         }
         return u
+    }
+
+    /// 数据库里记下的（解析本机和远程日志时见到的最新一份），和直接翻本机最近几个日志找到的，取较新的
+    static func newestLoggedRateLimits() -> ([String: Any], Date)? {
+        let fromDB = LogReader.codexRateLimits().map { ($0.limits, $0.time) }
+        let fromFiles = latestLocalRateLimits()
+        switch (fromDB, fromFiles) {
+        case let (a?, b?): return a.1 >= b.1 ? a : b
+        case let (a?, nil): return a
+        default: return fromFiles
+        }
     }
 
     static func latestLocalRateLimits() -> ([String: Any], Date)? {
@@ -709,6 +756,12 @@ enum Pref {
     static let refreshMinutes = "refreshMinutes"
     static let statsRefreshMinutes = "statsRefreshMinutes"
     static let menuLabel = "menuLabel"         // short / full
+    /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
+    static let claudeLimitSource = "claudeLimitSource"
+    static let codexLimitSource = "codexLimitSource"
+    static func localLimits(_ provider: String) -> Bool {
+        UserDefaults.standard.string(forKey: provider == "Claude" ? claudeLimitSource : codexLimitSource) == "local"
+    }
     static let menuStyle = "menuStyle"         // inline 一行 / stacked 名称在上、数值在下两行
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
@@ -921,6 +974,8 @@ struct GeneralSettings: View {
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @AppStorage(LogReader.hostsKey) var remoteHosts = ""
     @State var newHost = ""
+    @AppStorage(Pref.claudeLimitSource) var claudeSource = "api"
+    @AppStorage(Pref.codexLimitSource) var codexSource = "api"
     @AppStorage(Notifier.thresholdKey) var notifyThreshold = 0
     @AppStorage(Notifier.runOutKey) var notifyRunOut = false
     @AppStorage(Notifier.resetKey) var notifyReset = false
@@ -1066,7 +1121,7 @@ struct GeneralSettings: View {
     }
 
     var sources: some View {
-        SettingsGroup(L("数据来源"), footer: L("数据从哪里来，见「关于」")) {
+        SettingsGroup(L("数据来源"), footer: L("额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志")) {
             provider("Claude", source: L("Claude Code 登录（钥匙串）"))
             Divider()
             provider("Codex", source: "~/.codex/auth.json")
@@ -1132,13 +1187,21 @@ struct GeneralSettings: View {
 
     /// 一家一行：名字和读取的地方，右边是连接状态
     /// 右边只放一项（套餐），和远程机器的行一样；出错的原因、本地缓存这些写在左边小字里
+    /// 右边选额度来源；左边小字是这次从哪查到了什么（套餐、本地数据的时间），出错时是红色的原因
     func provider(_ name: String, source: String) -> some View {
         let u = model.results.first { $0.name == name }
-        let detail = u?.error ?? (u?.note != nil ? source + " · " + L("本地缓存") : source)
+        let selection = name == "Claude" ? $claudeSource : $codexSource
+        let local = selection.wrappedValue == "local"
+        let detail = u?.error ?? (u == nil ? L("正在获取用量…")
+            : local ? u?.note ?? L("仅本地")
+            : [source, u?.plan, u?.note].compactMap { $0 }.joined(separator: " · "))
         return SettingsRow(name, detail: detail, warning: u?.error != nil) {
             HStack(spacing: 8) {
-                Text(u == nil ? L("正在获取用量…") : u?.error != nil ? "—" : u?.plan ?? L("已连接"))
-                    .foregroundStyle(.secondary)
+                Picker("", selection: selection) {
+                    Text(L("官方接口")).tag("api")
+                    Text(L("仅本地")).tag("local")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
                 // 有远程机器时，给它们的「移除」按钮留出同样的位置，状态文字才对得齐
                 if !hosts.isEmpty { Color.clear.frame(width: Self.removeWidth, height: 1) }
             }
@@ -1551,7 +1614,7 @@ struct AboutSettings: View {
                         Text(L("数据说明")).font(.headline)
                         VStack(spacing: 0) {
                             infoRow("gauge.with.dots.needle.50percent", L("额度"),
-                                    L("用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询"))
+                                    L("默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「通用 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求"))
                             Divider().padding(.leading, 54)
                             infoRow("chart.bar.xaxis", L("用量统计"),
                                     L("读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）。解析结果存在本机的数据库里（~/Library/Application Support/UsageBar），日志被清理后统计也还在；成本按 models.dev 的 API 价格估算，价格每天更新一次"))
@@ -2497,7 +2560,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func refresh() {
-        guard !loading else { return }
+        // 正在查的话，等这次查完再查一次（比如刚换了额度来源，这次查的还是旧来源）
+        guard !loading else { refreshAgain = true; return }
         loading = true
         rebuildMenu()
         Task {
@@ -2521,6 +2585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.updateTitle()
                 self.rebuildMenu()
                 Notifier.check(r)
+                if self.refreshAgain { self.refreshAgain = false; self.refresh() }
             }
         }
     }
@@ -2598,6 +2663,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menuKey = [Pref.menuLabel, Pref.menuStyle, Pref.menuDisplayMode, Pref.menuShowClaude, Pref.menuShowCodex,
                        Pref.menuLimit, Pref.menuResetStyle, Pref.showCard, Pref.showStatsCard, Pref.language]
             .map { "\(d.object(forKey: $0) ?? "")" }.joined(separator: "|")
+        // 换了额度来源：马上按新的来源查一次
+        let sourceKey = "\(Pref.localLimits("Claude"))|\(Pref.localLimits("Codex"))"
+        if sourceKey != lastSourceKey {
+            if !lastSourceKey.isEmpty { refresh(); stats.reload() }
+            lastSourceKey = sourceKey
+        }
         if menuKey != lastMenuKey {
             lastMenuKey = menuKey
             updateTitle()
@@ -2605,6 +2676,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     var lastMenuKey = ""
+    var lastSourceKey = ""
+    var refreshAgain = false
 
     /// 统计和设置都在主窗口里，菜单只留一个入口，打开时回到上次看的页
     @objc func openApp() { openMain(nil) }

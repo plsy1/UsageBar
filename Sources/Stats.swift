@@ -278,6 +278,7 @@ enum LogReader {
             }
             // 删掉的日志不用再记进度；记录留在库里
             for key in known?.keys.filter({ !seen.contains($0) && !$0.hasPrefix(remotePrefix) }) ?? [] { forget(d, key) }
+            saveRateLimits(d)
         }
     }
 
@@ -390,6 +391,30 @@ enum LogReader {
         }
         db?.run("SELECT DISTINCT host FROM records WHERE host IS NOT NULL") { r in r.text(0).map { o.hosts.append($0) } }
         return o
+    }
+
+    /// 解析时见到的最新一份 Codex 额度（拿着锁时读写），同步完存进 meta
+    private static var seenRateLimits: (time: Date, limits: [String: Any])?
+
+    private static func saveRateLimits(_ d: SQLiteDB) {
+        guard let (t, rl) = seenRateLimits else { return }
+        seenRateLimits = nil
+        if let old = codexRateLimits(d), old.time >= t { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["time": t.timeIntervalSince1970, "limits": rl]) else { return }
+        setMeta(d, "codexRateLimits", String(decoding: data, as: UTF8.self))
+    }
+
+    private static func codexRateLimits(_ d: SQLiteDB) -> (time: Date, limits: [String: Any])? {
+        guard let s = meta(d, "codexRateLimits"),
+              let o = (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any],
+              let t = o["time"] as? Double, let rl = o["limits"] as? [String: Any] else { return nil }
+        return (Date(timeIntervalSince1970: t), rl)
+    }
+
+    /// 本机和远程机器的 Codex 日志里最新的一份额度，和它是什么时候记的
+    static func codexRateLimits() -> (time: Date, limits: [String: Any])? {
+        lock.lock(); defer { lock.unlock() }
+        return db.flatMap(codexRateLimits)
     }
 
     /// 价格表换了一版：库里每条记录的成本重算一遍（一天最多一次）
@@ -531,6 +556,11 @@ enum LogReader {
                 model = p["model"] as? String ?? model
                 cwd = p["cwd"] as? String ?? cwd
                 continue
+            }
+            // 每次回复后的 token_count 里顺带记着当时的额度：留下见到的最新一份（「仅本地」时用它）
+            if p["type"] as? String == "token_count", let rl = p["rate_limits"] as? [String: Any],
+               let ts = (o["timestamp"] as? String).flatMap(iso.date), ts > (seenRateLimits?.time ?? .distantPast) {
+                seenRateLimits = (ts, rl)
             }
             guard p["type"] as? String == "token_count", let info = p["info"] as? [String: Any],
                   let last = info["last_token_usage"] as? [String: Any],
@@ -733,6 +763,7 @@ extension LogReader {
                         }
                         store(d, n.key, mtime: n.mtime.timeIntervalSince1970, size: n.size, e)
                     }
+                    saveRateLimits(d)
                 }
             }
             lock.unlock()
@@ -926,7 +957,10 @@ final class StatsStore: ObservableObject {
             await self.requery()
             await MainActor.run { self.loading = false }
             let due = await MainActor.run { self.accountFetchedAt.map { Date().timeIntervalSince($0) > 3600 } ?? true }
-            if due, let acc = await Codex.fetchAccount() {
+            // 服务端统计要请求 OpenAI 的接口：额度来源选了「仅本地」就不查
+            if Pref.localLimits("Codex") {
+                await MainActor.run { self.codexAccount = nil; self.accountFetchedAt = nil }
+            } else if due, let acc = await Codex.fetchAccount() {
                 await MainActor.run { self.codexAccount = acc; self.accountFetchedAt = Date() }
             }
         }
