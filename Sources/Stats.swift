@@ -835,8 +835,7 @@ struct StatsView: View {
     static let cellInset: CGFloat = 8
     @State var showRange = false
     @State var showMachines = false
-    @State var hoverDate: Date?  // 图表上鼠标所在的时段
-    @State var heatHover: Date?  // 热力图上鼠标所在的那天
+    @State var showAllGroups = false  // 按应用、模型、项目的表：行很多时是否全部列出
     @AppStorage("statsChartStyle") var chartStyle = "line"  // line / bar
     @AppStorage("statsChartColor") var chartColor = "pink"  // 主题色，在 通用 → 基本 里选
     /// 请求明细里隐藏的列（LogColumn 的 rawValue，逗号分隔）
@@ -1147,230 +1146,11 @@ struct StatsView: View {
         return out
     }
 
-    /// 像 GitHub 那样的每日格子：一列一周，最近一年（窗口窄时少几周）；颜色深浅分五档
-    func heatmap() -> some View {
-        let days = dailyTotals()
-        // 有用量的日子按四分位分档，少数几天特别多也不会把其他天都压成最浅
-        let sorted = days.values.map(\.tokens).filter { $0 > 0 }.sorted()
-        let cuts = [0.25, 0.5, 0.75].map { q in sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * q))] }
-        let level = { (n: Int) -> Int in n <= 0 ? 0 : 1 + cuts.filter { n > $0 }.count }
-        let c = ChartColor.color(chartColor)
-        let shade = { (l: Int) -> Color in l == 0 ? Color.primary.opacity(0.07) : c.opacity([0, 0.3, 0.5, 0.72, 1][l]) }
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: Date())
-        let hovered = heatHover.flatMap { days[$0] ?? Bucket(date: $0, tokens: 0) }
-        let monthF = DateFormatter(), dayF = DateFormatter()
-        monthF.locale = locale; monthF.setLocalizedDateFormatFromTemplate("MMM")
-        dayF.dateFormat = "yyyy/M/d"
-        let labelWidth: CGFloat = 30, gap: CGFloat = 3
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(L("每日用量")).font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                Spacer()
-                if let h = hovered {
-                    Text(dayF.string(from: h.date) + " · " + abbrev(h.tokens) + " tokens · " + L("%d 次请求", h.requests) + " · " + money(h.cost))
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                } else {
-                    HStack(spacing: 4) {
-                        Text(L("少")).font(.caption).foregroundStyle(.secondary)
-                        ForEach(0..<5) { RoundedRectangle(cornerRadius: 2).fill(shade($0)).frame(width: 10, height: 10) }
-                        Text(L("多")).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            GeometryReader { g in
-                // 格子边长随宽度变，最大 16；放不下一年就少几周
-                let weeks = max(8, min(53, Int((g.size.width - labelWidth) / (10 + gap))))
-                let cell = min(16, (g.size.width - labelWidth) / CGFloat(weeks) - gap)
-                let thisWeek = cal.dateInterval(of: .weekOfYear, for: today)?.start ?? today
-                let start = cal.date(byAdding: .weekOfYear, value: -(weeks - 1), to: thisWeek) ?? today
-                let date = { (w: Int, d: Int) in cal.date(byAdding: .day, value: w * 7 + d, to: start) ?? start }
-                VStack(alignment: .leading, spacing: 4) {
-                    // 月份写在这个月第一次出现的那一列上面
-                    ZStack(alignment: .topLeading) {
-                        ForEach(0..<weeks, id: \.self) { w in
-                            let month = { (w: Int) in cal.component(.month, from: date(w, 0)) }
-                            // 第一列只在这个月还要再占两列以上时才写，否则和下一列的月份挤在一起
-                            if w == 0 ? month(0) == month(2) : month(w) != month(w - 1) {
-                                Text(monthF.string(from: date(w, 0)))
-                                    .font(.caption).foregroundStyle(.secondary).fixedSize()
-                                    .offset(x: labelWidth + CGFloat(w) * (cell + gap))
-                            }
-                        }
-                    }
-                    .frame(height: 14, alignment: .topLeading)
-                    HStack(alignment: .top, spacing: gap) {
-                        // 星期：只写第 2、4、6 行，和 GitHub 一样
-                        VStack(alignment: .leading, spacing: gap) {
-                            ForEach(0..<7, id: \.self) { d in
-                                Text(d % 2 == 1 ? cal.shortWeekdaySymbols[(cal.firstWeekday - 1 + d) % 7] : "")
-                                    .font(.system(size: 9)).foregroundStyle(.secondary)
-                                    .frame(width: labelWidth - gap, height: cell, alignment: .leading)
-                            }
-                        }
-                        ForEach(0..<weeks, id: \.self) { w in
-                            VStack(spacing: gap) {
-                                ForEach(0..<7, id: \.self) { d in
-                                    let day = date(w, d)
-                                    RoundedRectangle(cornerRadius: 2.5)
-                                        .fill(day > today ? Color.clear : shade(level(days[day]?.tokens ?? 0)))
-                                        .overlay(RoundedRectangle(cornerRadius: 2.5)
-                                            .strokeBorder(Color.primary.opacity(heatHover == day ? 0.6 : 0), lineWidth: 1))
-                                        .frame(width: cell, height: cell)
-                                        .onHover { inside in
-                                            if inside, day <= today { heatHover = day } else if heatHover == day { heatHover = nil }
-                                        }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(height: 14 + 4 + 7 * 16 + 6 * gap)
-        }
-        .padding(16)
-        .modifier(Panel())
-    }
+    func heatmap() -> some View { UsageHeatmap(days: dailyTotals(), color: ChartColor.color(chartColor), locale: locale) }
 
     func chart(_ rows: [UsageRecord]) -> some View {
-        let unit: Calendar.Component = hourly ? .hour : .day
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(hourly ? L("Tokens · 按小时") : L("Tokens · 按天"))
-                    .font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: $chartStyle) {
-                    Image(systemName: "chart.xyaxis.line").help(L("曲线图")).tag("line")
-                    Image(systemName: "chart.bar").help(L("柱状图")).tag("bar")
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-            }
-            if store.loading && store.all.isEmpty {
-                Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 170)
-            } else {
-                let data = buckets(rows), c = ChartColor.color(chartColor)
-                let hovered = hoverDate.flatMap { d in data.first { $0.date == d } }
-                Chart {
-                    ForEach(data) { b in
-                        if chartStyle == "bar" {
-                            BarMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                                .foregroundStyle(c.opacity(hovered == nil || hovered?.date == b.date ? 0.8 : 0.45))
-                                .cornerRadius(2)
-                        } else {
-                            AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                                .foregroundStyle(LinearGradient(colors: [c.opacity(0.28), c.opacity(0.03)], startPoint: .top, endPoint: .bottom))
-                                .interpolationMethod(.monotone)
-                            LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
-                                .foregroundStyle(c)
-                                .interpolationMethod(.monotone)
-                        }
-                    }
-                    // 鼠标所在的时段：竖向虚线，曲线图再加个点
-                    if let h = hovered {
-                        RuleMark(x: .value("t", h.date, unit: unit))
-                            .foregroundStyle(Color.secondary)
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        if chartStyle != "bar" {
-                            PointMark(x: .value("t", h.date, unit: unit), y: .value("tokens", h.tokens))
-                                .foregroundStyle(c)
-                                .symbolSize(45)
-                        }
-                    }
-                }
-                .chartOverlay { proxy in
-                    GeometryReader { geo in
-                        let plot = geo[proxy.plotAreaFrame]
-                        Rectangle().fill(.clear).contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                guard case .active(let p) = phase, let d: Date = proxy.value(atX: p.x - plot.minX) else {
-                                    hoverDate = nil; return
-                                }
-                                let cal = Calendar.current
-                                let key = hourly ? cal.dateInterval(of: .hour, for: d)?.start : cal.startOfDay(for: d)
-                                hoverDate = data.contains { $0.date == key } ? key : nil
-                            }
-                        if let h = hovered, let x = proxy.position(forX: midpoint(h.date)) {
-                            // 卡片放在虚线右边，靠近右边缘时放左边
-                            let px = plot.minX + x, right = px < geo.size.width * 0.62
-                            chartTooltip(h, color: c)
-                                .fixedSize()
-                                .alignmentGuide(.leading) { d in right ? -(px + 12) : -(px - 12 - d.width) }
-                                .alignmentGuide(.top) { _ in -(plot.minY + 4) }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks { v in
-                        AxisGridLine()
-                        AxisValueLabel { if let n = v.as(Int.self) { Text(abbrev(n)) } }
-                    }
-                }
-                // 柱子和数据点都画在时段中间，刻度也放在时段中间，日期才和点、虚线对得上
-                .chartXAxis {
-                    AxisMarks(values: axisTicks(data)) { v in
-                        AxisGridLine()
-                        AxisValueLabel(anchor: .top) {
-                            if let d = v.as(Date.self) { Text(axisLabel(d)) }
-                        }
-                    }
-                }
-                .frame(height: 170)
-            }
-        }
-        .padding(16)
-        .modifier(Panel())
-    }
-
-    /// 时段的中点（柱子、数据点画在这里）
-    func midpoint(_ d: Date) -> Date {
-        let next = Calendar.current.date(byAdding: hourly ? .hour : .day, value: 1, to: d) ?? d
-        return d.addingTimeInterval(next.timeIntervalSince(d) / 2)
-    }
-
-    /// 横轴刻度：每隔几个时段一个，放在时段中点；间隔从常用的几档里挑，最多七八个
-    func axisTicks(_ data: [Bucket]) -> [Date] {
-        let steps = hourly ? [1, 2, 3, 4, 6, 12, 24] : [1, 2, 3, 7, 14, 30, 61, 91, 182]
-        let step = steps.first { data.count <= $0 * 8 } ?? steps.last!
-        return stride(from: 0, to: data.count, by: step).map { midpoint(data[$0].date) }
-    }
-
-    func axisLabel(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = hourly ? "HH:00" : "M/d"
-        return f.string(from: d)
-    }
-
-    /// 图表悬停时的小卡片：时段和这段时间的用量
-    func chartTooltip(_ b: Bucket, color: Color) -> some View {
-        let f = DateFormatter()
-        f.dateFormat = hourly ? "yyyy/M/d HH:00" : "yyyy/M/d"
-        return VStack(alignment: .leading, spacing: 8) {
-            Text(f.string(from: b.date)).font(.headline).monospacedDigit()
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-                GridRow {
-                    RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
-                    Text("Tokens").foregroundStyle(.secondary)
-                    Text(b.tokens.formatted()).monospacedDigit().gridColumnAlignment(.trailing).padding(.leading, 28)
-                }
-                GridRow {
-                    Color.clear.frame(width: 10, height: 10)
-                    Text(L("请求数")).foregroundStyle(.secondary)
-                    Text(b.requests.formatted()).monospacedDigit()
-                }
-                GridRow {
-                    Color.clear.frame(width: 10, height: 10)
-                    Text(L("估算成本")).foregroundStyle(.secondary)
-                    Text(money(b.cost)).monospacedDigit()
-                }
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor))
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 2))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(nsColor: .separatorColor).opacity(0.6)))
+        UsageChart(data: buckets(rows), hourly: hourly, loading: store.loading && store.all.isEmpty,
+                   color: ChartColor.color(chartColor), style: $chartStyle)
     }
 
     func modelRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { "\($0.source.rawValue)|\($0.model)" } }
@@ -1492,13 +1272,27 @@ struct StatsView: View {
                 c == .name ? (apps ? L("应用") : l.table == "projects" ? L("项目") : L("模型")) : c.title
             }
             if rows.isEmpty { emptyRow() }
-            ForEach(rows) { row in
+            // 行太多（按项目常有几百个）时先只列前 50 行：一次画几百行，滚动会卡
+            ForEach(showAllGroups ? rows[...] : rows.prefix(Self.pageSize)) { row in
                 Divider()
-                columnRow(cols, l, saved: saved) { c in c.cell(row, appName: apps) }
+                // 只有名称那一列要悬停（按项目显示完整路径），其他格子不参与命中测试，滚动才不卡
+                columnRow(cols, l, saved: saved) { c in c.cell(row, appName: apps).allowsHitTesting(c == .name) }
                     .frame(height: 42)
             }
         }
-        return fitted(table, needed: m.needed)
+        return VStack(spacing: 0) {
+            fitted(table, needed: m.needed)
+            if rows.count > Self.pageSize {
+                Divider()
+                HStack {
+                    Text(showAllGroups ? L("共 %d 行", rows.count) : L("前 %d 行 · 共 %d 行", Self.pageSize, rows.count))
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(showAllGroups ? L("收起") : L("显示全部")) { showAllGroups.toggle() }
+                }
+                .padding(.horizontal, 20).frame(height: 44)
+            }
+        }
     }
 
     func modelTable(_ models: [ModelRow]) -> some View { groupTable(models, modelLayout) }
@@ -1701,17 +1495,19 @@ struct StatsView: View {
         let cols: [LogColumn] = ordered(l).filter { !hidden.contains($0) }
         let saved: [LogColumn: CGFloat] = savedWidths(l)
         let m = metrics(cols, l, saved)
-        let table = LazyVStack(spacing: 0) {
+        let table = VStack(spacing: 0) {  // 一页只有 50 行，不用 Lazy：Lazy 在滚动时要不停增删行、重新布局
             columnHeader(cols, l, saved: saved, flex: m.flex)
             if rows.isEmpty { emptyRow() }
             ForEach(rows[min(rows.count, current * size)..<min(rows.count, (current + 1) * size)]) { r in
                 Divider()
                 let time = f.string(from: r.time)
+                // 单元格不参与命中测试，只留整行这一个点击区域：滚动时每一帧都要拿鼠标位置在整棵视图树里找一遍，
+                // 一页几百个文字格子会让滚动卡顿
                 columnRow(cols, l, saved: saved) { c in c.cell(r, time: time) }
+                    .allowsHitTesting(false)
                     .frame(height: 42)
                     .background(selected?.id == r.id ? ChartColor.color(chartColor).opacity(0.12) : .clear)
-                    .contentShape(Rectangle())
-                    .onTapGesture { selected = r }
+                    .overlay(Color.clear.contentShape(Rectangle()).onTapGesture { selected = r })
             }
         }
         return VStack(spacing: 0) {
@@ -2254,5 +2050,255 @@ func printStats() async {
         let r = LogReader.readRemote(host)
         let s = Summary(r.records.map { var x = $0; x.cost = Pricing.cost(x); return x })
         print("remote \(host): \(r.status.error ?? "\(r.status.files ?? 0) files") · all time cost \(money(s.cost)) · requests \(s.requests) · tokens \(abbrev(s.tokens))")
+    }
+}
+
+/// 每日热力图。悬停状态放在它自己身上：鼠标划过格子时只重画热力图，不牵动整个统计页
+struct UsageHeatmap: View {
+    let days: [Date: Bucket]
+    let color: Color
+    let locale: Locale
+    @State var hover: Date?  // 鼠标所在的那天
+
+    var body: some View {
+        // 有用量的日子按四分位分档，少数几天特别多也不会把其他天都压成最浅
+        let sorted = days.values.map(\.tokens).filter { $0 > 0 }.sorted()
+        let cuts = [0.25, 0.5, 0.75].map { q in sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * q))] }
+        let level = { (n: Int) -> Int in n <= 0 ? 0 : 1 + cuts.filter { n > $0 }.count }
+        let c = color
+        let shade = { (l: Int) -> Color in l == 0 ? Color.primary.opacity(0.07) : c.opacity([0, 0.3, 0.5, 0.72, 1][l]) }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let hovered = hover.flatMap { days[$0] ?? Bucket(date: $0, tokens: 0) }
+        let monthF = DateFormatter(), dayF = DateFormatter()
+        monthF.locale = locale; monthF.setLocalizedDateFormatFromTemplate("MMM")
+        dayF.dateFormat = "yyyy/M/d"
+        let labelWidth: CGFloat = 30, gap: CGFloat = 3
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(L("每日用量")).font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+                if let h = hovered {
+                    Text(dayF.string(from: h.date) + " · " + abbrev(h.tokens) + " tokens · " + L("%d 次请求", h.requests) + " · " + money(h.cost))
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 4) {
+                        Text(L("少")).font(.caption).foregroundStyle(.secondary)
+                        ForEach(0..<5) { RoundedRectangle(cornerRadius: 2).fill(shade($0)).frame(width: 10, height: 10) }
+                        Text(L("多")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            GeometryReader { g in
+                // 格子边长随宽度变，最大 16；放不下一年就少几周
+                let weeks = max(8, min(53, Int((g.size.width - labelWidth) / (10 + gap))))
+                let cell = min(16, (g.size.width - labelWidth) / CGFloat(weeks) - gap)
+                let thisWeek = cal.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+                let start = cal.date(byAdding: .weekOfYear, value: -(weeks - 1), to: thisWeek) ?? today
+                let date = { (w: Int, d: Int) in cal.date(byAdding: .day, value: w * 7 + d, to: start) ?? start }
+                VStack(alignment: .leading, spacing: 4) {
+                    // 月份写在这个月第一次出现的那一列上面
+                    ZStack(alignment: .topLeading) {
+                        ForEach(0..<weeks, id: \.self) { w in
+                            let month = { (w: Int) in cal.component(.month, from: date(w, 0)) }
+                            // 第一列只在这个月还要再占两列以上时才写，否则和下一列的月份挤在一起
+                            if w == 0 ? month(0) == month(2) : month(w) != month(w - 1) {
+                                Text(monthF.string(from: date(w, 0)))
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize()
+                                    .offset(x: labelWidth + CGFloat(w) * (cell + gap))
+                            }
+                        }
+                    }
+                    .frame(height: 14, alignment: .topLeading)
+                    HStack(alignment: .top, spacing: gap) {
+                        // 星期：只写第 2、4、6 行，和 GitHub 一样
+                        VStack(alignment: .leading, spacing: gap) {
+                            ForEach(0..<7, id: \.self) { d in
+                                Text(d % 2 == 1 ? cal.shortWeekdaySymbols[(cal.firstWeekday - 1 + d) % 7] : "")
+                                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                                    .frame(width: labelWidth - gap, height: cell, alignment: .leading)
+                            }
+                        }
+                        // 整张格子只挂一个悬停监听，按坐标算出是哪一格：每格各挂一个的话，
+                        // 滚动页面时每一下都要把鼠标和几百个格子逐个比对，滚起来会卡
+                        HStack(alignment: .top, spacing: gap) {
+                            ForEach(0..<weeks, id: \.self) { w in
+                                VStack(spacing: gap) {
+                                    ForEach(0..<7, id: \.self) { d in
+                                        let day = date(w, d)
+                                        RoundedRectangle(cornerRadius: 2.5)
+                                            .fill(day > today ? Color.clear : shade(level(days[day]?.tokens ?? 0)))
+                                            .overlay(RoundedRectangle(cornerRadius: 2.5)
+                                                .strokeBorder(Color.primary.opacity(hover == day ? 0.6 : 0), lineWidth: 1))
+                                            .frame(width: cell, height: cell)
+                                    }
+                                }
+                            }
+                        }
+                        .allowsHitTesting(false)
+                        .overlay(Color.clear.contentShape(Rectangle()).onContinuousHover { phase in
+                            guard case .active(let p) = phase else { hover = nil; return }
+                            let w = Int(p.x / (cell + gap)), d = Int(p.y / (cell + gap))
+                            let day = date(w, d)
+                            hover = (0..<weeks).contains(w) && (0..<7).contains(d) && day <= today ? day : nil
+                        })
+                    }
+                }
+            }
+            .frame(height: 14 + 4 + 7 * 16 + 6 * gap)
+        }
+        .padding(16)
+        .modifier(Panel())
+    }
+}
+
+/// Tokens 走势图。悬停的虚线和小卡片只在这里面重画
+struct UsageChart: View {
+    let data: [Bucket]
+    let hourly: Bool
+    let loading: Bool  // 第一次读取还没出数
+    let color: Color
+    @Binding var style: String  // line / bar
+    @State var hoverDate: Date?  // 鼠标所在的时段
+
+    var body: some View {
+        let unit: Calendar.Component = hourly ? .hour : .day
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(hourly ? L("Tokens · 按小时") : L("Tokens · 按天"))
+                    .font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+                Picker("", selection: $style) {
+                    Image(systemName: "chart.xyaxis.line").help(L("曲线图")).tag("line")
+                    Image(systemName: "chart.bar").help(L("柱状图")).tag("bar")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            if loading {
+                Text(L("正在读取本机会话记录…")).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 170)
+            } else {
+                let c = color
+                let hovered = hoverDate.flatMap { d in data.first { $0.date == d } }
+                Chart {
+                    ForEach(data) { b in
+                        if style == "bar" {
+                            BarMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                                .foregroundStyle(c.opacity(hovered == nil || hovered?.date == b.date ? 0.8 : 0.45))
+                                .cornerRadius(2)
+                        } else {
+                            AreaMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                                .foregroundStyle(LinearGradient(colors: [c.opacity(0.28), c.opacity(0.03)], startPoint: .top, endPoint: .bottom))
+                                .interpolationMethod(.monotone)
+                            LineMark(x: .value("t", b.date, unit: unit), y: .value("tokens", b.tokens))
+                                .foregroundStyle(c)
+                                .interpolationMethod(.monotone)
+                        }
+                    }
+                    // 鼠标所在的时段：竖向虚线，曲线图再加个点
+                    if let h = hovered {
+                        RuleMark(x: .value("t", h.date, unit: unit))
+                            .foregroundStyle(Color.secondary)
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        if style != "bar" {
+                            PointMark(x: .value("t", h.date, unit: unit), y: .value("tokens", h.tokens))
+                                .foregroundStyle(c)
+                                .symbolSize(45)
+                        }
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        let plot = geo[proxy.plotAreaFrame]
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                guard case .active(let p) = phase, let d: Date = proxy.value(atX: p.x - plot.minX) else {
+                                    hoverDate = nil; return
+                                }
+                                let cal = Calendar.current
+                                let key = hourly ? cal.dateInterval(of: .hour, for: d)?.start : cal.startOfDay(for: d)
+                                hoverDate = data.contains { $0.date == key } ? key : nil
+                            }
+                        if let h = hovered, let x = proxy.position(forX: midpoint(h.date)) {
+                            // 卡片放在虚线右边，靠近右边缘时放左边
+                            let px = plot.minX + x, right = px < geo.size.width * 0.62
+                            chartTooltip(h, color: c)
+                                .fixedSize()
+                                .alignmentGuide(.leading) { d in right ? -(px + 12) : -(px - 12 - d.width) }
+                                .alignmentGuide(.top) { _ in -(plot.minY + 4) }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks { v in
+                        AxisGridLine()
+                        AxisValueLabel { if let n = v.as(Int.self) { Text(abbrev(n)) } }
+                    }
+                }
+                // 柱子和数据点都画在时段中间，刻度也放在时段中间，日期才和点、虚线对得上
+                .chartXAxis {
+                    AxisMarks(values: axisTicks(data)) { v in
+                        AxisGridLine()
+                        AxisValueLabel(anchor: .top) {
+                            if let d = v.as(Date.self) { Text(axisLabel(d)) }
+                        }
+                    }
+                }
+                .frame(height: 170)
+            }
+        }
+        .padding(16)
+        .modifier(Panel())
+    }
+
+    /// 时段的中点（柱子、数据点画在这里）
+    func midpoint(_ d: Date) -> Date {
+        let next = Calendar.current.date(byAdding: hourly ? .hour : .day, value: 1, to: d) ?? d
+        return d.addingTimeInterval(next.timeIntervalSince(d) / 2)
+    }
+
+    /// 横轴刻度：每隔几个时段一个，放在时段中点；间隔从常用的几档里挑，最多七八个
+    func axisTicks(_ data: [Bucket]) -> [Date] {
+        let steps = hourly ? [1, 2, 3, 4, 6, 12, 24] : [1, 2, 3, 7, 14, 30, 61, 91, 182]
+        let step = steps.first { data.count <= $0 * 8 } ?? steps.last!
+        return stride(from: 0, to: data.count, by: step).map { midpoint(data[$0].date) }
+    }
+
+    func axisLabel(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = hourly ? "HH:00" : "M/d"
+        return f.string(from: d)
+    }
+
+    /// 图表悬停时的小卡片：时段和这段时间的用量
+    func chartTooltip(_ b: Bucket, color: Color) -> some View {
+        let f = DateFormatter()
+        f.dateFormat = hourly ? "yyyy/M/d HH:00" : "yyyy/M/d"
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(f.string(from: b.date)).font(.headline).monospacedDigit()
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+                GridRow {
+                    RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+                    Text("Tokens").foregroundStyle(.secondary)
+                    Text(b.tokens.formatted()).monospacedDigit().gridColumnAlignment(.trailing).padding(.leading, 28)
+                }
+                GridRow {
+                    Color.clear.frame(width: 10, height: 10)
+                    Text(L("请求数")).foregroundStyle(.secondary)
+                    Text(b.requests.formatted()).monospacedDigit()
+                }
+                GridRow {
+                    Color.clear.frame(width: 10, height: 10)
+                    Text(L("估算成本")).foregroundStyle(.secondary)
+                    Text(money(b.cost)).monospacedDigit()
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor))
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 2))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(nsColor: .separatorColor).opacity(0.6)))
     }
 }
