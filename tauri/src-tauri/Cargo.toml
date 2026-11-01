@@ -1,6 +1,6 @@
 [package]
 name = "usagebar"
-version = "1.9.0"
+version = "1.10.0"
 description = "Remaining Claude and Codex usage in the system tray"
 edition = "2021"
 
