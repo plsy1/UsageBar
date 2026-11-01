@@ -234,12 +234,14 @@ function cardColumn(p) {
 // 紧凑：一家一行，放在网格里，各行的同一列上下对齐（cols：最多的那行有几格）
 function cardCompactRow(p, cols) {
   const used = state.settings.display === 'used';
-  const cells = p.error && p.windows.length === 0
-    ? [`<span class="c-err" style="grid-column: span ${cols - 1}">${esc(t(p.error, p.detail ?? ''))}</span>`]
-    : p.windows.map((w) => {
-      const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
-      return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num">${t(used ? 'used' : 'left', Math.round(v))}</span></span>`;
-    });
+  // 出错时这一格占满后面所有列，不用再补空格
+  if (p.error && p.windows.length === 0) {
+    return `<span class="c-name">${esc(p.name)}</span><span class="c-err" style="grid-column: span ${cols - 1}">${esc(t(p.error, p.detail ?? ''))}</span>`;
+  }
+  const cells = p.windows.map((w) => {
+    const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
+    return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num">${t(used ? 'used' : 'left', Math.round(v))}</span></span>`;
+  });
   if (p.resets) cells.push(`<span class="c-lab">${esc(resetCountText(p.resets))}</span>`);
   while (cells.length < cols - 1) cells.push('<span></span>');
   return `<span class="c-name">${esc(p.name)}</span>${cells.join('')}`;
