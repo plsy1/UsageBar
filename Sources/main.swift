@@ -1142,9 +1142,9 @@ struct MenuBarSettings: View {
         if menuStyle == "stacked", !shown.isEmpty {
             HStack(alignment: .top, spacing: 10) {
                 ForEach(shown, id: \.name) { u in
-                    VStack(alignment: .leading, spacing: -1.5) {
+                    VStack(alignment: .center, spacing: -1.5) {
                         Text(menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx")
-                            .font(.system(size: 8.5, weight: .semibold)).opacity(0.65)
+                            .font(.system(size: 8.5, weight: .semibold))
                         Text(u.menuValue(limit, used: used) ?? "–")
                             .font(.system(size: 11, weight: .semibold).monospacedDigit())
                     }
@@ -2443,7 +2443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tall = h >= 30  // 刘海屏的菜单栏更高，字也放大一点
         let nameFont = NSFont.systemFont(ofSize: tall ? 10.5 : 8.5, weight: .semibold)
         let valueFont = NSFont.monospacedDigitSystemFont(ofSize: tall ? 14 : 11, weight: .semibold)
-        let nameAttrs: [NSAttributedString.Key: Any] = [.font: nameFont, .foregroundColor: NSColor.black.withAlphaComponent(0.65)]
+        let nameAttrs: [NSAttributedString.Key: Any] = [.font: nameFont, .foregroundColor: NSColor.black]
         let valueAttrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: NSColor.black]
         let texts = blocks.map { (NSString(string: $0.name), NSString(string: $0.value ?? "–")) }
         let widths = texts.map { max($0.0.size(withAttributes: nameAttrs).width, $0.1.size(withAttributes: valueAttrs).width) }
@@ -2454,9 +2454,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let top = floor((h - nameH - valueH + overlap) / 2)
         let image = NSImage(size: NSSize(width: max(1, width), height: h), flipped: true) { _ in
             var x: CGFloat = 0
+            // 名称和数值在各自那一块里居中
             for ((name, value), w) in zip(texts, widths) {
-                name.draw(at: NSPoint(x: x, y: top), withAttributes: nameAttrs)
-                value.draw(at: NSPoint(x: x, y: top + nameH - overlap), withAttributes: valueAttrs)
+                let nw = name.size(withAttributes: nameAttrs).width, vw = value.size(withAttributes: valueAttrs).width
+                name.draw(at: NSPoint(x: x + (w - nw) / 2, y: top), withAttributes: nameAttrs)
+                value.draw(at: NSPoint(x: x + (w - vw) / 2, y: top + nameH - overlap), withAttributes: valueAttrs)
                 x += w + gap
             }
             return true
