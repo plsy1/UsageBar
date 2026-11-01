@@ -51,8 +51,9 @@ enum Notifier {
             send(key, title, body)
         }
         for u in results where u.error == nil {
-            for w in u.windows {
-                let id = "\(u.name)|\(w.label)"
+            // 用位置当键，不用显示名：显示名跟着界面语言变，换了语言会重复提醒
+            for (i, w) in u.windows.enumerated() {
+                let id = "\(u.name)|\(i)"
                 // 接口给的重置时间常是 05:59:59.x，取到分钟，同一个周期的键才稳定
                 let cycle = w.resetsAt.map { Int(($0.timeIntervalSince1970 + 5) / 60) } ?? 0
                 let name = "\(u.name) · \(w.label)"
