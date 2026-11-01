@@ -424,6 +424,7 @@ enum I18n {
         "黑色": ("黒", "Black"),
         "毛玻璃浓度": ("すりガラスの濃さ", "Frosted Strength"),
         "大小": ("サイズ", "Size"),
+        "也可以拖动桌面上卡片的右下角调整": ("デスクトップのカードの右下隅をドラッグしても変えられます", "You can also drag the bottom-right corner of the card on the desktop"),
         "整体不透明度": ("全体の不透明度", "Overall Opacity"),
         "重置时间": ("リセット時刻", "Reset Time"),
         "不显示": ("表示しない", "Hidden"),
@@ -1708,7 +1709,7 @@ struct CardForm: View {
                 }
                 .disabled(!["standard", "big", "rings", "trend"].contains(style))
                 Divider()
-                SettingsRow(L("大小")) { PercentControl(value: $scale, range: 0.8...2.5, step: 0.1) }
+                SettingsRow(L("大小"), detail: L("也可以拖动桌面上卡片的右下角调整")) { PercentControl(value: $scale, range: CardWindow.scaleRange, step: 0.1) }
             }
             .disabled(!show)
             SettingsGroup(L("外观")) {
@@ -2599,11 +2600,15 @@ final class CardWindow: NSWindow {
 
     /// 「保持在最前」存在哪个键
     let onTopKey: String
+    /// 「大小」存在哪个键：拖右下角改的就是它
+    let scaleKey: String
 
-    /// name：记住位置用的名字；onTopKey：「保持在最前」的偏好键；near：第一次显示时挨着这个窗口放（用量卡片挨着额度卡片）
-    init<V: View>(_ view: V, name: String, onTopKey: String, near: NSWindow? = nil) {
+    /// name：记住位置用的名字；onTopKey：「保持在最前」的偏好键；scaleKey：「大小」的偏好键；
+    /// near：第一次显示时挨着这个窗口放（用量卡片挨着额度卡片）
+    init<V: View>(_ view: V, name: String, onTopKey: String, scaleKey: String, near: NSWindow? = nil) {
         placementKey = "cardPlacement." + name
         self.onTopKey = onTopKey
+        self.scaleKey = scaleKey
         super.init(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         let host = NSHostingController(rootView: view)
         host.sizingOptions = .preferredContentSize
@@ -2640,6 +2645,9 @@ final class CardWindow: NSWindow {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(moved), name: NSWindow.didMoveNotification, object: self)
         CardWindow.all.add(self)
+        // 鼠标移到右下角时换成调整大小的光标（窗口不会成为 key，得用 activeAlways）
+        host.view.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                                 owner: self, userInfo: nil))
     }
     /// 每家一栏的宽度；两栏并排时卡片约 500 宽
     static let column: CGFloat = 210
@@ -2661,8 +2669,48 @@ final class CardWindow: NSWindow {
     private var dragStart: (mouse: NSPoint, origin: NSPoint)?
     private var snappedX: CGFloat?, snappedY: CGFloat?
 
+    // MARK: 调整大小：拖右下角，整张卡片按比例缩放（长宽比由排列定，见 CardSize），改的就是「大小」
+
+    /// 右下角多大一块算拖柄
+    static let grip: CGFloat = 18
+    static let scaleRange: ClosedRange<Double> = 0.8...2.5
+    private var resizeStart: (mouse: NSPoint, size: NSSize, scale: Double)?
+
+    func inGrip(_ p: NSPoint) -> Bool { p.x > frame.width - Self.grip && p.y < Self.grip }
+
+    static var resizeCursor: NSCursor {
+        if #available(macOS 15, *) { return .frameResize(position: .bottomRight, directions: .all) }
+        return .crosshair
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        if resizeStart == nil { (inGrip(e.locationInWindow) ? Self.resizeCursor : .arrow).set() }
+    }
+    override func mouseExited(with e: NSEvent) {
+        if resizeStart == nil { NSCursor.arrow.set() }
+    }
+
+    func resize(to m: NSPoint) {
+        guard let r = resizeStart else { return }
+        // 宽、高各自放大的倍数取平均：往哪个方向拖都跟手
+        let k = ((r.size.width + m.x - r.mouse.x) / r.size.width + (r.size.height + r.mouse.y - m.y) / r.size.height) / 2
+        let scale = min(Self.scaleRange.upperBound, max(Self.scaleRange.lowerBound, (r.scale * k * 100).rounded() / 100))
+        if scale != UserDefaults.standard.double(forKey: scaleKey) { UserDefaults.standard.set(scale, forKey: scaleKey) }
+    }
+
     override func sendEvent(_ e: NSEvent) {
         switch e.type {
+        case .leftMouseDown where inGrip(e.locationInWindow):
+            let scale = UserDefaults.standard.object(forKey: scaleKey) as? Double ?? 1
+            resizeStart = (NSEvent.mouseLocation, frame.size, scale)
+            return
+        case .leftMouseDragged where resizeStart != nil:
+            resize(to: NSEvent.mouseLocation)
+            return
+        case .leftMouseUp where resizeStart != nil:
+            resizeStart = nil
+            if !inGrip(e.locationInWindow) { NSCursor.arrow.set() }
+            return
         case .leftMouseDown:
             dragStart = (NSEvent.mouseLocation, frame.origin)
         case .leftMouseDragged:
@@ -2943,7 +2991,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setCardVisible(_ on: Bool) {
         if on {
             if card == nil {
-                let w = CardWindow(CardView(model: model), name: "UsageCard", onTopKey: Pref.cardOnTop)
+                let w = CardWindow(CardView(model: model), name: "UsageCard", onTopKey: Pref.cardOnTop, scaleKey: Pref.scale)
                 card = w
             }
             card?.orderFront(nil)
@@ -2955,7 +3003,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func setStatsCardVisible(_ on: Bool) {
         if on {
             if statsCard == nil {
-                let w = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard", onTopKey: Pref.statsCardOnTop,
+                let w = CardWindow(StatsCardView(stats: stats, model: model), name: "UsageStatsCard", onTopKey: Pref.statsCardOnTop, scaleKey: Pref.statsCardScale,
                                    near: card?.isVisible == true ? card : nil)
                 statsCard = w
             }

@@ -192,6 +192,8 @@ body.card main { padding: 0; overflow: hidden; }
 .card-box.bg-dark { background: rgba(30, 30, 32, calc(0.78 * var(--bgop))); }
 .card-box.bg-light { background: rgba(246, 246, 248, calc(0.82 * var(--bgop))); }
 .c-fit { flex: none; }
+/* 光标在右下角拖柄上 */
+html.grip, html.grip * { cursor: nwse-resize !important; }
 
 .c-cols { display: flex; gap: calc(24 * var(--u)); align-items: flex-start; }
 .c-cols.vertical { flex-direction: column; gap: calc(20 * var(--u)); }

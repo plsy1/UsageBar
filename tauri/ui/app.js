@@ -59,6 +59,7 @@ const T = {
   level_colors: ['按余量着色', '残りで色分け', 'Color by Level'],
   level_colors_hint: ['剩不到 30% 变黄，不到 10% 变红', '残り 30% 未満で黄、10% 未満で赤', 'Amber under 30% left, red under 10%'],
   size: ['大小', 'サイズ', 'Size'],
+  size_hint: ['也可以拖动桌面上卡片的右下角调整', 'デスクトップのカードの右下隅をドラッグしても変えられます', 'You can also drag the bottom-right corner of the card on the desktop'],
   background: ['背景', '背景', 'Background'],
   bg_none: ['无', 'なし', 'None'],
   bg_dark: ['深色', 'ダーク', 'Dark'],
@@ -478,6 +479,7 @@ const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
 
 // 卡片的固定大小（大小 100% 时，含内边距），和 macOS 版 CardSize 一样：每家一块的样式按左右、上下排，
 // 紧凑、细条、占比条是一条。同一种排列的卡片一样大，两张卡片摆在一起也整齐
+const SCALE_RANGE = [0.8, 2.5];
 function cardBase(style, layout) {
   if (['compact', 'slim', 'share'].includes(style)) return [340, 150];
   return layout === 'vertical' ? [296, 340] : [480, 200];
@@ -630,7 +632,7 @@ function cardSettingsPage() {
         : [['standard', 'st_standard'], ['compact', 'l_compact'], ['big', 'st_big'], ['rings', 'st_rings'], ['slim', 'st_slim']])
         .map(([v, l]) => `<option value="${v}" ${s[k + 'style'] === v ? 'selected' : ''}>${t(l)}</option>`).join('')}</select></div>
       <div class="field ${['standard', 'big', 'rings', 'trend'].includes(s[k + 'style']) ? '' : 'disabled'}"><span>${t('arrange')}<div class="hint">${t('arrange_hint')}</div></span>${seg(k + 'layout', [['horizontal', t('l_horizontal')], ['vertical', t('l_vertical')]])}</div>
-      <div class="field"><span>${t('size')}</span>${slider(k + 'scale', 0.8, 2.5, 0.1)}</div>`)
+      <div class="field"><span>${t('size')}<div class="hint">${t('size_hint')}</div></span>${slider(k + 'scale', ...SCALE_RANGE, 0.1)}</div>`)
     + group(t('g_look'), `
       <div class="field"><span>${t('background')}</span>${seg(k + 'background', [['none', t('bg_none')], ['dark', t('bg_dark')], ['light', t('bg_light')]])}</div>
       ${s[k + 'background'] !== 'none' ? `<div class="field"><span>${t('bg_opacity')}</span>${slider(k + 'bg_opacity', 0.1, 1, 0.05)}</div>` : ''}
@@ -941,21 +943,49 @@ document.addEventListener('input', (e) => {
   if (el.dataset.num) el.nextElementSibling.textContent = `${Math.round(el.value * 100)}%`;
 });
 
-// 桌面卡片：按住拖动（位置由 Rust 按光标算，好做吸附对齐），右键弹出菜单
+// 桌面卡片：按住拖动（位置由 Rust 按光标算，好做吸附对齐），右键弹出菜单；
+// 拖右下角是调整大小：整张卡片按比例缩放（长宽比由排列定），改的就是「大小」，松手再保存
 if (ANY_CARD) {
-  let dragging = false, busy = false;
+  let dragging = false, busy = false, resizing = null;
+  const key = (STATS_CARD ? 'stats_card_' : 'card_') + 'scale';
+  // 右下角 18 像素见方算拖柄。按坐标判断：最角上在圆角外面，点不到卡片里的元素
+  const inGrip = (e) => {
+    const r = document.querySelector('.card-box')?.getBoundingClientRect();
+    return r && e.clientX > r.right - 18 && e.clientY > r.bottom - 18;
+  };
   const end = () => {
+    if (resizing) {
+      resizing = null;
+      save({ [key]: state.settings[key] });
+      return;
+    }
     if (!dragging) return;
     dragging = false;
     invoke('card_drag_end');
   };
   document.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    // 重绘会换掉卡片里的元素，光标捕获放在不会被换掉的根元素上
+    if (inGrip(e)) {
+      const r = document.querySelector('.card-box').getBoundingClientRect();
+      resizing = { x: e.screenX, y: e.screenY, w: r.width, h: r.height, scale: state.settings[key] };
+      document.documentElement.setPointerCapture?.(e.pointerId);
+      return;
+    }
     dragging = true;
     e.target.setPointerCapture?.(e.pointerId);  // 窗口跟着挪时光标不会「掉出去」
     invoke('card_drag_start');
   });
   document.addEventListener('pointermove', (e) => {
+    if (resizing) {
+      if (!(e.buttons & 1)) { end(); return; }
+      // 宽、高各自放大的倍数取平均：往哪个方向拖都跟手
+      const r = resizing, k = ((r.w + e.screenX - r.x) / r.w + (r.h + e.screenY - r.y) / r.h) / 2;
+      const scale = Math.min(SCALE_RANGE[1], Math.max(SCALE_RANGE[0], Math.round(r.scale * k * 100) / 100));
+      if (scale !== state.settings[key]) { state.settings[key] = scale; render(); }
+      return;
+    }
+    document.documentElement.classList.toggle('grip', !dragging && inGrip(e));
     if (!dragging) return;
     if (!(e.buttons & 1)) { end(); return; }
     if (busy) return;  // 上一步还没挪完就不发，免得排队
