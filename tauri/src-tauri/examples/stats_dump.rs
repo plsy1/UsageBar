@@ -21,7 +21,7 @@ fn main() {
     store.sync_local(&pricing);
     std::fs::create_dir_all(&out).unwrap();
     for range in ["today", "7d", "all"] {
-        for tab in ["log", "apps", "models", "projects"] {
+        for tab in ["log", "apps", "models", "projects", "cycles"] {
             let q = statsview::Query { range: range.into(), tab: tab.into(), ..Default::default() };
             let v = statsview::compute(&store, &pricing, &q, &[], None);
             std::fs::write(out.join(format!("{range}-{tab}.json")), serde_json::to_vec(&v).unwrap()).unwrap();

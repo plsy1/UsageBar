@@ -1,7 +1,7 @@
 // 用量统计页要的数据：按界面选的时间范围、应用、机器从库里取记录，算好汇总、走势图、热力图、分组表格和
 // 请求明细的一页再交给界面（界面不用收几万条原始记录）。和 macOS 版 StatsView 的算法一致
 
-use crate::db::{Overview, Store};
+use crate::db::{CycleStat, Overview, Store};
 use crate::stats::{Breakdown, Pricing, Source, StatsRange, Summary, UsageRecord};
 use crate::usage::CodexAccount;
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
@@ -102,6 +102,8 @@ pub struct View {
     pub overview: Overview,
     /// Codex · 服务端数据统计（所选范围里），单独显示，不和日志记录混在一起算；没查到或没选 Codex 时为空
     pub codex_account: Option<AccountRange>,
+    /// 按周期：每周额度的各个周期（不跟时间范围，只跟应用和机器），新的在前
+    pub cycles: Vec<CycleStat>,
 }
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -357,6 +359,12 @@ pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[Stri
     counts.insert("models".to_string(), models.len());
     counts.insert("projects".to_string(), projects.len());
     counts.insert("log".to_string(), rows.len());
+    let cycles: Vec<CycleStat> = store
+        .cycles(&q.hidden, &crate::usage::claude_desktop_weekly_samples())
+        .into_iter()
+        .filter(|c| sources.iter().any(|s| src_name(*s) == c.source))
+        .collect();
+    counts.insert("cycles".to_string(), cycles.len());
     let current = match q.tab.as_str() {
         "apps" => apps,
         "models" => models,
@@ -397,6 +405,7 @@ pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[Stri
         machines,
         overview,
         codex_account,
+        cycles,
     }
 }
 

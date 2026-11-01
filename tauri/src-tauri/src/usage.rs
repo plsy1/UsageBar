@@ -82,13 +82,6 @@ pub struct ResetCredits {
     pub expiries: Vec<i64>,
 }
 
-impl Provider {
-    /// 各窗口里最紧的那个
-    pub fn binding(&self) -> Option<&LimitWindow> {
-        self.windows.iter().min_by(|a, b| a.remaining().total_cmp(&b.remaining()))
-    }
-}
-
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
@@ -178,6 +171,17 @@ fn claude_desktop_history() -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Claude 桌面 app 记下的本周已用比例（秒、百分比）：统计页「按周期」补上 Claude 各周期用到多少
+pub fn claude_desktop_weekly_samples() -> Vec<(i64, f64)> {
+    claude_desktop_history()
+        .into_iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|t| serde_json::from_str::<Value>(&t).ok())
+        .flat_map(|j| j["samples"].as_array().cloned().unwrap_or_default())
+        .filter_map(|s| Some(((s["t"].as_f64()? / 1000.0) as i64, s["u"]["sd"].as_f64()?)))
+        .collect()
 }
 
 /// 「仅本地」：读 Claude 桌面 app 的最近一条采样，不发请求。只在 app 查看用量时才写，可能是很久以前的；没有重置时间

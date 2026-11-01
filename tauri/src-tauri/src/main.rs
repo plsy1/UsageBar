@@ -446,6 +446,23 @@ async fn refresh(app: AppHandle) {
         };
         let remote_limits = app.state::<AppState>().remote_limits.lock().unwrap().clone();
         let providers = usage::fetch_all(&client, claude_local, codex_local, remote_limits).await;
+        // 官方接口直接查到的周额度记进「按周期」（退回本地缓存的不算）
+        let cycles: Vec<(String, i64, f64)> = providers
+            .iter()
+            .filter(|p| p.error.is_none() && p.note.is_none())
+            .filter_map(|p| {
+                let w = p.windows.iter().find(|w| w.kind == "weekly")?;
+                Some((p.name.clone(), w.resets_at?, w.used))
+            })
+            .collect();
+        if let (false, Some(store)) = (cycles.is_empty(), open_store(&app)) {
+            tauri::async_runtime::spawn_blocking(move || {
+                let s = store.lock().unwrap();
+                for (source, r, used) in cycles {
+                    s.record_cycle(&source, r, used);
+                }
+            });
+        }
         let st = app.state::<AppState>();
         {
             let s = st.settings.lock().unwrap().clone();

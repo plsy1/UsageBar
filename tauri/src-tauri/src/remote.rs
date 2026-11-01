@@ -263,6 +263,7 @@ pub fn read_remote(store: &Arc<Mutex<Store>>, host: &str, pricing: &Pricing) -> 
                         r.host = Some(host.to_string());
                     }
                     s.save(&recs, &n.key, pricing);
+                    s.save_cycles(&mut e);
                     newest_rate_limits(data, &mut limits);
                     let tail = hex_bytes(&fields[2]);
                     e.offset = n.from + used;

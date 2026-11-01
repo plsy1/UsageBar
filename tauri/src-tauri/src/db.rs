@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 /// 解析规则改了就加一：所有日志重新解析一遍（库里的记录按新结果更新；日志已经删掉的记录保留）
-const PARSER_VERSION: &str = "1";
+const PARSER_VERSION: &str = "2";
 pub const REMOTE_PREFIX: &str = "ssh://";
 
 const UPSERT: &str = "
@@ -46,6 +46,20 @@ pub struct DayTotal {
     pub tokens: i64,
     pub requests: i64,
     pub cost: f64,
+}
+
+/// 一个每周额度周期的用量（时间都是毫秒）。end：实际结束（提前重置时早于 resets）；进行中的是现在
+#[derive(Serialize, Clone, Debug)]
+pub struct CycleStat {
+    pub source: String,
+    pub start: i64,
+    pub resets: i64,
+    pub end: i64,
+    pub current: bool,
+    pub used: Option<f64>,
+    pub cost: f64,
+    pub requests: i64,
+    pub tokens: i64,
 }
 
 /// 库里一共多少条、最早一条的时间（毫秒）、出现过哪些远程机器
@@ -101,7 +115,9 @@ impl Store {
                id TEXT PRIMARY KEY, file TEXT, time INTEGER NOT NULL, source TEXT NOT NULL, model TEXT NOT NULL,
                host TEXT, project TEXT, input INTEGER, output INTEGER, cache_read INTEGER, cache_write INTEGER,
                cache_write_1h INTEGER, duration REAL, first_token REAL, status INTEGER, cost REAL);
-             CREATE INDEX IF NOT EXISTS records_time ON records(time);",
+             CREATE INDEX IF NOT EXISTS records_time ON records(time);
+             CREATE TABLE IF NOT EXISTS cycles(source TEXT NOT NULL, resets_at INTEGER NOT NULL, used REAL,
+               PRIMARY KEY(source, resets_at));",
         )
         .ok()?;
         let store = Store { conn, known: None };
@@ -212,6 +228,7 @@ impl Store {
                     let mut e = s.entry(&key).filter(|e| stats::can_resume(e, &path, size)).unwrap_or_default();
                     let recs = stats::parse(&path, src, &mut e);
                     s.save(&recs, &key, pricing);
+                    s.save_cycles(&mut e);
                     s.store_entry(&key, mtime, size, &e);
                 }
             }
@@ -312,6 +329,117 @@ impl Store {
         self.conn
             .query_row("SELECT COUNT(*) FROM records WHERE host = ?1 AND status = 200", [host], |r| r.get(0))
             .unwrap_or(0)
+    }
+
+    // MARK: 每周额度的周期
+    //   一个周期是从上次重置到下次重置：记下每个周期的「下次重置时间」和这期间见到的最高已用比例。
+    //   Codex 从会话日志里取（每次回复都记着额度），两家也都从查官方接口的结果里取
+
+    fn upsert_cycle(&self, source: &str, key: i64, used: f64) {
+        let _ = self.conn.execute(
+            "INSERT INTO cycles(source, resets_at, used) VALUES(?1, ?2, ?3)
+             ON CONFLICT(source, resets_at) DO UPDATE SET used = max(COALESCE(used, 0), excluded.used)",
+            params![source, key, used],
+        );
+    }
+
+    /// 解析 Codex 日志时见到的周期存进库
+    pub fn save_cycles(&self, e: &mut Entry) {
+        for (key, used) in std::mem::take(&mut e.codex.cycles) {
+            self.upsert_cycle("Codex", key, used);
+        }
+    }
+
+    /// 查官方接口拿到的周额度（重置时间是秒）
+    pub fn record_cycle(&self, source: &str, resets_at: i64, used: f64) {
+        self.upsert_cycle(source, stats::cycle_key(resets_at), used);
+    }
+
+    /// 两家的周期，新的在前。Codex 的周期都取自记录（周期从第一次使用开始，提前重置时上一个就截断）；
+    /// Claude 只知道查过的几次，更早的按 7 天往前推。claude_samples：Claude 桌面 app 记下的本周已用比例（秒、百分比）
+    pub fn cycles(&self, hidden: &[String], claude_samples: &[(i64, f64)]) -> Vec<CycleStat> {
+        const WEEK: i64 = 7 * 86400;
+        let now = chrono::Utc::now().timestamp();
+        let mut out = vec![];
+        for source in ["Claude", "Codex"] {
+            let mut resets: Vec<(i64, Option<f64>)> = vec![];
+            if let Ok(mut st) = self.conn.prepare_cached("SELECT resets_at, used FROM cycles WHERE source = ?1 ORDER BY resets_at") {
+                if let Ok(rows) = st.query_map([source], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<f64>>(1)?))) {
+                    resets = rows.flatten().collect();
+                }
+            }
+            // 同一个周期的重置时间在不同记录里会差几秒、跨过整分钟：相差 10 分钟以内的算一个
+            let mut merged: Vec<(i64, Option<f64>)> = vec![];
+            for (r, u) in resets {
+                match merged.last_mut() {
+                    Some(last) if r - last.0 < 600 => *last = (r, last.1.into_iter().chain(u).reduce(f64::max)),
+                    _ => merged.push((r, u)),
+                }
+            }
+            let Some(&(first, _)) = merged.first() else { continue };
+            if source == "Claude" {
+                let earliest: Option<i64> =
+                    self.conn.query_row("SELECT MIN(time) FROM records WHERE source = 'Claude'", [], |r| r.get(0)).ok().flatten();
+                if let Some(e) = earliest {
+                    let mut r = first - WEEK;
+                    while r * 1000 > e {
+                        merged.insert(0, (r, None));
+                        r -= WEEK;
+                    }
+                }
+            }
+            let hidden_hosts: Vec<&String> = if source == "Codex" { hidden.iter().collect() } else { vec![] };
+            let filter = if hidden_hosts.is_empty() {
+                String::new()
+            } else {
+                format!(" AND COALESCE(host, '') NOT IN ({})", vec!["?"; hidden_hosts.len()].join(","))
+            };
+            let sql = format!(
+                "SELECT COUNT(*), SUM(cost), SUM(input + output + cache_read + cache_write) FROM records
+                 WHERE source = ? AND status = 200 AND time >= ? AND time < ?{filter}"
+            );
+            for (i, &(r, used)) in merged.iter().enumerate() {
+                let start = r - WEEK;
+                // 下一个周期提前开始（提前重置过）时，这一个到那里为止
+                let end = merged.get(i + 1).map_or(r, |n| r.min(n.0 - WEEK));
+                if end <= start || start >= now {
+                    continue;
+                }
+                let q_end = end.min(now);
+                let mut args: Vec<&dyn rusqlite::ToSql> = vec![&source];
+                let (s_ms, e_ms) = (start * 1000, q_end * 1000);
+                args.push(&s_ms);
+                args.push(&e_ms);
+                for h in &hidden_hosts {
+                    args.push(*h);
+                }
+                let (requests, cost, tokens): (i64, Option<f64>, Option<i64>) = self
+                    .conn
+                    .query_row(&sql, args.as_slice(), |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .unwrap_or((0, None, None));
+                let mut c = CycleStat {
+                    source: source.to_string(),
+                    start: start * 1000,
+                    resets: r * 1000,
+                    end: q_end * 1000,
+                    current: end > now,
+                    used,
+                    cost: cost.unwrap_or(0.0),
+                    requests,
+                    tokens: tokens.unwrap_or(0),
+                };
+                if source == "Claude" {
+                    for &(_, sd) in claude_samples.iter().filter(|(t, _)| *t >= start && *t < q_end) {
+                        c.used = Some(c.used.map_or(sd, |u| u.max(sd)));
+                    }
+                }
+                if c.requests > 0 || c.used.is_some() {
+                    out.push(c);
+                }
+            }
+        }
+        out.sort_by(|a, b| b.start.cmp(&a.start));
+        out
     }
 
     pub fn meta_value(&self, key: &str) -> Option<String> {

@@ -329,6 +329,9 @@ impl Default for ClaudeState {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CodexState {
+    /// 这次解析见到的周额度周期（重置时间整分钟的秒数、已用比例），调用方存进库后清掉；不随进度保存
+    #[serde(skip)]
+    pub cycles: Vec<(i64, f64)>,
     model: String,
     #[serde(default)]
     cwd: Option<String>,
@@ -345,7 +348,7 @@ pub struct CodexState {
 
 impl Default for CodexState {
     fn default() -> Self {
-        CodexState { model: "codex".into(), cwd: None, last_total: -1, input_at: None, start: None, first: None, end: None }
+        CodexState { cycles: vec![], model: "codex".into(), cwd: None, last_total: -1, input_at: None, start: None, first: None, end: None }
     }
 }
 
@@ -440,6 +443,11 @@ pub fn parse_codex_chunk(chunk: &[u8], e: &mut Entry) -> Vec<UsageRecord> {
     let mut out = vec![];
     parse_codex(chunk, &mut e.codex, &mut out);
     out
+}
+
+/// 重置时间常是 05:59:59.x：差几秒到整分钟就进位，同一个周期的键才一致（秒）
+pub fn cycle_key(t: i64) -> i64 {
+    (t + 5) / 60 * 60
 }
 
 /// FNV-1a：内容指纹（和 Swift 版同一算法）
@@ -660,6 +668,17 @@ fn parse_codex(data: &[u8], state: &mut CodexState, out: &mut Vec<UsageRecord>) 
         }
         if p.get("type").and_then(Value::as_str) != Some("token_count") {
             continue;
+        }
+        // 每次回复后都记着当时的额度：周额度的重置时间和已用比例记成周期（统计页「按周期」用）
+        if let Some(rl) = p.get("rate_limits").and_then(Value::as_object) {
+            for w in rl.values() {
+                let minutes = w.get("window_minutes").and_then(Value::as_f64).unwrap_or(0.0);
+                if let (true, Some(reset), Some(used)) =
+                    ((8640.0..=11520.0).contains(&minutes), w.get("resets_at").and_then(Value::as_f64), w.get("used_percent").and_then(Value::as_f64))
+                {
+                    s.cycles.push((cycle_key(reset as i64), used));
+                }
+            }
         }
         let Some(info) = p.get("info").filter(|i| i.is_object()) else { continue };
         let Some(last) = info.get("last_token_usage").filter(|l| l.is_object()) else { continue };

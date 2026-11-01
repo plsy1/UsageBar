@@ -3,6 +3,14 @@
 
 Object.assign(T, {
   nav_stats: ['用量统计', '使用量の統計', 'Usage Statistics'],
+  by_cycle: ['按周期', '期間別', 'By Cycle'],
+  col_cycle: ['周期', '期間', 'Cycle'],
+  limit_used: ['已用额度', '使用した上限', 'Limit Used'],
+  full_value: ['满额价值', '上限いっぱいの価値', 'Full-Limit Value'],
+  vs_prev: ['环比', '前期比', 'vs. Previous'],
+  in_progress: ['进行中', '進行中', 'in progress'],
+  reset_early: ['提前重置', '早期リセット', 'reset early'],
+  cycle_note: ['每周额度从上次重置到下次重置算一个周期，不跟上面的时间范围。Codex 的周期取自会话日志；Claude 只记得查过额度的周期，更早的按 7 天往前推算。已用额度是这个周期里见到的最高比例；满额价值 = 估算成本 ÷ 已用额度（不到 10% 时不算），只是粗略参考：网页、桌面 app 聊天、其他电脑和云端任务也占额度但没有记录，周期中途提前重置过也会让它偏高或偏低', '週間上限の前回リセットから次のリセットまでを 1 期間とし、上の期間の選択には従いません。Codex の期間はセッションログから、Claude は上限を問い合わせた期間だけを記録し、それより前は 7 日ずつさかのぼって推定します。使用した上限はその期間に見られた最大の割合です。上限いっぱいの価値 = 推定コスト ÷ 使用した上限（10% 未満は計算しません）は目安にすぎません：Web、デスクトップアプリのチャット、ほかの PC、クラウドタスクも上限を使いますが記録がなく、期間の途中で早期リセットがあってもずれます', 'A cycle runs from one weekly reset to the next and ignores the period selected above. Codex cycles come from the session logs; Claude only remembers cycles whose limits were checked, and earlier ones are counted back in 7-day steps. Limit Used is the highest share seen in that cycle. Full-Limit Value = estimated cost ÷ limit used (left out below 10%) is only a rough guide: the web, desktop-app chats, other computers and cloud tasks also use the limit but leave no records here, and an early reset in the middle of a cycle skews it too'],
   server_stats: ['服务端数据统计', 'サーバー側の統計', 'Server Statistics'],
   lifetime: ['累计 %s tokens', '累計 %s tokens', '%s tokens lifetime'],
   daily_avg: ['日均', '1 日平均', 'Daily Avg'],
@@ -336,11 +344,33 @@ function drawHeat() {
 // MARK: 表格
 
 function tabsBar(v) {
-  const tabs = [['apps', 'by_app'], ['models', 'by_model'], ['projects', 'by_project'], ['log', 'request_log']];
+  const tabs = [['apps', 'by_app'], ['models', 'by_model'], ['projects', 'by_project'], ['cycles', 'by_cycle'], ['log', 'request_log']];
   const right = statsQ.tab === 'log' ? `<select id="stat-status"><option value="0">${t('all_status')}</option>${v.statuses.map((c) =>
     `<option value="${c}" ${statsQ.status === c ? 'selected' : ''}>${c}</option>`).join('')}</select>` : '';
   return `<div class="tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${statsQ.tab === k ? 'on' : ''}">${t(l)}<span class="count">${num(v.counts[k] ?? 0)}</span></button>`).join('')}
     <span class="spacer"></span>${right}</div>`;
+}
+
+// 按周期：每周额度从上次重置到下次重置为一个周期，新的在前。
+// 满额价值 = 估算成本 ÷ 已用比例（不到 10% 不算）；环比和同一家的上一个周期比（进行中的不比）
+function cycleTable(v) {
+  const cs = v.cycles || [];
+  const md = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${d.toTimeString().slice(0, 5)}`; };
+  const rows = cs.map((c, i) => {
+    const prev = cs.slice(i + 1).find((p) => p.source === c.source);
+    const value = c.used != null && c.used >= 10 ? c.cost / (c.used / 100) : null;
+    const change = !c.current && prev && prev.cost > 0 ? (c.cost - prev.cost) / prev.cost : null;
+    const early = !c.current && c.end < c.resets - 60000;
+    const tag = c.current ? `<span class="cycle-tag on">${t('in_progress')}</span>` : early ? `<span class="cycle-tag">${t('reset_early')}</span>` : '';
+    return `<tr><td class="name">${md(c.start)} – ${md(c.current ? c.resets : c.end)} ${tag}</td><td>${esc(c.source)}</td>
+      <td>${money(c.cost)}</td><td>${num(c.requests)}</td><td>${abbrev(c.tokens)}</td>
+      <td class="${c.used == null ? 'sub' : ''}">${c.used == null ? '—' : Math.round(c.used) + '%'}</td>
+      <td class="${value == null ? 'sub' : ''}">${value == null ? '—' : '$' + Math.round(value).toLocaleString()}</td>
+      <td class="sub">${change == null ? '—' : (change >= 0 ? '↑' : '↓') + Math.round(Math.abs(change) * 100) + '%'}</td></tr>`;
+  }).join('');
+  const head = `<tr><th class="name">${t('col_cycle')}</th><th>${t('col_app')}</th><th>${t('col_cost')}</th><th>${t('requests')}</th><th>Tokens</th><th>${t('limit_used')}</th><th>${t('full_value')}</th><th>${t('vs_prev')}</th></tr>`;
+  return `<div class="table-wrap"><table>${head}${rows || `<tr><td colspan="8" class="empty">${t('no_usage')}</td></tr>`}</table></div>
+    <div class="table-foot cycle-note sub">${t('cycle_note')}</div>`;
 }
 
 function groupTable(v) {
@@ -403,7 +433,7 @@ function statsPage() {
   const v = statsView;
   if (!v) { fetchStats(); return `${toolbar(null)}<div class="sub">${t('reading_logs')}</div>`; }
   return `${toolbar(v)}${caption(v)}${tiles(v)}${accountPanel(v)}${chartPanel(v)}${heatPanel()}
-    <div class="panel tables">${tabsBar(v)}${statsQ.tab === 'log' ? logTable(v) : groupTable(v)}</div>
+    <div class="panel tables">${tabsBar(v)}${statsQ.tab === 'log' ? logTable(v) : statsQ.tab === 'cycles' ? cycleTable(v) : groupTable(v)}</div>
     <div class="footnote">${t('stats_foot')}</div>${detailPanel()}`;
 }
 

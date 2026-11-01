@@ -363,3 +363,7 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
   border: 1px solid var(--border); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); }
 .tray-panel .providers { grid-template-columns: 1fr; gap: 10px; }
 .tray-panel .provider { padding: 14px 16px; }
+/* 按周期 */
+.cycle-tag { font-size: 11px; color: var(--secondary); margin-left: 6px; }
+.cycle-tag.on { color: var(--accent); }
+.table-foot.cycle-note { display: block; font-size: 12px; line-height: 1.5; padding: 10px 18px; }
