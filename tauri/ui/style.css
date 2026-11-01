@@ -289,3 +289,8 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .kv + .kv { border-top: 1px solid var(--border); }
 .kv > span:last-child { text-align: right; overflow-wrap: anywhere; }
 .kv.total { font-weight: 600; }
+.up { font-weight: 700; margin-left: 2px; }
+.field .hint.error-text { color: #e5484d; }
+.account { padding: 14px 4px; margin-bottom: 14px; }
+.account .panel-head { padding: 0 18px; }
+.account .account-note { padding: 0 18px; margin-top: 10px; font-size: 12px; line-height: 1.5; }

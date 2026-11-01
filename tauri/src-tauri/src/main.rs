@@ -8,6 +8,7 @@
 mod cards;
 mod db;
 mod i18n;
+mod notify;
 mod stats;
 mod statsview;
 mod usage;
@@ -29,6 +30,14 @@ struct Settings {
     refresh_minutes: u64, // 额度刷新间隔
     show_claude: bool,
     show_codex: bool,
+    /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
+    claude_limit_source: String,
+    codex_limit_source: String,
+    /// 通知：用量达到多少时提醒（0 不提醒）、预计在重置前用完、额度重置后、Codex 额度重置次数
+    notify_threshold: u32,
+    notify_run_out: bool,
+    notify_reset: bool,
+    notify_credits: bool,
     // 桌面卡片（跟 macOS 版的选项一一对应）
     card_show: bool,
     card_on_top: bool,       // 保持在最前；关掉时贴在桌面层（被其他窗口盖住）
@@ -67,6 +76,12 @@ impl Default for Settings {
             refresh_minutes: 5,
             show_claude: true,
             show_codex: true,
+            claude_limit_source: "api".into(),
+            codex_limit_source: "api".into(),
+            notify_threshold: 0,
+            notify_run_out: false,
+            notify_reset: false,
+            notify_credits: false,
             card_show: true,
             card_on_top: false,
             card_layout: "horizontal".into(),
@@ -101,6 +116,9 @@ struct AppState {
     providers: Mutex<Vec<usage::Provider>>,
     updated: Mutex<Option<i64>>,
     loading: Mutex<bool>,
+    /// 正在查的时候又要查（比如刚换了额度来源）：这次查完再查一次
+    refresh_again: Mutex<bool>,
+    notifier: Mutex<notify::Notifier>,
     trays: Mutex<Vec<TrayIcon>>,
     /// 小面板因失去焦点收起的时间：紧接着的那次托盘点击是「关掉」，不要再打开
     flyout_hidden_at: Mutex<Option<Instant>>,
@@ -112,6 +130,8 @@ struct AppState {
     pricing: Mutex<Arc<stats::Pricing>>,
     stats_updated: Mutex<Option<i64>>,
     stats_loading: Mutex<bool>,
+    /// Codex 账号统计（服务端）和上次查的时间：一小时最多查一次
+    codex_account: Mutex<Option<(Arc<usage::CodexAccount>, Instant)>>,
     /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
     card_content: Mutex<HashMap<String, CardContent>>,
 }
@@ -219,14 +239,21 @@ fn get_state(app: AppHandle) -> Snapshot {
 
 #[tauri::command]
 fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
-    {
+    let source_changed = {
         // 卡片位置只由拖动来改，界面传来的旧值不算
         let st = app.state::<AppState>();
         let mut cur = st.settings.lock().unwrap();
         settings.card_places = cur.card_places.clone();
         settings.card_x = cur.card_x;
         settings.card_y = cur.card_y;
+        let changed = cur.claude_limit_source != settings.claude_limit_source || cur.codex_limit_source != settings.codex_limit_source;
         *cur = settings.clone();
+        changed
+    };
+    // 换了额度来源：马上按新的来源查一次（统计页的 Codex 服务端统计也跟着查或清掉）
+    if source_changed {
+        tauri::async_runtime::spawn(refresh(app.clone()));
+        tauri::async_runtime::spawn(refresh_stats(app.clone(), false));
     }
     save_settings(&app, &settings);
     update_tray(&app);
@@ -354,18 +381,40 @@ async fn refresh(app: AppHandle) {
         let st = app.state::<AppState>();
         let mut loading = st.loading.lock().unwrap();
         if *loading {
+            *st.refresh_again.lock().unwrap() = true;
             return;
         }
         *loading = true;
     }
     let _ = app.emit("state", snapshot(&app));
     let client = reqwest::Client::new();
-    let providers = usage::fetch_all(&client).await;
-    {
+    loop {
+        let (claude_local, codex_local) = {
+            let s = app.state::<AppState>().settings.lock().unwrap().clone();
+            (s.claude_limit_source == "local", s.codex_limit_source == "local")
+        };
+        let providers = usage::fetch_all(&client, claude_local, codex_local).await;
         let st = app.state::<AppState>();
+        {
+            let s = st.settings.lock().unwrap().clone();
+            let opts = notify::Options {
+                threshold: s.notify_threshold,
+                run_out: s.notify_run_out,
+                reset: s.notify_reset,
+                credits: s.notify_credits,
+            };
+            st.notifier.lock().unwrap().check(&app, i18n::resolve(&s.language), &opts, &providers);
+        }
         *st.providers.lock().unwrap() = providers;
         *st.updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
-        *st.loading.lock().unwrap() = false;
+        // 和上面一样先锁 loading 再锁 refresh_again
+        let mut loading = st.loading.lock().unwrap();
+        let mut again = st.refresh_again.lock().unwrap();
+        if !*again {
+            *loading = false;
+            break;
+        }
+        *again = false;
     }
     update_tray(&app);
     let _ = app.emit("state", snapshot(&app));
@@ -425,6 +474,16 @@ async fn refresh_stats(app: AppHandle, force_prices: bool) {
         *st.records.lock().unwrap() = recs;
         *st.stats_updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
     }
+    // 服务端统计要请求 OpenAI 的接口：额度来源选了「仅本地」就不查
+    let codex_local = st.settings.lock().unwrap().codex_limit_source == "local";
+    let due = st.codex_account.lock().unwrap().as_ref().map(|(_, at)| at.elapsed().as_secs() > 3600).unwrap_or(true);
+    if codex_local {
+        *st.codex_account.lock().unwrap() = None;
+    } else if due {
+        if let Some(acc) = usage::codex_account(&reqwest::Client::new()).await {
+            *st.codex_account.lock().unwrap() = Some((Arc::new(acc), Instant::now()));
+        }
+    }
     *st.stats_loading.lock().unwrap() = false;
     let _ = app.emit("state", snapshot(&app));
     // 统计页收到后按自己的条件重新查
@@ -435,8 +494,10 @@ async fn refresh_stats(app: AppHandle, force_prices: bool) {
 #[tauri::command]
 async fn stats_query(app: AppHandle, query: statsview::Query) -> Option<statsview::View> {
     let store = open_store(&app)?;
-    let pricing = app.state::<AppState>().pricing.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || statsview::compute(&store.lock().unwrap(), &pricing, &query, &[]))
+    let st = app.state::<AppState>();
+    let pricing = st.pricing.lock().unwrap().clone();
+    let account = st.codex_account.lock().unwrap().as_ref().map(|(a, _)| a.clone());
+    tauri::async_runtime::spawn_blocking(move || statsview::compute(&store.lock().unwrap(), &pricing, &query, &[], account.as_deref()))
         .await
         .ok()
 }
@@ -473,7 +534,8 @@ fn tray_text(s: &Settings, providers: &[usage::Provider]) -> String {
         .filter(|p| if p.name == "Claude" { s.show_claude } else { s.show_codex })
         .map(|p| {
             let name = if s.menu_label == "full" { p.name.clone() } else if p.name == "Claude" { "Cc".into() } else { "Cx".into() };
-            let v = p.binding().map(|w| format!("{}%", (if used { w.used.min(100.0) } else { w.remaining() }).round() as i64));
+            // 用得比时间快的额度后面加个 ↑
+            let v = p.binding().map(|w| format!("{}%{}", (if used { w.used.min(100.0) } else { w.remaining() }).round() as i64, if w.fast { "↑" } else { "" }));
             format!("{name} {}", v.unwrap_or_else(|| "–".into()))
         })
         .collect();
@@ -495,7 +557,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             menu.append(&MenuItem::with_id(app, format!("e-{}", p.name), format!("    {}", i18n::t(lang, "error")), false, None::<&str>)?)?;
         }
         for (i, w) in p.windows.iter().enumerate() {
-            let line = format!("    {}   {}", i18n::window_label(lang, w), i18n::value_text(lang, w, used));
+            let line = format!("    {}   {}{}", i18n::window_label(lang, w), i18n::value_text(lang, w, used), if w.fast { " ↑" } else { "" });
             menu.append(&MenuItem::with_id(app, format!("w-{}-{i}", p.name), line, false, None::<&str>)?)?;
         }
         menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -672,6 +734,7 @@ fn main() {
     tauri::Builder::default()
         // 只跑一份：再启动一次（比如从开始菜单再点）就把已经在跑的那个窗口调出来
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,

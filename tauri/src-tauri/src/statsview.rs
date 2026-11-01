@@ -3,6 +3,7 @@
 
 use crate::db::{Overview, Store};
 use crate::stats::{Breakdown, Pricing, Source, StatsRange, Summary, UsageRecord};
+use crate::usage::CodexAccount;
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -99,6 +100,39 @@ pub struct View {
     pub pages: usize,
     pub machines: Vec<String>, // "" 是本机
     pub overview: Overview,
+    /// Codex · 服务端数据统计（所选范围里），单独显示，不和日志记录混在一起算；没查到或没选 Codex 时为空
+    pub codex_account: Option<AccountRange>,
+}
+
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+pub struct AccountRange {
+    pub tokens: i64,
+    pub days: i64,      // 范围里服务端已出数的天数
+    pub peak: i64,      // 最多的一天
+    pub pending: bool,  // 范围里还有服务端没出数的日子
+    pub lifetime: i64,
+    pub last_day: Option<String>, // 服务端最新有数据的那天
+}
+
+/// 服务端统计在 from..=to 里的数（按 UTC 日，和本机记录无关）
+pub fn account_range(acc: &CodexAccount, from: DateTime<Utc>, to: DateTime<Utc>) -> AccountRange {
+    let last = acc.daily.keys().max().cloned();
+    let mut r = AccountRange { lifetime: acc.lifetime, last_day: last.clone(), ..Default::default() };
+    let last = last.unwrap_or_default();
+    let mut day = from.date_naive();
+    while day <= to.date_naive() {
+        let key = day.format("%Y-%m-%d").to_string();
+        if key > last {
+            r.pending = true;
+        } else {
+            let n = acc.daily.get(&key).copied().unwrap_or(0);
+            r.tokens += n;
+            r.days += 1;
+            r.peak = r.peak.max(n);
+        }
+        day = day.succ_opt().unwrap_or(day + Duration::days(1));
+    }
+    r
 }
 
 fn local_day_start(t: DateTime<Utc>) -> DateTime<Utc> {
@@ -255,7 +289,7 @@ fn buckets(rows: &[&UsageRecord], start: DateTime<Utc>, end: DateTime<Utc>, hour
     out
 }
 
-pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[String]) -> View {
+pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[String], account: Option<&CodexAccount>) -> View {
     let overview = store.overview();
     let now = Utc::now();
     let sources: Vec<Source> = match q.source.as_str() {
@@ -343,6 +377,8 @@ pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[Stri
         vec![]
     };
 
+    let codex_account = account.filter(|_| sources.contains(&Source::Codex)).map(|a| account_range(a, since(Source::Codex), end));
+
     View {
         summary: Summary::new(rows.iter().copied()),
         starts,
@@ -360,12 +396,23 @@ pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[Stri
         pages,
         machines,
         overview,
+        codex_account,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_range_by_utc_day() {
+        let mut acc = CodexAccount { lifetime: 900, ..Default::default() };
+        acc.daily.insert("2026-10-29".into(), 100);
+        acc.daily.insert("2026-10-30".into(), 300);
+        let t = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        let r = account_range(&acc, t("2026-10-29T10:00:00Z"), t("2026-11-01T01:00:00Z"));
+        assert_eq!(r, AccountRange { tokens: 400, days: 2, peak: 300, pending: true, lifetime: 900, last_day: Some("2026-10-30".into()) });
+    }
 
     #[test]
     fn median_works() {

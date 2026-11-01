@@ -33,6 +33,20 @@ pub fn t(lang: &str, key: &str) -> &'static str {
         "weekly" => ("本周", "今週", "Weekly"),
         "weekly_opus" => ("本周 Opus", "今週 Opus", "Weekly Opus"),
         "weekly_sonnet" => ("本周 Sonnet", "今週 Sonnet", "Weekly Sonnet"),
+        // 通知（%s 按顺序换成参数）
+        "n_used" => ("%s 已用 %s%", "%s を %s% 使用", "%s is %s% used"),
+        "n_fast" => ("%s 用得比时间快", "%s が速いペースです", "%s is ahead of pace"),
+        "n_runs_out" => ("按现在的速度预计 %s 用完，%s", "このペースだと %s に使い切ります。%s", "At this pace it runs out %s; %s"),
+        "n_reset_early" => ("%s 的额度被提前重置了", "%s の上限が予定より早くリセットされました", "%s limits were reset early"),
+        "n_reset" => ("%s 的额度已重置", "%s の上限がリセットされました", "%s limits have reset"),
+        "n_was_used" => ("%s（之前用了 %s%）", "%s（それまで %s% 使用）", "%s (was %s% used)"),
+        "n_sep" => ("、", "、", ", "),
+        "n_gain_one" => ("Codex 获得了 1 次额度重置", "Codex の上限リセットを 1 回もらいました", "Codex gave you a limit reset"),
+        "n_gain" => ("Codex 获得了 %s 次额度重置", "Codex の上限リセットを %s 回もらいました", "Codex gave you %s limit resets"),
+        "n_credits" => ("可用重置 %s 次", "リセット %s 回分", "%s resets available"),
+        "n_credit_expiring" => ("Codex 的额度重置次数快到期了", "Codex のリセットがまもなく期限切れ", "A Codex reset is about to expire"),
+        "n_credit_expires" => ("有 1 次重置将在 %s 到期，用不掉就作废", "リセット 1 回分が %s に期限切れになります。使わないと失効します", "One reset expires %s; it's lost if unused"),
+        "resets_in" => ("%s后重置", "%s後にリセット", "resets in %s"),
         _ => ("", "", ""),
     };
     match lang {
@@ -66,4 +80,55 @@ pub fn value_text(lang: &str, w: &LimitWindow, used: bool) -> String {
     let v = if used { w.used.min(100.0) } else { w.remaining() }.round() as i64;
     let word = t(lang, if used { "used" } else { "left" });
     if lang == "en" { format!("{v}% {word}") } else { format!("{word} {v}%") }
+}
+
+/// 把 key 对应的文字里的 %s 按顺序换成参数
+pub fn fmt(lang: &str, key: &str, args: &[&str]) -> String {
+    let mut s = t(lang, key).to_string();
+    for a in args {
+        s = s.replacen("%s", a, 1);
+    }
+    s
+}
+
+/// 「3小时20分后重置」（和界面的倒计时一样，差几秒到整分钟就进位）
+pub fn reset_text(lang: &str, at: i64) -> String {
+    let at = (at + 5) / 60 * 60;
+    let s = (at - chrono::Utc::now().timestamp()).max(0);
+    let (d, h, m) = (s / 86400, s % 86400 / 3600, s % 3600 / 60);
+    let rel = match lang {
+        "zh" if d > 0 => format!("{d}天{h}小时"),
+        "zh" if h > 0 => format!("{h}小时{m}分"),
+        "zh" => format!("{m}分钟"),
+        "ja" if d > 0 => format!("{d}日{h}時間"),
+        "ja" if h > 0 => format!("{h}時間{m}分"),
+        "ja" => format!("{m}分"),
+        _ if d > 0 => format!("{d}d {h}h"),
+        _ if h > 0 => format!("{h}h {m}m"),
+        _ => format!("{m}m"),
+    };
+    fmt(lang, "resets_in", &[&rel])
+}
+
+/// 今天内只写几点，否则带上星期几：「14:20」「周三 14:20」
+pub fn short_time(lang: &str, at: i64) -> String {
+    use chrono::{Datelike, Local, TimeZone};
+    let Some(d) = Local.timestamp_opt(at, 0).single() else { return String::new() };
+    let time = d.format("%H:%M").to_string();
+    if d.date_naive() == Local::now().date_naive() {
+        return time;
+    }
+    let i = d.weekday().num_days_from_monday() as usize;
+    let day = match lang {
+        "zh" => ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][i],
+        "ja" => ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"][i],
+        _ => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
+    };
+    format!("{day} {time}")
+}
+
+/// 「11/7 06:50」
+pub fn date_time(at: i64) -> String {
+    use chrono::{Local, TimeZone};
+    Local.timestamp_opt(at, 0).single().map(|d| d.format("%-m/%-d %H:%M").to_string()).unwrap_or_default()
 }

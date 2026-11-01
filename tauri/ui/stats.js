@@ -3,6 +3,13 @@
 
 Object.assign(T, {
   nav_stats: ['用量统计', '使用量の統計', 'Usage Statistics'],
+  server_stats: ['服务端数据统计', 'サーバー側の統計', 'Server Statistics'],
+  lifetime: ['累计 %s tokens', '累計 %s tokens', '%s tokens lifetime'],
+  daily_avg: ['日均', '1 日平均', 'Daily Avg'],
+  peak_day: ['最多的一天', '最多の日', 'Peak Day'],
+  data_through: ['数据截至', 'データの最終日', 'Data Through'],
+  server_note: ['来自 OpenAI 账号统计：所有设备合计，只有总 tokens，按 UTC 日，通常晚 1–2 天出数。和上面按日志记录算的数据分开，不参与成本估算。', 'OpenAI アカウントの統計：全デバイスの合計で、総 tokens のみ、UTC 日単位、通常 1〜2 日遅れて反映されます。上のログ記録に基づく集計とは別で、コスト推定には使いません。', 'From your OpenAI account statistics: all devices combined, total tokens only, by UTC day, usually 1–2 days behind. Kept separate from the log-based figures above and not used for cost estimates.'],
+  server_pending: ['所选范围里最近几天服务端还没出数。', '選択した期間の直近数日はまだサーバーに反映されていません。', "The most recent days in this range aren't on the server yet."],
   r_today: ['今天', '今日', 'Today'],
   r_cycle: ['重置以来', 'リセット以降', 'Since Reset'],
   r_24h: ['近 24 小时', '過去 24 時間', 'Last 24 Hours'],
@@ -164,6 +171,19 @@ function tiles(v) {
     <div class="tiles">${tile(t('est_cost'), money(s.cost))}${tile(t('requests'), num(s.requests))}${tile('Tokens', abbrev(s.tokens))}${tile(t('hit_rate'), pct(s.hit_rate))}</div>
     ${moreTiles ? `<div class="tiles more">${tile(t('new_input'), abbrev(s.input), 1)}${tile(t('output'), abbrev(s.output), 1)}${tile(t('cache_read'), abbrev(s.cache_read), 1)}${tile(t('cache_write'), abbrev(s.cache_write), 1)}</div>` : ''}
     <button class="more-btn" id="more-tiles" title="${t(moreTiles ? 'collapse' : 'more_metrics')}">${moreTiles ? '︿' : '﹀'}</button>
+  </div>`;
+}
+
+// Codex · 服务端数据统计：OpenAI 账号统计，单独显示，不和本机的日志记录混在一起算
+function accountPanel(v) {
+  const a = v.codex_account;
+  if (!a) return '';
+  const tile = (k, val) => `<div class="tile"><div class="sub">${k}</div><div class="tv small">${val}</div></div>`;
+  const has = a.days > 0;
+  return `<div class="panel account">
+    <div class="panel-head"><b>Codex · ${t('server_stats')}</b><span class="spacer"></span><span class="sub">${t('lifetime', abbrev(a.lifetime))}</span></div>
+    <div class="tiles">${tile('Tokens', has ? abbrev(a.tokens) : '—')}${tile(t('daily_avg'), has ? abbrev(Math.round(a.tokens / a.days)) : '—')}${tile(t('peak_day'), has ? abbrev(a.peak) : '—')}${tile(t('data_through'), a.last_day ? a.last_day.slice(5).replace('-', '/') : '—')}</div>
+    <div class="sub account-note">${t('server_note')}${a.pending ? ' ' + t('server_pending') : ''}</div>
   </div>`;
 }
 
@@ -382,7 +402,7 @@ function detailPanel() {
 function statsPage() {
   const v = statsView;
   if (!v) { fetchStats(); return `${toolbar(null)}<div class="sub">${t('reading_logs')}</div>`; }
-  return `${toolbar(v)}${caption(v)}${tiles(v)}${chartPanel(v)}${heatPanel()}
+  return `${toolbar(v)}${caption(v)}${tiles(v)}${accountPanel(v)}${chartPanel(v)}${heatPanel()}
     <div class="panel tables">${tabsBar(v)}${statsQ.tab === 'log' ? logTable(v) : groupTable(v)}</div>
     <div class="footnote">${t('stats_foot')}</div>${detailPanel()}`;
 }

@@ -9,6 +9,9 @@ mod stats;
 mod db;
 #[path = "../src/statsview.rs"]
 mod statsview;
+#[path = "../src/usage.rs"]
+#[allow(dead_code)]
+mod usage;
 
 fn main() {
     let out = std::path::PathBuf::from(std::env::args().nth(1).expect("output dir"));
@@ -20,7 +23,7 @@ fn main() {
     for range in ["today", "7d", "all"] {
         for tab in ["log", "apps", "models", "projects"] {
             let q = statsview::Query { range: range.into(), tab: tab.into(), ..Default::default() };
-            let v = statsview::compute(&store, &pricing, &q, &[]);
+            let v = statsview::compute(&store, &pricing, &q, &[], None);
             std::fs::write(out.join(format!("{range}-{tab}.json")), serde_json::to_vec(&v).unwrap()).unwrap();
         }
     }

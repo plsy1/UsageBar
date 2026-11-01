@@ -34,6 +34,8 @@ const T = {
   r_absolute: ['具体时间', '日時', 'Date & Time'],
   card_hint: ['在卡片上按住拖动可以换位置，右键有更多选项', 'カードをドラッグして移動、右クリックでその他の操作', 'Drag the card to move it; right-click for more options'],
   resets_at: ['%s 重置', '%s にリセット', 'resets %s'],
+  runs_out: ['预计 %s 用完', '%s に使い切る見込み', 'runs out %s'],
+  fast_hint: ['用得比时间快：已用的比例超过了这个周期已经过去的比例', '時間の進みより速いペース：使用した割合がこの期間の経過割合を上回っています', "Ahead of pace: you've used more of this limit than the share of the period that has passed"],
   reset_one: ['可用重置 1 次', 'リセット 1 回分', '1 reset available'],
   limits_card: ['额度卡片', '上限カード', 'Limits Card'],
   usage_card: ['用量卡片', '使用量カード', 'Usage Card'],
@@ -78,6 +80,24 @@ const T = {
   codex_cache: ['本地缓存 · 数据时间 %s', 'ローカルキャッシュ · データ時刻 %s', 'Local cache · data from %s'],
   codex_cache_expired: ['登录过期，显示本地缓存（打开 Codex 会自动刷新）· 数据时间 %s', 'ログイン期限切れのためローカルキャッシュを表示 · データ時刻 %s', 'Login expired, showing local cache · data from %s'],
   codex_cache_http: ['接口请求失败，显示本地缓存 · 数据时间 %s', 'API リクエスト失敗、ローカルキャッシュを表示 · データ時刻 %s', 'API request failed, showing local cache · data from %s'],
+  claude_local_none: ['本机没有 Claude 的额度记录（Claude 桌面 app 查看过用量后才会有）', 'この PC に Claude の上限の記録がありません（Claude デスクトップアプリで使用量を表示すると作られます）', 'No Claude limit records on this computer (the Claude desktop app writes one when it shows usage)'],
+  claude_local_stale: ['Claude 桌面 app 最近没有查过用量（最近一次 %s）', 'Claude デスクトップアプリが最近使用量を取得していません（最後は %s）', "The Claude desktop app hasn't checked usage recently (last at %s)"],
+  claude_local: ['来自 Claude 桌面 app 的记录 · 数据时间 %s', 'Claude デスクトップアプリの記録 · %s 時点', 'From the Claude desktop app · as of %s'],
+  codex_logs: ['来自会话日志 · 数据时间 %s', 'セッションログより · データ時刻 %s', 'From session logs · data from %s'],
+  codex_logs_none: ['会话日志里还没有额度记录（用一次 Codex 就有）', 'セッションログにまだ上限の記録がありません（Codex を一度使うと記録されます）', 'No limits in the session logs yet (they appear after using Codex once)'],
+  g_notify: ['通知', '通知', 'Notifications'],
+  n_threshold: ['用量达到', '使用量が達したら', 'Usage Reaches'],
+  n_off: ['不提醒', '通知しない', 'Off'],
+  n_run_out: ['预计在重置前用完', 'リセット前に使い切りそうなとき', 'On Pace to Run Out'],
+  n_run_out_hint: ['用了三成以上、用得比时间快时', '30% 以上使い、時間より速いペースのとき', 'Over 30% used and ahead of pace'],
+  n_reset: ['额度重置后', '上限がリセットされたら', 'After a Reset'],
+  n_reset_hint: ['提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时', '予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき', 'When reset early (an across-the-board reset or a reset you used), or after over half had been used'],
+  n_credits: ['Codex 额度重置次数', 'Codex の上限リセット', 'Codex Resets'],
+  n_credits_hint: ['新获得时，以及到期前 24 小时', '新たにもらったとき、期限の 24 時間前', 'When you get one, and 24 hours before one expires'],
+  g_sources: ['数据来源', 'データソース', 'Data Sources'],
+  src_api: ['官方接口', '公式 API', 'Official API'],
+  src_local: ['仅本地', 'ローカルのみ', 'Local Only'],
+  sources_note: ['额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志', '上限：「公式 API」はこの PC のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの PC のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。使用量の統計はいずれもローカルのログだけを読みます', 'Limits: Official API asks Anthropic and OpenAI using the logins on this computer and is the most accurate; Local Only reads files on this computer and sends no requests (Codex from its session logs, Claude from the desktop app\'s records, which may be out of date). Usage statistics always read local logs only'],
   footnote: ['托盘图标旁（Linux）或鼠标悬停提示里（Windows）显示每家最紧的那个额度', 'トレイ（Linux はアイコンの横、Windows はツールチップ）に各サービスで最も残りが少ない上限を表示', 'The tray shows each service\'s tightest limit (next to the icon on Linux, in the tooltip on Windows)'],
   g_general: ['通用', '一般', 'General'],
   g_display: ['额度显示', '上限の表示', 'Limits'],
@@ -124,18 +144,22 @@ function windowLabel(w) {
   return T[w.kind] ? t(w.kind) : w.kind;
 }
 
+// 今天内只写几点，否则带上星期几
+function shortTime(sec) {
+  const d = new Date(sec * 1000);
+  const locale = { zh: 'zh-CN', ja: 'ja-JP' }[state.lang] ?? 'en-US';
+  const time = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString(locale, { weekday: state.lang === 'ja' ? 'long' : 'short' })} ${time}`;
+}
+
+// 用得比时间快的额度：百分比后面加个 ↑
+const fastMark = (w) => (w.fast ? `<span class="up" title="${esc(t('fast_hint'))}">↑</span>` : '');
+
 function resetText(at, style = 'relative') {
   // 差几秒到整分钟就进位（接口常给 05:59:59.x）
   at = Math.floor((at + 5) / 60) * 60;
-  if (style === 'absolute') {
-    // 今天内只写几点，否则带上星期几
-    const d = new Date(at * 1000);
-    const locale = { zh: 'zh-CN', ja: 'ja-JP' }[state.lang] ?? 'en-US';
-    const time = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
-    const today = d.toDateString() === new Date().toDateString();
-    const day = d.toLocaleDateString(locale, { weekday: state.lang === 'ja' ? 'long' : 'short' });
-    return t('resets_at', today ? time : `${day} ${time}`);
-  }
+  if (style === 'absolute') return t('resets_at', shortTime(at));
   const s = Math.max(0, at - Date.now() / 1000);
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   const rel = d > 0 ? t('d_h').replace('%d', d).replace('%h', h)
@@ -153,16 +177,19 @@ function resetCreditsText(r) {
 }
 const resetCreditLines = (r) => (r.count > 1 ? r.expiries.map((e) => t('expires', dateTime(e))) : []);
 
+// 出错原因：附带的数字是时间的按日期写，其他（HTTP 状态码）原样
+const errorText = (p) => t(p.error, p.detail == null ? '' : p.error === 'claude_local_stale' ? dateTime(p.detail) : p.detail);
+
 function providerHTML(p) {
   const used = state.settings.display === 'used';
   let html = `<div class="panel provider"><div class="name">${esc(p.name)}${p.plan ? `<span class="plan">${esc(p.plan)}</span>` : ''}</div>`;
-  if (p.error) html += `<div class="error">${esc(t(p.error, p.detail ?? ''))}</div>`;
+  if (p.error) html += `<div class="error">${esc(errorText(p))}</div>`;
   for (const w of p.windows) {
     const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
     html += `<div class="row">
-      <div class="top"><span>${esc(windowLabel(w))}</span><span class="value">${t(used ? 'used' : 'left', Math.round(v))}</span></div>
+      <div class="top"><span>${esc(windowLabel(w))}</span><span class="value">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></div>
       <div class="bar"><div style="width:${v}%"></div></div>
-      ${w.resets_at ? `<div class="reset">${esc(resetText(w.resets_at))}</div>` : ''}
+      ${w.resets_at ? `<div class="reset">${esc(resetText(w.resets_at) + (w.runs_out_at ? ' · ' + t('runs_out', shortTime(w.runs_out_at)) : ''))}</div>` : ''}
     </div>`;
   }
   if (p.resets) {
@@ -213,7 +240,7 @@ function cardRow(w) {
   const s = state.settings, used = s.display === 'used';
   const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
   return `<div class="c-row">
-    <div class="c-top"><span>${esc(windowLabel(w))}</span><span class="c-val">${t(used ? 'used' : 'left', Math.round(v))}</span></div>
+    <div class="c-top"><span>${esc(windowLabel(w))}</span><span class="c-val">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></div>
     <div class="c-bar"><div style="width:${v}%"></div></div>
     ${s.card_reset !== 'hidden' && w.resets_at
       ? `<div class="c-reset">${esc(resetText(w.resets_at, s.card_reset))}</div>`
@@ -224,7 +251,7 @@ function cardRow(w) {
 function cardColumn(p) {
   return `<div class="c-col">
     <div class="c-name">${esc(p.name)}${p.plan ? `<span class="c-plan">${esc(p.plan)}</span>` : ''}</div>
-    ${p.error ? `<div class="c-err">${esc(t(p.error, p.detail ?? ''))}</div>` : ''}
+    ${p.error ? `<div class="c-err">${esc(errorText(p))}</div>` : ''}
     ${p.windows.map(cardRow).join('')}
     ${p.resets ? `<div class="c-reset">↻ ${esc(resetCreditsText(p.resets))}</div>` : ''}
     ${p.note ? `<div class="c-note">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>` : ''}
@@ -236,11 +263,11 @@ function cardCompactRow(p, cols) {
   const used = state.settings.display === 'used';
   // 出错时这一格占满后面所有列，不用再补空格
   if (p.error && p.windows.length === 0) {
-    return `<span class="c-name">${esc(p.name)}</span><span class="c-err" style="grid-column: span ${cols - 1}">${esc(t(p.error, p.detail ?? ''))}</span>`;
+    return `<span class="c-name">${esc(p.name)}</span><span class="c-err" style="grid-column: span ${cols - 1}">${esc(errorText(p))}</span>`;
   }
   const cells = p.windows.map((w) => {
     const v = used ? Math.min(100, w.used) : Math.max(0, 100 - w.used);
-    return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num">${t(used ? 'used' : 'left', Math.round(v))}</span></span>`;
+    return `<span class="c-pair"><span class="c-lab">${esc(windowLabel(w))}</span><span class="c-num">${t(used ? 'used' : 'left', Math.round(v))}${fastMark(w)}</span></span>`;
   });
   if (p.resets) cells.push(`<span class="c-lab">${esc(resetCountText(p.resets))}</span>`);
   while (cells.length < cols - 1) cells.push('<span></span>');
@@ -385,7 +412,28 @@ function settingsPage() {
       <div class="field"><span>${t('tray_label')}</span>${seg('menu_label', [['short', t('short')], ['full', t('full')]])}</div>
       <div class="field"><span>Claude</span>${toggle('show_claude', s.show_claude)}</div>
       <div class="field"><span>Codex</span>${toggle('show_codex', s.show_codex)}</div>
-    </div>`;
+    </div>
+    <div class="group-title">${t('g_notify')}</div>
+    <div class="panel group">
+      <div class="field"><span>${t('n_threshold')}</span>
+        <select id="notify_threshold">${[[0, t('n_off')], [80, '80%'], [90, '90%'], [95, '95%']].map(([v, l]) => `<option value="${v}" ${s.notify_threshold === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><span>${t('n_run_out')}<div class="hint">${t('n_run_out_hint')}</div></span>${toggle('notify_run_out', s.notify_run_out)}</div>
+      <div class="field"><span>${t('n_reset')}<div class="hint">${t('n_reset_hint')}</div></span>${toggle('notify_reset', s.notify_reset)}</div>
+      <div class="field"><span>${t('n_credits')}<div class="hint">${t('n_credits_hint')}</div></span>${toggle('notify_credits', s.notify_credits)}</div>
+    </div>
+    <div class="group-title">${t('g_sources')}</div>
+    <div class="panel group">${['Claude', 'Codex'].map(sourceRow).join('')}</div>
+    <div class="footnote">${t('sources_note')}</div>`;
+}
+
+// 左边是这次从哪查到了什么（套餐、本地数据的时间），出错时是原因；右边选额度来源
+function sourceRow(name) {
+  const p = state.providers.find((x) => x.name === name);
+  const key = name === 'Claude' ? 'claude_limit_source' : 'codex_limit_source';
+  const status = !p ? '' : p.error ? `<div class="hint error-text">${esc(errorText(p))}</div>`
+    : p.note ? `<div class="hint">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>`
+    : p.plan ? `<div class="hint">${esc(p.plan)}</div>` : '';
+  return `<div class="field"><span>${name}${status}</span>${seg(key, [['api', t('src_api')], ['local', t('src_local')]])}</div>`;
 }
 
 function render() {
@@ -434,8 +482,9 @@ document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'language') save({ language: el.value });
   else if (el.id === 'refresh_minutes') save({ refresh_minutes: Number(el.value) });
+  else if (el.id === 'notify_threshold') save({ notify_threshold: Number(el.value) });
   else if (['show_claude', 'show_codex', 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
-            'stats_card_show_claude', 'stats_card_show_codex'].includes(el.id)) save({ [el.id]: el.checked });
+            'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset', 'notify_credits'].includes(el.id)) save({ [el.id]: el.checked });
   else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
   else if (el.id === 'autostart') {
     await invoke(el.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable').catch(() => {});

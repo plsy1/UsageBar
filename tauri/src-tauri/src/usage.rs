@@ -2,6 +2,7 @@
 //   Claude: ~/.claude/.credentials.json 里的 OAuth token → api.anthropic.com/api/oauth/usage
 //           （Windows / Linux 上 Claude Code 把登录信息存在这个文件；macOS 上在钥匙串，这里不处理）
 //   Codex : ~/.codex/auth.json → chatgpt.com/backend-api/wham/usage，失败时退回最近一次会话日志里的 rate_limits
+//   额度来源选「仅本地」时不发请求：Claude 读桌面 app 留下的记录，Codex 读会话日志
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -15,11 +16,49 @@ pub struct LimitWindow {
     pub amount: Option<u64>, // kind 为 hours / days 时的数字
     pub used: f64,
     pub resets_at: Option<i64>, // Unix 秒
+    /// 窗口总长（秒）：5 小时或 7 天；不知道时为 0，不算速度
+    pub length: f64,
+    /// 用得比时间快（界面和托盘在百分比后面加 ↑）
+    pub fast: bool,
+    /// 按现在的速度什么时候用完（Unix 秒）；重置前用不完就是空
+    pub runs_out_at: Option<i64>,
 }
 
 impl LimitWindow {
+    fn new(kind: &str, amount: Option<u64>, used: f64, resets_at: Option<i64>, length: f64) -> Self {
+        let mut w = LimitWindow { kind: kind.into(), amount, used, resets_at, length, fast: false, runs_out_at: None };
+        w.update_pace(now());
+        w
+    }
+
     pub fn remaining(&self) -> f64 {
         (100.0 - self.used).max(0.0)
+    }
+
+    /// 这个窗口已经过去的比例（0~1）
+    fn elapsed(&self, now: f64) -> Option<f64> {
+        let r = self.resets_at? as f64;
+        (self.length > 0.0).then(|| (1.0 - (r - now) / self.length).clamp(0.0, 1.0))
+    }
+
+    /// 算 fast 和 runs_out_at（和 macOS 版一样）：窗口刚开始的一成时间不算，样本太少
+    pub fn update_pace(&mut self, now: f64) {
+        self.fast = false;
+        self.runs_out_at = None;
+        let Some(e) = self.elapsed(now).filter(|e| *e >= 0.1) else { return };
+        if self.used >= 100.0 {
+            return;
+        }
+        let u = self.used / 100.0;
+        // 已用的比例明显超过已过去的比例
+        self.fast = u - e >= 0.05 && u > e * 1.15;
+        if self.used > 0.0 {
+            let spent = self.length * e;
+            let t = now + (100.0 - self.used) / (self.used / spent);
+            if let Some(r) = self.resets_at {
+                self.runs_out_at = ((t as i64) < r).then_some(t as i64);
+            }
+        }
     }
 }
 
@@ -80,8 +119,10 @@ fn failed(name: &str, key: &str, detail: Option<i64>) -> Provider {
     Provider { name: name.into(), error: Some(key.into()), detail, ..Default::default() }
 }
 
-pub async fn fetch_all(client: &reqwest::Client) -> Vec<Provider> {
-    let (c, x) = tokio::join!(claude(client), codex(client));
+/// claude_local / codex_local：额度来源选了「仅本地」
+pub async fn fetch_all(client: &reqwest::Client, claude_local: bool, codex_local: bool) -> Vec<Provider> {
+    let c = async { if claude_local { claude_local_limits() } else { claude(client).await } };
+    let (c, x) = tokio::join!(c, codex(client, codex_local));
     vec![c, x]
 }
 
@@ -119,6 +160,51 @@ async fn claude_refresh(client: &reqwest::Client, creds: &mut Value, path: &Path
         return true;
     }
     false
+}
+
+/// Claude 桌面 app 查过用量后留下的采样（5 小时、本周已用的百分比）可能在的位置。
+/// Windows 上商店版的 app 数据在 Packages 里
+fn claude_desktop_history() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = dirs::config_dir() {
+        out.push(dir.join("Claude").join("plan-usage-history.json"));
+    }
+    #[cfg(windows)]
+    if let Some(local) = dirs::data_local_dir() {
+        if let Ok(entries) = std::fs::read_dir(local.join("Packages")) {
+            for e in entries.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("Claude")) {
+                out.push(e.path().join("LocalCache").join("Roaming").join("Claude").join("plan-usage-history.json"));
+            }
+        }
+    }
+    out
+}
+
+/// 「仅本地」：读 Claude 桌面 app 的最近一条采样，不发请求。只在 app 查看用量时才写，可能是很久以前的；没有重置时间
+fn claude_local_limits() -> Provider {
+    let newest = claude_desktop_history()
+        .into_iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter_map(|j| j["samples"].as_array()?.iter().max_by(|a, b| a["t"].as_f64().unwrap_or(0.0).total_cmp(&b["t"].as_f64().unwrap_or(0.0))).cloned())
+        .max_by(|a, b| a["t"].as_f64().unwrap_or(0.0).total_cmp(&b["t"].as_f64().unwrap_or(0.0)));
+    let Some((at, usage)) = newest.and_then(|s| Some((s["t"].as_f64()? / 1000.0, s["u"].clone()))) else {
+        return failed("Claude", "claude_local_none", None);
+    };
+    let age = now() - at;
+    let mut p = Provider { name: "Claude".into(), note: Some("claude_local".into()), detail: Some(at as i64), ..Default::default() };
+    // 过了一个窗口的长度，那时的数肯定已经重置过了，不再显示
+    if let Some(fh) = usage["fh"].as_f64().filter(|_| age < 5.0 * 3600.0) {
+        p.windows.push(LimitWindow::new("five_hour", None, fh, None, 5.0 * 3600.0));
+    }
+    if let Some(sd) = usage["sd"].as_f64().filter(|_| age < 7.0 * 86400.0) {
+        p.windows.push(LimitWindow::new("weekly", None, sd, None, 7.0 * 86400.0));
+    }
+    if p.windows.is_empty() {
+        p.note = None;
+        p.error = Some("claude_local_stale".into());
+    }
+    p
 }
 
 async fn claude(client: &reqwest::Client) -> Provider {
@@ -180,7 +266,8 @@ async fn claude(client: &reqwest::Client) -> Provider {
                 "seven_day_sonnet" => "weekly_sonnet",
                 other => other,
             };
-            p.windows.push(LimitWindow { kind: kind.into(), amount: None, used: util, resets_at });
+            let length = if key == "five_hour" { 5.0 * 3600.0 } else if key.starts_with("seven_day") { 7.0 * 86400.0 } else { 0.0 };
+            p.windows.push(LimitWindow::new(kind, None, util, resets_at, length));
         }
         return p;
     }
@@ -201,14 +288,16 @@ fn codex_window(seconds: f64, used: f64, resets_at: Option<i64>) -> LimitWindow 
     } else {
         ("days", Some((seconds / 86400.0).round() as u64))
     };
-    LimitWindow { kind: kind.into(), amount, used, resets_at }
+    LimitWindow::new(kind, amount, used, resets_at, seconds)
 }
 
-async fn codex(client: &reqwest::Client) -> Provider {
+async fn codex(client: &reqwest::Client, local: bool) -> Provider {
     let mut p = Provider { name: "Codex".into(), ..Default::default() };
-    let auth = std::fs::read_to_string(codex_home().join("auth.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let auth = if local {
+        None
+    } else {
+        std::fs::read_to_string(codex_home().join("auth.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    };
     if let Some(at) = auth.as_ref().and_then(|a| a["tokens"]["access_token"].as_str()) {
         let mut req = client
             .get("https://chatgpt.com/backend-api/wham/usage")
@@ -267,7 +356,7 @@ async fn codex(client: &reqwest::Client) -> Provider {
             Err(_) => p.note = Some("codex_cache_http".into()),
         }
     }
-    // 退回：最近一次会话日志里的 rate_limits
+    // 「仅本地」，或接口查不到：最近一次会话日志里的 rate_limits
     if let Some((rl, mtime)) = latest_local_rate_limits() {
         if p.plan.is_none() {
             p.plan = plan_name(rl["plan_type"].as_str());
@@ -282,13 +371,44 @@ async fn codex(client: &reqwest::Client) -> Provider {
             p.windows.push(codex_window(secs, if expired { 0.0 } else { used }, if expired { None } else { reset }));
         }
         if p.note.is_none() {
-            p.note = Some("codex_cache".into());
+            p.note = Some(if local { "codex_logs" } else { "codex_cache" }.into());
         }
         p.detail = Some(mtime);
     } else if p.windows.is_empty() {
-        p.error = Some("codex_no_login".into());
+        p.error = Some(if local { "codex_logs_none" } else { "codex_no_login" }.into());
     }
     p
+}
+
+/// Codex 账号统计（OpenAI 服务端按账号汇总，包含其他电脑和云端任务）：每天的 tokens 和累计总数。
+/// 按 UTC 日期分天，一般晚一两天
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct CodexAccount {
+    pub daily: std::collections::BTreeMap<String, i64>, // UTC 日期 "yyyy-MM-dd" → 那天的 tokens（含缓存）
+    pub lifetime: i64,
+}
+
+/// 查账号统计（只读）
+pub async fn codex_account(client: &reqwest::Client) -> Option<CodexAccount> {
+    let auth: Value = serde_json::from_str(&std::fs::read_to_string(codex_home().join("auth.json")).ok()?).ok()?;
+    let at = auth["tokens"]["access_token"].as_str()?;
+    let mut req = client
+        .get("https://chatgpt.com/backend-api/wham/profiles/me")
+        .bearer_auth(at)
+        .header("User-Agent", "codex-cli")
+        .timeout(Duration::from_secs(15));
+    if let Some(aid) = auth["tokens"]["account_id"].as_str() {
+        req = req.header("ChatGPT-Account-Id", aid);
+    }
+    let resp = req.send().await.ok().filter(|r| r.status().as_u16() == 200)?;
+    let j: Value = resp.json().await.ok()?;
+    let stats = j["stats"].as_object()?;
+    let daily = stats
+        .get("daily_usage_buckets")
+        .and_then(Value::as_array)
+        .map(|bs| bs.iter().filter_map(|b| Some((b["start_date"].as_str()?.to_string(), b["tokens"].as_i64()?))).collect())
+        .unwrap_or_default();
+    Some(CodexAccount { daily, lifetime: stats.get("lifetime_tokens").and_then(Value::as_i64).unwrap_or(0) })
 }
 
 /// 最近改动的几个会话文件里，从后往前找第一条带 rate_limits 的记录；返回记录和文件修改时间
