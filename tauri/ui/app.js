@@ -111,6 +111,32 @@ const T = {
   host_key: ['主机密钥未确认：先在终端里 ssh 连一次这台机器', 'ホスト鍵が未確認です：まずターミナルで一度 ssh 接続してください', "Host key not confirmed: ssh to it once in a terminal first"],
   no_ssh: ['找不到 ssh 命令：请安装 OpenSSH 客户端', 'ssh コマンドが見つかりません：OpenSSH クライアントをインストールしてください', 'ssh not found: install the OpenSSH client'],
   remote_note: ['需要能免密登录（密钥或 ssh-agent）。只读远程的 Codex 会话日志，在远程先过滤再传回来', 'パスワードなしでログインできる必要があります（鍵または ssh-agent）。リモートの Codex セッションログを読むだけで、リモート側で絞り込んでから転送します', 'Needs passwordless login (a key or ssh-agent). Only reads the Codex session logs on that machine, filtered there before being sent back'],
+  nav_about: ['关于', '情報', 'About'],
+  about_sub: ['版本、更新和数据说明', 'バージョン、アップデート、データについて', 'Version, updates and where the data comes from'],
+  version: ['版本 %s', 'バージョン %s', 'Version %s'],
+  tagline: ['在托盘和桌面显示 Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量をトレイとデスクトップに表示', 'Shows remaining Claude and Codex usage in the tray and on the desktop'],
+  check_update: ['检查更新', 'アップデートを確認', 'Check for Updates'],
+  checking: ['正在检查…', '確認中…', 'Checking…'],
+  downloading: ['正在下载 %s%…', 'ダウンロード中 %s%…', 'Downloading %s%…'],
+  installing: ['正在安装…', 'インストール中…', 'Installing…'],
+  up_to_date: ['已是最新版本', '最新バージョンです', "You're up to date"],
+  new_version: ['发现新版本 %s', '新しいバージョン %s があります', 'Version %s is available'],
+  update_restart: ['更新并重启', 'アップデートして再起動', 'Update and Restart'],
+  download_page: ['前往下载页', 'ダウンロードページを開く', 'Open Download Page'],
+  deb_hint: ['deb 安装的版本请下载新的 deb 后用 apt 安装', 'deb 版は新しい deb をダウンロードして apt でインストールしてください', 'For the deb package, download the new .deb and install it with apt'],
+  view_details: ['查看详情', '詳細', 'Details'],
+  retry: ['重试', '再試行', 'Retry'],
+  update_failed: ['更新失败：%s', 'アップデートに失敗しました：%s', 'Update failed: %s'],
+  checksum: ['校验失败', 'チェックサムが一致しません', 'Checksum mismatch'],
+  no_checksum: ['缺少校验值', 'チェックサムがありません', 'Missing checksum'],
+  write: ['没有写入权限', '書き込み権限がありません', 'No permission to replace the app'],
+  data_info: ['数据说明', 'データについて', 'About the Data'],
+  info_limits: ['默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「设置 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求', '既定ではこの PC の Claude Code と Codex のログイン情報で Anthropic・OpenAI の使用量 API に問い合わせます。「設定 → データソース」で「ローカルのみ」にすると、この PC のファイルだけを読みリクエストを送りません', "By default, queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this computer; switch to Local Only under Settings → Data Sources to read files on this computer only and send no requests"],
+  info_stats: ['读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「设置」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）。解析结果存在本机的数据库里，日志被清理后统计也还在；成本按 models.dev 的 API 价格估算，价格每天更新一次', 'この PC のセッション記録（~/.claude/projects と ~/.codex/sessions）と、「設定」で追加したリモートマシンの Codex ログ（ssh で読み込み、リモート側で絞り込み）を読みます。解析結果はこの PC のデータベースに保存されるので、ログが削除されても統計は残ります。コストは models.dev の API 価格で推定し、価格は毎日更新されます', 'Reads the session logs on this computer (~/.claude/projects and ~/.codex/sessions) and the Codex logs on remote machines added in Settings (read over ssh, filtered there). Parsed results are kept in a local database, so statistics stay after logs are cleaned up; costs are estimated from models.dev API prices, updated daily'],
+  privacy: ['隐私', 'プライバシー', 'Privacy'],
+  info_privacy: ['所有数据只在这台电脑、你添加的远程机器和上述官方服务之间传输，不经过其他服务器', 'データはこの PC、追加したリモートマシン、上記の公式サービスの間でのみやり取りされ、他のサーバーを経由しません', 'Data only travels between this computer, the remote machines you add and those official services, never through other servers'],
+  all_releases: ['所有版本', 'すべてのリリース', 'All Releases'],
+  report_issue: ['反馈问题', '問題を報告', 'Report an Issue'],
   g_sources: ['数据来源', 'データソース', 'Data Sources'],
   src_api: ['官方接口', '公式 API', 'Official API'],
   src_local: ['仅本地', 'ローカルのみ', 'Local Only'],
@@ -483,6 +509,58 @@ function sourceRow(name) {
   return `<div class="field"><span>${name}${status}</span>${seg(key, [['api', t('src_api')], ['local', t('src_local')]])}</div>`;
 }
 
+// MARK: 关于：图标、版本、检查更新；有新版或出错时下面展开说明；再下面是数据说明和链接
+
+const GITHUB = 'https://github.com/plsy1/UsageBar';
+const githubPath = (url) => (url || '').startsWith(GITHUB) ? url.slice(GITHUB.length) : '/releases';
+
+function updateControl(u) {
+  switch (u.status) {
+    case 'checking': return `<span class="sub">${t('checking')}</span>`;
+    case 'downloading': return `<span class="sub">${(u.progress ?? 0) >= 0.99 ? t('installing') : t('downloading', Math.round((u.progress ?? 0) * 100))}</span>`;
+    case 'available': return `<div class="update-right"><b>${esc(t('new_version', u.version))}</b>
+      ${u.can_install ? `<button class="btn primary" id="install-update">${t('update_restart')}</button>`
+        : `<button class="btn" data-github="${esc(githubPath(u.page))}">${t('download_page')}</button>`}</div>`;
+    case 'failed': return `<button class="btn" id="check-update">${t('retry')}</button>`;
+    case 'up_to_date': return `<div class="update-right"><span class="sub">✓ ${t('up_to_date')}</span><button class="btn" id="check-update">${t('check_update')}</button></div>`;
+    default: return `<button class="btn" id="check-update">${t('check_update')}</button>`;
+  }
+}
+
+function aboutPage() {
+  const u = state.update || { status: 'idle' };
+  const err = u.error ? (T[u.error] ? t(u.error) : u.error) : '';
+  const below = u.status === 'available' && u.notes
+    ? `<div class="update-notes">${esc(u.notes.replace(/\*\*|`/g, '').replace(/^#+\s*/gm, ''))}</div>
+       ${u.can_install ? '' : `<div class="sub">${t('deb_hint')}</div>`}
+       <a class="link" data-github="${esc(githubPath(u.page))}">${t('view_details')}</a>`
+    : u.status === 'failed'
+      ? `<div class="update-fail"><span class="sub">${esc(t('update_failed', err))}</span><span class="spacer"></span><a class="link" data-github="/releases">${t('download_page')}</a></div>`
+      : '';
+  const info = (ico, title, text) => `<div class="info-row"><span class="info-ico">${ico}</span><div><div>${title}</div><div class="sub">${text}</div></div></div>`;
+  return `<div class="header"><div><h1>${t('nav_about')}</h1><div class="sub">${t('about_sub')}</div></div></div>
+    <div class="panel about-card">
+      <div class="about-top">
+        <img src="icon.png" alt="" width="64" height="64">
+        <div><div class="about-name">UsageBar</div><div class="sub">${t('version', esc(u.current || ''))}</div><div class="sub">${t('tagline')}</div></div>
+        <span class="spacer"></span>
+        ${updateControl(u)}
+      </div>
+      ${below ? `<div class="about-below">${below}</div>` : ''}
+    </div>
+    <div class="group-title">${t('data_info')}</div>
+    <div class="panel group info">
+      ${info('◔', t('nav_usage'), t('info_limits'))}
+      ${info('▥', t('nav_stats'), t('info_stats'))}
+      ${info('⛨', t('privacy'), t('info_privacy'))}
+    </div>
+    <div class="about-links">
+      <a class="link" data-github="">GitHub</a>
+      <a class="link" data-github="/releases">${t('all_releases')}</a>
+      <a class="link" data-github="/issues">${t('report_issue')}</a>
+    </div>`;
+}
+
 function render() {
   if (!state) return;
   document.documentElement.lang = state.lang;
@@ -502,7 +580,7 @@ function render() {
     reportCardContent(s[k + 'show'] && ready && count ? `${s[k + 'layout']}|${s[k + 'scale']}|${count}` : '');
     return;
   }
-  const pages = { stats: statsPage, usage: usagePage, card: cardSettingsPage, settings: settingsPage };
+  const pages = { stats: statsPage, usage: usagePage, card: cardSettingsPage, settings: settingsPage, about: aboutPage };
   const main = document.getElementById('content');
   const focused = document.activeElement?.id === 'new-host';
   main.classList.toggle('wide', page === 'stats');
@@ -528,6 +606,10 @@ document.addEventListener('click', (e) => {
   if (e.target.id === 'refresh') { invoke('refresh_now'); return; }
   if (e.target.id === 'open-main') { invoke('open_main'); return; }
   if (e.target.id === 'add-host') { addHost(); return; }
+  if (e.target.id === 'check-update') { invoke('check_update_now'); return; }
+  if (e.target.id === 'install-update') { invoke('install_update'); return; }
+  const gh = e.target.closest('[data-github]');
+  if (gh) { invoke('open_github', { path: gh.dataset.github }); return; }
   const rm = e.target.closest('[data-remove-host]');
   if (rm) { save({ remote_hosts: state.settings.remote_hosts.filter((h) => h !== rm.dataset.removeHost) }); return; }
   const tab = e.target.closest('[data-cardtab]');

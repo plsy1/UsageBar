@@ -46,6 +46,7 @@ pub fn t(lang: &str, key: &str) -> &'static str {
         "n_credits" => ("可用重置 %s 次", "リセット %s 回分", "%s resets available"),
         "n_credit_expiring" => ("Codex 的额度重置次数快到期了", "Codex のリセットがまもなく期限切れ", "A Codex reset is about to expire"),
         "n_credit_expires" => ("有 1 次重置将在 %s 到期，用不掉就作废", "リセット 1 回分が %s に期限切れになります。使わないと失効します", "One reset expires %s; it's lost if unused"),
+        "update_available" => ("有新版本 %s…", "新しいバージョン %s…", "Version %s available…"),
         "resets_in" => ("%s后重置", "%s後にリセット", "resets in %s"),
         _ => ("", "", ""),
     };

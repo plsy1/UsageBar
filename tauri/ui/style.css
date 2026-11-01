@@ -298,3 +298,21 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .host-add input { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; width: 140px; }
 .host-add select { max-width: 130px; }
 .host-right .btn.plain { color: var(--secondary); padding: 4px 6px; }
+/* 关于 */
+.about-card { padding: 20px; max-width: 620px; }
+.about-top { display: flex; align-items: center; gap: 16px; }
+.about-top img { border-radius: 14px; flex-shrink: 0; }
+.about-top .sub { margin-top: 2px; }
+.about-name { font-size: 20px; font-weight: 650; }
+.update-right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.about-below { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.update-notes { white-space: pre-line; font-size: 13px; color: var(--secondary); max-height: 180px; overflow: auto; }
+.update-fail { display: flex; align-items: center; gap: 8px; }
+.link { color: var(--accent); cursor: pointer; font-size: 13px; }
+.link:hover { text-decoration: underline; }
+.info .info-row { display: flex; gap: 14px; padding: 12px 0; align-items: flex-start; }
+.info .info-row + .info-row { border-top: 1px solid var(--border); }
+.info-ico { color: var(--accent); width: 22px; text-align: center; font-size: 17px; flex-shrink: 0; }
+.info .sub { font-size: 13px; margin-top: 3px; line-height: 1.5; }
+.about-links { display: flex; gap: 22px; margin-top: 18px; }

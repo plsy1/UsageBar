@@ -12,6 +12,7 @@ mod notify;
 mod remote;
 mod stats;
 mod statsview;
+mod update;
 mod usage;
 
 use serde::{Deserialize, Serialize};
@@ -139,6 +140,10 @@ struct AppState {
     /// 各台远程机器上次读取的结果，和远程日志里最新的一份 Codex 额度
     remote_status: Mutex<HashMap<String, remote::RemoteStatus>>,
     remote_limits: Mutex<Option<(serde_json::Value, i64)>>,
+    /// 应用内更新：给界面的状态、查到的新版本、上次查的时间
+    update: Mutex<update::State>,
+    update_release: Mutex<Option<update::Release>>,
+    update_checked: Mutex<Option<Instant>>,
     /// 两张卡片内容区的自然大小和「形状」，布局、大小、家数一样时对齐到较大的
     card_content: Mutex<HashMap<String, CardContent>>,
 }
@@ -171,6 +176,7 @@ struct Snapshot {
     /// 各家周额度当前周期的起点（毫秒）：统计页「重置以来」用
     cycle: HashMap<String, i64>,
     remote_status: HashMap<String, remote::RemoteStatus>,
+    update: update::State,
 }
 
 fn snapshot(app: &AppHandle) -> Snapshot {
@@ -190,7 +196,9 @@ fn snapshot(app: &AppHandle) -> Snapshot {
         })
         .collect();
     let remote_status = st.remote_status.lock().unwrap().clone();
-    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle, remote_status }
+    let mut update = st.update.lock().unwrap().clone();
+    update.current = app.package_info().version.to_string();
+    Snapshot { settings, providers, updated, loading, lang, usage, stats_loading, cycle, remote_status, update }
 }
 
 /// 用量卡片的汇总。「重置以来」每家按自己的每周额度重置时间算
@@ -538,6 +546,125 @@ async fn stats_query(app: AppHandle, query: statsview::Query) -> Option<statsvie
         .ok()
 }
 
+// MARK: - 应用内更新
+
+/// 查有没有新版本。silent：自动检查时用，失败不显示错误
+async fn check_update(app: AppHandle, silent: bool) {
+    let st = app.state::<AppState>();
+    {
+        let mut u = st.update.lock().unwrap();
+        if u.status == "checking" || u.status == "downloading" {
+            return;
+        }
+        if !silent {
+            u.status = "checking".into();
+            u.error = None;
+        }
+    }
+    let _ = app.emit("state", snapshot(&app));
+    let result = update::latest().await;
+    *st.update_checked.lock().unwrap() = Some(Instant::now());
+    let current = app.package_info().version.to_string();
+    {
+        let mut u = st.update.lock().unwrap();
+        match result {
+            Ok(r) if update::is_newer(&r.version, &current) => {
+                *u = update::State {
+                    status: "available".into(),
+                    version: Some(r.version.clone()),
+                    notes: Some(r.notes.clone()),
+                    page: Some(r.page.clone()),
+                    can_install: r.asset.is_some(),
+                    ..Default::default()
+                };
+                *st.update_release.lock().unwrap() = Some(r);
+            }
+            Ok(_) => {
+                if !silent || u.status != "idle" {
+                    *u = update::State { status: "up_to_date".into(), ..Default::default() };
+                }
+            }
+            Err(e) => {
+                if !silent {
+                    *u = update::State { status: "failed".into(), error: Some(e), ..Default::default() };
+                }
+            }
+        }
+    }
+    update_tray(&app);
+    let _ = app.emit("state", snapshot(&app));
+}
+
+#[tauri::command]
+fn check_update_now(app: AppHandle) {
+    tauri::async_runtime::spawn(check_update(app, false));
+}
+
+/// 下载、校验、安装，成功后退出（新版会自己打开）
+#[tauri::command]
+async fn install_update(app: AppHandle) {
+    let st = app.state::<AppState>();
+    let Some(r) = st.update_release.lock().unwrap().clone() else { return };
+    {
+        let mut u = st.update.lock().unwrap();
+        if u.status == "downloading" {
+            return;
+        }
+        u.status = "downloading".into();
+        u.progress = Some(0.0);
+        u.error = None;
+    }
+    let _ = app.emit("state", snapshot(&app));
+    let dir = app.path().app_cache_dir().unwrap_or_else(|_| std::env::temp_dir()).join("update");
+    // 进度每多 2% 才发一次
+    let last = Mutex::new(0.0);
+    let result = update::download(&r, &dir, |p| {
+        let mut l = last.lock().unwrap();
+        if p - *l >= 0.02 {
+            *l = p;
+            app.state::<AppState>().update.lock().unwrap().progress = Some(p);
+            let _ = app.emit("state", snapshot(&app));
+        }
+    })
+    .await
+    .and_then(|file| update::install(&file));
+    match result {
+        Ok(()) => app.exit(0),
+        Err(e) => {
+            let mut u = st.update.lock().unwrap();
+            u.status = "failed".into();
+            u.error = Some(e);
+            u.progress = None;
+            drop(u);
+            let _ = app.emit("state", snapshot(&app));
+        }
+    }
+}
+
+/// 打开本项目在 GitHub 上的页面（发布页、反馈）；别的网址不开
+#[tauri::command]
+fn open_github(path: String) {
+    if path.is_empty() || path.starts_with('/') && !path.contains("..") {
+        update::open_url(&format!("https://github.com/{}{path}", update::REPO));
+    }
+}
+
+/// 启动 10 秒后查一次，之后每 6 小时看看，离上次查过了一天就再查
+async fn update_loop(app: AppHandle) {
+    // 上次更新下载的安装包已经装过了，删掉
+    if let Ok(dir) = app.path().app_cache_dir() {
+        let _ = std::fs::remove_dir_all(dir.join("update"));
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    loop {
+        let due = app.state::<AppState>().update_checked.lock().unwrap().map(|t| t.elapsed().as_secs() > 86400).unwrap_or(true);
+        if due {
+            check_update(app.clone(), true).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+    }
+}
+
 /// 设置页添加远程机器时给的选择
 #[tauri::command]
 fn ssh_config_hosts() -> Vec<String> {
@@ -605,6 +732,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
     menu.append(&MenuItem::with_id(app, "refresh", i18n::t(lang, "refresh"), true, None::<&str>)?)?;
+    // 有新版本时：点了打开「关于」页
+    if let (true, Some(v)) = (snap.update.status == "available", &snap.update.version) {
+        menu.append(&MenuItem::with_id(app, "update", i18n::fmt(lang, "update_available", &[v]), true, None::<&str>)?)?;
+    }
     menu.append(&MenuItem::with_id(app, "open", i18n::t(lang, "open"), true, None::<&str>)?)?;
     menu.append(&CheckMenuItem::with_id(app, "card", i18n::t(lang, "show_card"), true, snap.settings.card_show, None::<&str>)?)?;
     menu.append(&CheckMenuItem::with_id(app, "stats_card", i18n::t(lang, "show_usage_card"), true, snap.settings.stats_card_show, None::<&str>)?)?;
@@ -781,7 +912,8 @@ fn main() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![get_state, set_settings, refresh_now, open_main, card_menu, fit_card,
                                                  card_drag_start, card_drag_move, card_drag_end, card_content,
-                                                 stats_query, refresh_stats_now, ssh_config_hosts])
+                                                 stats_query, refresh_stats_now, ssh_config_hosts, check_update_now,
+                                                 install_update, open_github])
         // 卡片右键菜单（托盘菜单有自己的处理）
         .on_menu_event(|app, event| match event.id.as_ref() {
             "c-refresh" => {
@@ -815,6 +947,10 @@ fn main() {
                             tauri::async_runtime::spawn(refresh(app.clone()));
                         }
                         "open" => show_main(app),
+                        "update" => {
+                            show_main(app);
+                            let _ = app.emit_to("main", "navigate", "about");
+                        }
                         "card" => update_settings(app, |s| s.card_show = !s.card_show),
                         "stats_card" => update_settings(app, |s| s.stats_card_show = !s.stats_card_show),
                         "quit" => app.exit(0),
@@ -842,6 +978,7 @@ fn main() {
             if std::env::args().any(|a| a == "--show") {
                 show_main(&handle);
             }
+            tauri::async_runtime::spawn(update_loop(handle.clone()));
             tauri::async_runtime::spawn(refresh_loop(handle));
             Ok(())
         })
