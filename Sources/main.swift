@@ -218,7 +218,6 @@ enum I18n {
         "全名": ("フルネーム", "Full Name"),
         "基本": ("基本", "Basics"),
         "后台增量更新": ("バックグラウンドで差分更新", "Updates in the background"),
-        "菜单栏上显示的文字，下面是点开后的菜单": ("メニューバーに表示する文字。下はクリックしたときのメニューです", "What the menu bar shows; the menu it opens is below"),
         "隐私": ("プライバシー", "Privacy"),
         "所有版本": ("すべてのリリース", "All Releases"),
         "反馈问题": ("問題を報告", "Report an Issue"),
@@ -1058,41 +1057,9 @@ struct MenuBarSettings: View {
     }
 
     var body: some View {
-        SettingsScroll(.menuBar, L("菜单栏上显示的文字，下面是点开后的菜单")) {
-            VStack(alignment: .leading, spacing: 26) {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 26) {
-                        SettingsGroup(L("菜单栏文字")) {
-                            SettingsRow(L("名称")) {
-                                Picker("", selection: $menuLabel) {
-                                    Text(L("简写（Cc / Cx）")).tag("short")
-                                    Text(L("全名")).tag("full")
-                                }
-                                .pickerStyle(.radioGroup).horizontalRadioGroupLayout().labelsHidden().fixedSize()
-                            }
-                            Divider()
-                            SettingsRow(L("显示的额度")) {
-                                Picker("", selection: $limit) {
-                                    Text(L("5 小时")).tag("session")
-                                    Text(L("本周")).tag("weekly")
-                                    Text(L("都显示")).tag("both")
-                                }
-                                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                            }
-                        }
-                        SettingsGroup(L("下拉菜单")) {
-                            SettingsRow(L("重置时间")) {
-                                Picker("", selection: $resetStyle) {
-                                    Text(L("完整")).tag("full")
-                                    Text(L("剩余时间")).tag("relative")
-                                    Text(L("具体时间")).tag("absolute")
-                                    Text(L("不显示")).tag("hidden")
-                                }
-                                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
+        SettingsScroll(.menuBar, L("菜单栏上显示的文字，右边是点开后的菜单")) {
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 26) {
                     SettingsGroup(L("显示内容"), footer: L("只影响菜单栏，两张卡片在「卡片」里各自设置")) {
                         SettingsRow(L("显示数值")) {
                             Picker("", selection: $displayMode) {
@@ -1106,57 +1073,101 @@ struct MenuBarSettings: View {
                         Divider()
                         SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }
                     }
-                    .frame(maxWidth: .infinity)
+                    SettingsGroup(L("菜单栏文字")) {
+                        SettingsRow(L("名称")) {
+                            Picker("", selection: $menuLabel) {
+                                Text(L("简写（Cc / Cx）")).tag("short")
+                                Text(L("全名")).tag("full")
+                            }
+                            .pickerStyle(.radioGroup).horizontalRadioGroupLayout().labelsHidden().fixedSize()
+                        }
+                        Divider()
+                        SettingsRow(L("显示的额度")) {
+                            Picker("", selection: $limit) {
+                                Text(L("5 小时")).tag("session")
+                                Text(L("本周")).tag("weekly")
+                                Text(L("都显示")).tag("both")
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        }
+                    }
+                    SettingsGroup(L("下拉菜单")) {
+                        // 窗口窄时四个选项和标题放不进一行，选项换到标题下面
+                        ViewThatFits(in: .horizontal) {
+                            SettingsRow(L("重置时间")) { resetPicker.fixedSize() }
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(L("重置时间"))
+                                resetPicker
+                            }
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .top)
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L("预览")).font(.headline)
-                    VStack(alignment: .trailing, spacing: 6) {
-                // 模拟一段菜单栏
-                    HStack(spacing: 14) {
-                        Spacer()
-                        Text(title).font(.system(size: 13, weight: .medium).monospacedDigit())
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.1)))
-                        Image(systemName: "wifi")
-                        Image(systemName: "battery.75percent")
-                        Text(Date().formatted(.dateTime.hour().minute())).monospacedDigit()
-                    }
-                    .font(.system(size: 13))
-                    .padding(.horizontal, 12).frame(height: 30)
-                    .background(Rectangle().fill(Color.primary.opacity(0.05)))
-                    // 点开后的菜单
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(shown, id: \.name) { u in
-                            MenuUsageBlock(u: u, used: used, resetStyle: resetStyle).padding(.horizontal, -2)
-                            Divider().padding(.vertical, 3)
-                        }
-                        Text(L("更新于 %@", Date().formatted(.dateTime.hour().minute())))
-                            .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 12)
-                        ForEach([("arrow.clockwise", L("立即刷新")),
-                                 (showCard ? "eye.slash" : "eye", showCard ? L("隐藏额度卡片") : L("显示额度卡片")),
-                                 ("chart.bar", showStatsCard ? L("隐藏用量卡片") : L("显示用量卡片")),
-                                 ("macwindow", L("打开 UsageBar…")), ("power", L("退出"))], id: \.1) { icon, title in
-                            if icon == "power" { Divider().padding(.vertical, 3) }
-                            HStack(spacing: 8) {
-                                Image(systemName: icon).frame(width: 18)  // 固定图标宽度，文字才对齐
-                                Text(title)
-                            }
-                            .font(.system(size: 13)).padding(.vertical, 1).padding(.leading, 12)
-                        }
-                    }
-                    .padding(.vertical, 10)
-                    .frame(width: 310, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .windowBackgroundColor)))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
-                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                    .padding(.trailing, 40)
-                    }
-                    .padding(.bottom, 20)
-                    .frame(maxWidth: .infinity)
-                    .modifier(Panel())
+                    preview
                 }
+                .frame(maxWidth: .infinity, alignment: .top)
             }
         }
+    }
+
+    var resetPicker: some View {
+        Picker("", selection: $resetStyle) {
+            Text(L("完整")).tag("full")
+            Text(L("剩余时间")).tag("relative")
+            Text(L("具体时间")).tag("absolute")
+            Text(L("不显示")).tag("hidden")
+        }
+        .pickerStyle(.segmented).labelsHidden()
+    }
+
+    /// 一段模拟的菜单栏，下面挂着点开后的菜单
+    var preview: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 14) {
+                Spacer(minLength: 0)
+                Text(title).font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.1)))
+                Image(systemName: "wifi")
+                Image(systemName: "battery.75percent")
+                Text(Date().formatted(.dateTime.hour().minute())).monospacedDigit()
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, 12).frame(height: 30)
+            .background(Rectangle().fill(Color.primary.opacity(0.05)))
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(shown, id: \.name) { u in
+                    MenuUsageBlock(u: u, used: used, resetStyle: resetStyle).padding(.horizontal, -2)
+                    Divider().padding(.vertical, 3)
+                }
+                Text(L("更新于 %@", Date().formatted(.dateTime.hour().minute())))
+                    .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 12)
+                ForEach([("arrow.clockwise", L("立即刷新")),
+                         (showCard ? "eye.slash" : "eye", showCard ? L("隐藏额度卡片") : L("显示额度卡片")),
+                         ("chart.bar", showStatsCard ? L("隐藏用量卡片") : L("显示用量卡片")),
+                         ("macwindow", L("打开 UsageBar…")), ("power", L("退出"))], id: \.1) { icon, title in
+                    if icon == "power" { Divider().padding(.vertical, 3) }
+                    HStack(spacing: 8) {
+                        Image(systemName: icon).frame(width: 18)  // 固定图标宽度，文字才对齐
+                        Text(title)
+                    }
+                    .font(.system(size: 13)).padding(.vertical, 1).padding(.leading, 12)
+                }
+            }
+            .padding(.vertical, 10)
+            .frame(width: 310, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
+            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+            .padding(.trailing, 24)
+        }
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity)
+        .modifier(Panel())
     }
 }
 
