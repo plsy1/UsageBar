@@ -485,10 +485,48 @@ struct Bucket: Identifiable {
     var id: Date { date }
 }
 
+/// Codex 账号统计（OpenAI 服务端按账号汇总，包含其他电脑和云端任务）。
+/// 按 UTC 日期分天（对过：只在本机用的日子，和本机日志按 UTC 分天的数几乎一样），一般晚一两天
+struct CodexAccount {
+    let daily: [String: Int]  // UTC 日期 "yyyy-MM-dd" → 那天的 tokens（含缓存）
+    let lifetime: Int
+    let asOf: String?
+    /// 服务端最新有数据的那天
+    var lastDay: String? { daily.keys.max() }
+
+    static let utcDay: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    /// 其他设备在 from...to 里用了多少：按 UTC 日，服务端的数减去本机记录的数（不会小于 0）。
+    /// pending：范围里有服务端还没出数的日子（那几天只算了本机）
+    func otherDevices(from: Date, to: Date, local: [UsageRecord]) -> (tokens: Int, pending: Bool) {
+        var localByDay: [String: Int] = [:]
+        for r in local where r.source == .codex && !r.failed { localByDay[Self.utcDay.string(from: r.time), default: 0] += r.tokens }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let last = lastDay ?? ""
+        var day = cal.startOfDay(for: from), sum = 0, pending = false
+        while day <= to {
+            let key = Self.utcDay.string(from: day)
+            if key > last { pending = true } else { sum += max(0, (daily[key] ?? 0) - (localByDay[key] ?? 0)) }
+            day = cal.date(byAdding: .day, value: 1, to: day)!
+        }
+        return (sum, pending)
+    }
+}
+
 final class StatsStore: ObservableObject {
     @Published var all: [UsageRecord] = []
     @Published var loading = false
     @Published var updated: Date?
+    /// Codex 账号统计：一天才更新一次，最多一小时拉一次
+    @Published var codexAccount: CodexAccount?
+    private var accountFetchedAt: Date?
     /// 各家周额度当前周期的起点，由额度刷新时填入
     @Published var cycleStarts: [Source: Date] = [:]
 
@@ -517,6 +555,10 @@ final class StatsStore: ObservableObject {
                 self.all = result
                 self.loading = false
                 self.updated = Date()
+            }
+            let due = await MainActor.run { self.accountFetchedAt.map { Date().timeIntervalSince($0) > 3600 } ?? true }
+            if due, let acc = await Codex.fetchAccount() {
+                await MainActor.run { self.codexAccount = acc; self.accountFetchedAt = Date() }
             }
         }
     }
@@ -672,6 +714,7 @@ struct StatsView: View {
                 .help(moreTiles ? L("收起") : L("更多指标"))
                 .offset(y: 11)
             }
+            codexAccountPanel(rows)
             chart(rows)
             tables(rows)
             Text(L("成本按 models.dev 的 API 价格估算，仅统计本机会话记录"))
@@ -730,6 +773,48 @@ struct StatsView: View {
             Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
                 .help(L("刷新"))
                 .disabled(store.loading)
+        }
+    }
+
+    /// Codex · 全部设备：本机日志（精确）加上其他设备的用量（服务端账号统计按天减去本机）
+    @ViewBuilder func codexAccountPanel(_ rows: [UsageRecord]) -> some View {
+        if sources.contains(.codex), let acc = store.codexAccount {
+            let mine = Summary(rows.filter { $0.source == .codex })
+            let other = acc.otherDevices(from: since(.codex), to: end, local: store.all)
+            let total = mine.tokens + other.tokens
+            // 其他设备只知道总 tokens（不分输入、缓存、输出）：按本机近 30 天 Codex 记录的每 token 平均成本估算
+            let recent = store.all.filter { $0.source == .codex && !$0.failed && $0.time > Date().addingTimeInterval(-30 * 86400) }
+            let recentTokens = recent.reduce(0) { $0 + $1.tokens }
+            let perToken = recentTokens > 0 ? recent.reduce(0.0) { $0 + ($1.cost ?? 0) } / Double(recentTokens) : nil
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Codex · " + L("全部设备")).font(.headline)
+                    Spacer()
+                    Text(L("累计 %@ tokens", abbrev(acc.lifetime))).font(.callout).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 18)
+                HStack(spacing: 0) {
+                    tile("Tokens", abbrev(total), small: true)
+                    Divider().padding(.vertical, 4)
+                    tile(L("其他设备"), abbrev(other.tokens), small: true)
+                    Divider().padding(.vertical, 4)
+                    tile(L("估算成本"), money(mine.cost + Double(other.tokens) * (perToken ?? 0)), small: true)
+                    Divider().padding(.vertical, 4)
+                    tile(L("本机记录占比"), total > 0 ? percent(Double(mine.tokens) / Double(total)) : "—", small: true)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                Group {
+                    if other.pending, let last = acc.lastDay {
+                        Text(L("其他设备的数据来自 OpenAI 账号统计（按 UTC 日），目前只到 %@，之后几天只算了本机。", last))
+                    } else {
+                        Text(L("其他设备的数据来自 OpenAI 账号统计（按 UTC 日）。"))
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 14)
+            .modifier(Panel())
         }
     }
 

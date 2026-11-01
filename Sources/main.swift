@@ -188,6 +188,12 @@ enum I18n {
         "缓存读取": ("キャッシュ読取", "Cache Read"),
         "缓存写入": ("キャッシュ書込", "Cache Write"),
         "命中率": ("ヒット率", "Hit Rate"),
+        "全部设备": ("すべてのデバイス", "All Devices"),
+        "本机记录占比": ("この Mac の記録の割合", "Logged on This Mac"),
+        "其他设备": ("他のデバイス", "Other Devices"),
+        "累计 %@ tokens": ("累計 %@ tokens", "%@ tokens lifetime"),
+        "其他设备的数据来自 OpenAI 账号统计（按 UTC 日），目前只到 %@，之后几天只算了本机。": ("他のデバイスの分は OpenAI アカウントの統計（UTC 日単位）から。現在 %@ までで、それ以降はこの Mac の分のみです。", "Other devices come from your OpenAI account statistics (by UTC day), currently through %@; later days count this Mac only."),
+        "其他设备的数据来自 OpenAI 账号统计（按 UTC 日）。": ("他のデバイスの分は OpenAI アカウントの統計（UTC 日単位）から。", "Other devices come from your OpenAI account statistics (by UTC day)."),
         "可用重置 1 次": ("リセット 1 回分", "1 reset available"),
         "可用重置 %d 次": ("リセット %d 回分", "%d resets available"),
         "%@ 到期": ("%@ まで", "expires %@"),
@@ -475,6 +481,27 @@ enum Codex {
         case (6 * 86400)...(8 * 86400): return L("本周")
         default: return L("%d 天", Int(seconds / 86400))
         }
+    }
+
+    /// 账号统计（OpenAI 服务端按账号汇总，其他电脑和云端任务都算在内）：每天的 tokens 和累计总数。
+    /// 只读；按天汇总，一般晚一天
+    static func fetchAccount() async -> CodexAccount? {
+        guard let d = try? Data(contentsOf: home.appendingPathComponent("auth.json")),
+              let auth = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let tokens = auth["tokens"] as? [String: Any],
+              let at = tokens["access_token"] as? String else { return nil }
+        var req = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/profiles/me")!, timeoutInterval: 15)
+        req.setValue("Bearer \(at)", forHTTPHeaderField: "Authorization")
+        if let aid = tokens["account_id"] as? String { req.setValue(aid, forHTTPHeaderField: "ChatGPT-Account-Id") }
+        req.setValue("codex-cli", forHTTPHeaderField: "User-Agent")
+        let (status, json) = await httpJSON(req)
+        guard status == 200, let stats = json?["stats"] as? [String: Any] else { return nil }
+        var daily: [String: Int] = [:]
+        for b in stats["daily_usage_buckets"] as? [[String: Any]] ?? [] {
+            if let day = b["start_date"] as? String, let n = (b["tokens"] as? NSNumber)?.intValue { daily[day] = n }
+        }
+        return CodexAccount(daily: daily, lifetime: (stats["lifetime_tokens"] as? NSNumber)?.intValue ?? 0,
+                            asOf: (json?["metadata"] as? [String: Any])?["stats_as_of"] as? String)
     }
 
     static func fetch() async -> ProviderUsage {
