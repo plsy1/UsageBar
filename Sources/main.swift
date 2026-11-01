@@ -6,6 +6,7 @@
 import AppKit
 import SwiftUI
 import ServiceManagement
+import UserNotifications
 
 // MARK: - 数据模型
 
@@ -150,9 +151,28 @@ enum I18n {
         "曲线图": ("折れ線グラフ", "Line Chart"),
         "柱状图": ("棒グラフ", "Bar Chart"),
         "更新失败，继续使用旧价格": ("更新に失敗しました。以前の価格を使用中", "Update failed, using cached prices"),
-        "本机会话记录": ("ローカルのセッション記録", "Local Session Logs"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
+        "会话记录": ("セッション記録", "Session Logs"),
+        "读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）；成本按 models.dev 的 API 价格估算，价格每天更新一次": ("この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）と、「一般」で追加したリモートマシンの Codex ログ（ssh で読み込み、リモート側で絞り込み）を読みます。コストは models.dev の API 価格で推定し、価格は 1 日 1 回更新します", "Reads this Mac's session logs (~/.claude/projects and ~/.codex/sessions) plus Codex logs on remote machines added under General (read over ssh, filtered on the remote side); cost is estimated from models.dev API prices, refreshed daily"),
+        "所有数据只在这台 Mac、你添加的远程机器和上述官方服务之间传输，不经过其他服务器": ("データはこの Mac、追加したリモートマシン、上記の公式サービスの間でのみやり取りされ、他のサーバーを経由しません", "Data only travels between this Mac, the remote machines you add and those official services, never through other servers"),
+        "通知": ("通知", "Notifications"),
+        "通知没有打开：请在 系统设置 → 通知 → UsageBar 中允许": ("通知がオフです：システム設定 → 通知 → UsageBar で許可してください", "Notifications are off: allow UsageBar in System Settings → Notifications"),
+        "用量达到": ("使用量が達したら", "Usage Reaches"),
+        "不提醒": ("通知しない", "Off"),
+        "预计在重置前用完": ("リセット前に使い切りそうなとき", "On Pace to Run Out"),
+        "用了三成以上、用得比时间快时": ("30% 以上使い、時間より速いペースのとき", "Over 30% used and ahead of pace"),
+        "额度重置后": ("上限がリセットされたら", "After a Reset"),
+        "之前用了一半以上时": ("それまでに半分以上使っていたとき", "When over half had been used"),
+        "Codex 重置次数快到期": ("Codex のリセットの期限が近いとき", "Codex Reset Expiring"),
+        "到期前 24 小时": ("期限の 24 時間前", "24 hours before it expires"),
+        "%@ 已用 %d%%": ("%@ を %d%% 使用", "%@ is %d%% used"),
+        "%@ 用得比时间快": ("%@ が速いペースです", "%@ is ahead of pace"),
+        "按现在的速度预计 %@ 用完，%@": ("このペースだと %@ に使い切ります。%@", "At this pace it runs out %@; %@"),
+        "%@ 已重置": ("%@ がリセットされました", "%@ has reset"),
+        "重置前用了 %d%%": ("リセット前は %d%% 使用", "%d%% had been used before the reset"),
+        "Codex 的额度重置次数快到期了": ("Codex のリセットがまもなく期限切れ", "A Codex reset is about to expire"),
+        "有 1 次重置将在 %@ 到期，用不掉就作废": ("リセット 1 回分が %@ に期限切れになります。使わないと失効します", "One reset expires %@; it's lost if unused"),
         "用得比时间快：已用的比例超过了这个周期已经过去的比例": ("時間の進みより速いペース：使用した割合がこの期間の経過割合を上回っています", "Ahead of pace: you've used more of this limit than the share of the period that has passed"),
         "预计 %@ 用完": ("%@ に使い切る見込み", "runs out %@"),
         "样式": ("スタイル", "Style"),
@@ -235,7 +255,7 @@ enum I18n {
         "开机启动、外观、刷新频率和数据来源": ("ログイン時の起動、外観、更新頻度、データソース", "Launch at login, appearance, refresh and data sources"),
         "用量统计只读取新写入的日志，刷新很快": ("使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります", "Usage statistics only read newly written logs, so refreshing is quick"),
         "向 Anthropic 和 OpenAI 查询剩余额度": ("Anthropic と OpenAI に残りの上限を問い合わせます", "Asks Anthropic and OpenAI for remaining limits"),
-        "读取本机的会话记录": ("この Mac のセッション記録を読みます", "Reads this Mac's session logs"),
+        "读取本机和远程机器的会话记录": ("この Mac とリモートマシンのセッション記録を読み込みます", "Reads session logs on this Mac and remote machines"),
         "菜单栏文字": ("メニューバーの文字", "Menu Bar Text"),
         "显示的额度": ("表示する上限", "Limit Shown"),
         "都显示": ("両方", "Both"),
@@ -249,8 +269,6 @@ enum I18n {
         "所有版本": ("すべてのリリース", "All Releases"),
         "反馈问题": ("問題を報告", "Report an Issue"),
         "用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询": ("この Mac の Claude Code と Codex のログイン情報を使い、Anthropic と OpenAI の使用量 API に問い合わせます", "Uses this Mac's Claude Code and Codex logins to ask Anthropic's and OpenAI's usage endpoints"),
-        "只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次": ("この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）だけを読み、コストは models.dev の API 価格で推定します。価格は 1 日 1 回更新します", "Reads only this Mac's session logs (~/.claude/projects and ~/.codex/sessions); cost is estimated from models.dev API prices, refreshed daily"),
-        "所有数据只在这台 Mac 和上述官方服务之间传输，不经过其他服务器": ("データはこの Mac と上記の公式サービスの間だけでやり取りされ、他のサーバーは経由しません", "Data only travels between this Mac and the official services above, never through other servers"),
         "卡片": ("カード", "Cards"),
         "额度卡片": ("上限カード", "Limits Card"),
         "用量卡片": ("使用量カード", "Usage Card"),
@@ -353,7 +371,6 @@ enum I18n {
         "来源": ("取得元", "Source"),
         "Claude Code 登录（钥匙串）": ("Claude Code のログイン（キーチェーン）", "Claude Code login (Keychain)"),
         "说明": ("説明", "Notes"),
-        "额度：用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询。\n\n用量统计：只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次。\n\n所有数据只在这台 Mac 和上述官方服务之间传输。": ("上限：この Mac の Claude Code と Codex のログイン情報を使って、Anthropic と OpenAI の使用量 API に問い合わせます。\n\n使用量の統計：この Mac のセッション記録（~/.claude/projects と ~/.codex/sessions）だけを読み取り、コストは models.dev の API 価格で推定します。価格は 1 日 1 回更新されます。\n\nデータはこの Mac と上記の公式サービスの間でのみやり取りされます。", "Limits: queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this Mac.\n\nUsage statistics: read only from local session logs (~/.claude/projects and ~/.codex/sessions); cost is estimated from models.dev API prices, refreshed once a day.\n\nData only travels between this Mac and those official services."),
         "主题色": ("テーマカラー", "Theme Color"),
         "外观": ("外観", "Appearance"),
         "自动": ("自動", "Auto"),
@@ -884,14 +901,22 @@ struct GeneralSettings: View {
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @AppStorage(LogReader.hostsKey) var remoteHosts = ""
     @State var newHost = ""
+    @AppStorage(Notifier.thresholdKey) var notifyThreshold = 0
+    @AppStorage(Notifier.runOutKey) var notifyRunOut = false
+    @AppStorage(Notifier.resetKey) var notifyReset = false
+    @AppStorage(Notifier.creditsKey) var notifyCredits = false
+    @State var notifyAllowed = true
     @State var launchAtLogin = LoginItem.status == .enabled
     @State var needsApproval = LoginItem.status == .requiresApproval
 
     var body: some View {
         SettingsScroll(.general, L("开机启动、外观、刷新频率和数据来源")) {
-            Grid(alignment: .topLeading, horizontalSpacing: 24, verticalSpacing: 26) {
-                GridRow(alignment: .top) { basic; refresh }
-                GridRow(alignment: .top) { usage; sources }
+            // 两列各自往下排（不按行对齐，免得短的一组下面空一大块）
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 26) { basic; notifications; usage }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                VStack(alignment: .leading, spacing: 26) { refresh; sources }
+                    .frame(maxWidth: .infinity, alignment: .top)
             }
         }
     }
@@ -952,13 +977,46 @@ struct GeneralSettings: View {
                 .labelsHidden().fixedSize()
             }
             Divider()
-            SettingsRow(L("用量统计"), detail: L("读取本机的会话记录")) {
+            SettingsRow(L("用量统计"), detail: L("读取本机和远程机器的会话记录")) {
                 Picker("", selection: $statsRefreshMinutes) {
                     ForEach([1, 2, 5, 10, 15, 30, 60], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                 }
                 .labelsHidden().fixedSize()
             }
         }
+    }
+
+    var notifications: some View {
+        SettingsGroup(L("通知"), footer: notifyAllowed ? nil : L("通知没有打开：请在 系统设置 → 通知 → UsageBar 中允许")) {
+            SettingsRow(L("用量达到")) {
+                Picker("", selection: asking($notifyThreshold)) {
+                    Text(L("不提醒")).tag(0)
+                    ForEach([80, 90, 95], id: \.self) { Text("\($0)%").tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            Divider()
+            SettingsRow(L("预计在重置前用完"), detail: L("用了三成以上、用得比时间快时")) { SwitchControl(isOn: asking($notifyRunOut)) }
+            Divider()
+            SettingsRow(L("额度重置后"), detail: L("之前用了一半以上时")) { SwitchControl(isOn: asking($notifyReset)) }
+            Divider()
+            SettingsRow(L("Codex 重置次数快到期"), detail: L("到期前 24 小时")) { SwitchControl(isOn: asking($notifyCredits)) }
+        }
+        .task {
+            let ok = await Notifier.authorized()
+            notifyAllowed = ok || !Notifier.anyEnabled
+        }
+    }
+
+    /// 打开某项通知时顺便请求通知权限，并更新「没打开」的提示
+    func asking<T>(_ b: Binding<T>) -> Binding<T> {
+        Binding(get: { b.wrappedValue }, set: { v in
+            b.wrappedValue = v
+            Task {
+                let ok = await Notifier.requestPermission()
+                await MainActor.run { notifyAllowed = ok || !Notifier.anyEnabled }
+            }
+        })
     }
 
     var usage: some View {
@@ -975,7 +1033,7 @@ struct GeneralSettings: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 6)
             }
             Divider()
-            SettingsRow(L("本机会话记录")) {
+            SettingsRow(L("会话记录")) {
                 Text(stats.all.last.map { L("%d 条请求，最早 %@", stats.all.count, shortDate($0.time)) } ?? L("正在读取本机会话记录…"))
                     .foregroundStyle(.secondary)
             }
@@ -1471,9 +1529,9 @@ struct AboutSettings: View {
                                     L("用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询"))
                             Divider().padding(.leading, 54)
                             infoRow("chart.bar.xaxis", L("用量统计"),
-                                    L("只读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），成本按 models.dev 的 API 价格估算，价格每天更新一次"))
+                                    L("读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）；成本按 models.dev 的 API 价格估算，价格每天更新一次"))
                             Divider().padding(.leading, 54)
-                            infoRow("lock.shield", L("隐私"), L("所有数据只在这台 Mac 和上述官方服务之间传输，不经过其他服务器"))
+                            infoRow("lock.shield", L("隐私"), L("所有数据只在这台 Mac、你添加的远程机器和上述官方服务之间传输，不经过其他服务器"))
                         }
                         .modifier(Panel())
                     }
@@ -2268,6 +2326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--enable-login-item") { LoginItem.set(true) }
         lastLang = I18n.lang
         item.button?.title = "Cc …  Cx …"
+        UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
+        if Notifier.anyEnabled { Task { await Notifier.requestPermission() } }
         model.onRefresh = { [weak self] in self?.refresh() }
         model.onHide = { [weak self] in self?.toggleCard() }
         model.onOpen = { [weak self] in self?.openApp() }
@@ -2325,6 +2385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.updateTitle()
                 self.rebuildMenu()
+                Notifier.check(r)
             }
         }
     }
