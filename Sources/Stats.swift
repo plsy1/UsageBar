@@ -25,6 +25,7 @@ struct UsageRecord: Identifiable, Codable {
     var cacheWrite1h = 0  // cacheWrite 里属于 1 小时缓存的部分（Claude 才有），单价是输入的 2 倍
     var cost: Double?
     var host: String?      // 从哪台远程机器读来的（SSH）；本机的为空
+    var project: String?   // 会话的工作目录（日志里的 cwd）
     var duration: Double?  // 估算的总耗时（秒）
     var firstToken: Double?  // 估算的首字时间（秒）：第一段内容写入日志的时间
     var status = 200       // 失败的请求（Claude Code 会记下来）：429、401 等
@@ -155,6 +156,7 @@ enum LogReader {
     }
     struct CodexState: Codable {
         var model = "codex"
+        var cwd: String?
         var lastTotal = -1
         var inputAt: Date?, start: Date?, first: Date?, end: Date?
     }
@@ -163,7 +165,7 @@ enum LogReader {
         var files: [String: Entry]
     }
     /// 解析规则改了就加一，旧缓存作废
-    static let cacheVersion = 3
+    static let cacheVersion = 4
     static var diskURL: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("local.usagebar/records.plist")
@@ -341,6 +343,7 @@ enum LogReader {
                 guard o["isApiErrorMessage"] as? Bool == true else { continue }
                 var r = UsageRecord(id: id, time: ts, source: .claude, model: model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0)
                 r.status = claudeStatus(o)
+                r.project = o["cwd"] as? String
                 r.duration = span(sentAt, ts)
                 index[id] = out.count
                 out.append(r)
@@ -354,6 +357,7 @@ enum LogReader {
             r.cacheWrite1h = min(r.cacheWrite, (u["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"] as? Int ?? 0)
             r.duration = span(sentAt, ts)
             r.firstToken = r.duration
+            r.project = o["cwd"] as? String
             index[id] = out.count
             out.append(r)
         }
@@ -370,11 +374,11 @@ enum LogReader {
     static func parseCodex(_ data: Data.SubSequence, _ state: inout CodexState, _ out: inout [UsageRecord]) {
         let parseKeys = [Data("\"token_count\"".utf8), Data("\"turn_context\"".utf8)]
         let outputs: Set<String> = ["reasoning", "message", "function_call", "custom_tool_call", "web_search_call", "local_shell_call"]
-        var model = state.model, lastTotal = state.lastTotal
+        var model = state.model, lastTotal = state.lastTotal, cwd = state.cwd
         // 耗时：一次回复从「最近一次输入」（用户消息、工具结果）开始，到它最后一项内容写入为止。
         // token_count 要等工具执行完才写，不能当结束时间
         var inputAt = state.inputAt, start = state.start, first = state.first, end = state.end
-        defer { state = CodexState(model: model, lastTotal: lastTotal, inputAt: inputAt, start: start, first: first, end: end) }
+        defer { state = CodexState(model: model, cwd: cwd, lastTotal: lastTotal, inputAt: inputAt, start: start, first: first, end: end) }
         for line in data.split(separator: UInt8(ascii: "\n")) {
             // turn_context 的 payload 第一个字段不是 type，取不到类型，单独认
             let kind = payloadType(in: line) ?? ""
@@ -395,7 +399,11 @@ enum LogReader {
             }
             guard let o = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
                   let p = o["payload"] as? [String: Any] else { continue }
-            if o["type"] as? String == "turn_context" { model = p["model"] as? String ?? model; continue }
+            if o["type"] as? String == "turn_context" {
+                model = p["model"] as? String ?? model
+                cwd = p["cwd"] as? String ?? cwd
+                continue
+            }
             guard p["type"] as? String == "token_count", let info = p["info"] as? [String: Any],
                   let last = info["last_token_usage"] as? [String: Any],
                   let total = (info["total_token_usage"] as? [String: Any])?["total_tokens"] as? Int,
@@ -409,6 +417,7 @@ enum LogReader {
                                 cacheRead: cached, cacheWrite: last["cache_write_input_tokens"] as? Int ?? 0)
             if let end { r.duration = span(start, end) }
             if let first { r.firstToken = span(start, first) }
+            r.project = cwd
             start = nil; first = nil; end = nil
             out.append(r)
         }
@@ -679,6 +688,9 @@ struct ModelRow: Identifiable {
     var firstToken: Double?  // 首字的中位数
     var successRate: Double { Double(s.requests) / Double(max(1, s.requests + failed)) }
     var machine: String?     // 按应用分行时 Codex 的机器（"" 是本机）
+    var title: String?       // 按项目：显示的名字（目录名，远程的带上机器名）
+    var detail: String?      // 按项目：完整路径（鼠标悬停时显示）
+    var apps: String?        // 按项目：用到的应用（一个项目可能 Claude、Codex 都用）
 }
 
 /// 中位数：首字偶尔会因为等确认、长时间思考到几分钟，平均数会被这几次拉高
@@ -844,6 +856,8 @@ struct StatsView: View {
     @AppStorage("statsModelColumnOrder") var modelColumnOrder = ""
     @AppStorage("statsModelColumnWidths") var modelColumnWidths = ""
     @AppStorage("statsAppColumnOrder") var appColumnOrder = ""
+    @AppStorage("statsProjectColumnOrder") var projectColumnOrder = ""
+    @AppStorage("statsProjectColumnWidths") var projectColumnWidths = ""
     @AppStorage("statsAppColumnWidths") var appColumnWidths = ""
     /// 正在拖的分隔线：拖动中的宽度先放这里，松手再存（键是「表.列」）
     @State var liveWidths: [String: CGFloat] = [:]
@@ -1263,6 +1277,25 @@ struct StatsView: View {
     func modelRows(_ rows: [UsageRecord]) -> [ModelRow] { grouped(rows) { "\($0.source.rawValue)|\($0.model)" } }
     /// 按应用（CC Switch 叫「供应商」）：Claude Code、Codex 各一行
     /// 有远程机器的记录时，Codex 按机器分行
+    /// 按项目：按会话的工作目录分组；远程机器上的同名目录分开算
+    func projectRows(_ rows: [UsageRecord]) -> [ModelRow] {
+        let key = { (r: UsageRecord) in (r.host ?? "") + "|" + (r.project ?? "") }
+        var apps: [String: Set<String>] = [:]
+        for r in rows where !r.failed { apps[key(r), default: []].insert(r.source.rawValue) }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return grouped(rows, by: key).map { m in
+            var m = m
+            let parts = m.id.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let host = parts[0], path = parts.count > 1 ? parts[1] : ""
+            // 显示完整路径：只写最后一级的话，worktree 这类目录会有一堆同名的
+            let shown = host.isEmpty && path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+            m.title = (path.isEmpty ? L("未知目录") : shown) + (host.isEmpty ? "" : " · " + host)
+            m.detail = path.isEmpty ? nil : path
+            m.apps = apps[m.id]?.sorted().joined(separator: ", ")
+            return m
+        }
+    }
+
     func appRows(_ rows: [UsageRecord]) -> [ModelRow] {
         let remote = rows.contains { $0.host != nil }
         return grouped(rows) { r in r.source == .codex && remote ? "Codex|" + (r.host ?? "") : r.source.rawValue }
@@ -1292,11 +1325,12 @@ struct StatsView: View {
 
     /// 下方的明细面板：顶部是带数量的下划线标签，下面是表格
     func tables(_ rows: [UsageRecord]) -> some View {
-        let models = modelRows(rows), apps = appRows(rows)
+        let models = modelRows(rows), apps = appRows(rows), projects = projectRows(rows)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 26) {
                 tabButton(L("按应用"), count: apps.count, tag: "apps")
                 tabButton(L("按模型"), count: models.count, tag: "models")
+                tabButton(L("按项目"), count: projects.count, tag: "projects")
                 tabButton(L("请求明细"), count: rows.count, tag: "log")
                 Spacer()
                 if tab == "log" {
@@ -1304,7 +1338,7 @@ struct StatsView: View {
                     Divider().frame(height: 16)
                     columnMenu
                 } else {
-                    layoutMenu(tab == "apps" ? appLayout : modelLayout)
+                    layoutMenu(tab == "apps" ? appLayout : tab == "projects" ? projectLayout : modelLayout)
                 }
             }
             .padding(.horizontal, 20).padding(.top, 12)
@@ -1312,6 +1346,7 @@ struct StatsView: View {
             switch tab {
             case "apps": appTable(apps)
             case "models": modelTable(models)
+            case "projects": groupTable(projects, projectLayout)
             default: logTable(rows)
             }
         }
@@ -1345,6 +1380,7 @@ struct StatsView: View {
     var logLayout: ColumnLayout { ColumnLayout(table: "log", order: $columnOrder, widths: $columnWidths) }
     var modelLayout: ColumnLayout { ColumnLayout(table: "models", order: $modelColumnOrder, widths: $modelColumnWidths) }
     var appLayout: ColumnLayout { ColumnLayout(table: "apps", order: $appColumnOrder, widths: $appColumnWidths) }
+    var projectLayout: ColumnLayout { ColumnLayout(table: "projects", order: $projectColumnOrder, widths: $projectColumnWidths) }
 
     /// 按模型、按应用：各项 token 在上面汇总的「更多指标」里，这里和 CC Switch 一样只列总数
     func groupTable(_ rows: [ModelRow], _ l: ColumnLayout) -> some View {
@@ -1353,7 +1389,9 @@ struct StatsView: View {
         let saved: [GroupColumn: CGFloat] = savedWidths(l)
         let m = metrics(cols, l, saved)
         let table = VStack(spacing: 0) {
-            columnHeader(cols, l, saved: saved, flex: m.flex) { c in c == .name ? L(apps ? "应用" : "模型") : c.title }
+            columnHeader(cols, l, saved: saved, flex: m.flex) { c in
+                c == .name ? (apps ? L("应用") : l.table == "projects" ? L("项目") : L("模型")) : c.title
+            }
             if rows.isEmpty { emptyRow() }
             ForEach(rows) { row in
                 Divider()
@@ -1649,11 +1687,13 @@ enum GroupColumn: String, CaseIterable, StatsColumn {
     @ViewBuilder func cell(_ m: ModelRow, appName: Bool) -> some View {
         switch self {
         case .name:
-            if appName {
+            if let t = m.title {
+                Text(t).truncationMode(.middle).help(m.detail ?? t)
+            } else if appName {
                 Text((m.source == .claude ? "Claude Code" : "Codex") + (m.machine.map { " · " + ($0.isEmpty ? L("本机") : $0) } ?? ""))
             }
             else { Text(m.model).font(.system(.body, design: .monospaced)) }
-        case .app: Text(m.source.rawValue)
+        case .app: Text(m.apps ?? m.source.rawValue)
         case .requests: Text(m.s.requests.formatted())
         case .cost: Text(m.priced ? money(m.s.cost) : "—")
         case .tokens: Text(abbrev(m.s.tokens))
@@ -1761,6 +1801,7 @@ struct RequestDetail: View {
                         line(L("时间"), f.string(from: r.time))
                         line(L("应用"), r.host.map { "\(r.source.rawValue) · \($0)" } ?? r.source.rawValue)
                         line(L("模型"), r.model, mono: true)
+                        if let p = r.project { line(L("项目"), p, mono: true) }
                         line(L("状态码"), r.failed ? "\(r.status) · " + L("请求失败") : "\(r.status)")
                         line(L("请求 ID"), r.id, mono: true)
                     }
