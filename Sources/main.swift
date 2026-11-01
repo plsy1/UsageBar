@@ -1012,11 +1012,14 @@ struct GeneralSettings: View {
     }
 
     /// 一家一行：名字和读取的地方，右边是连接状态
+    /// 右边只放一项（套餐），和远程机器的行一样；出错的原因、本地缓存这些写在左边小字里
     func provider(_ name: String, source: String) -> some View {
-        SettingsRow(name, detail: source) {
+        let u = model.results.first { $0.name == name }
+        let detail = u?.error ?? (u?.note != nil ? source + " · " + L("本地缓存") : source)
+        return SettingsRow(name, detail: detail, warning: u?.error != nil) {
             HStack(spacing: 8) {
-                Text(status(model.results.first { $0.name == name }))
-                    .multilineTextAlignment(.trailing).foregroundStyle(.secondary)
+                Text(u == nil ? L("正在获取用量…") : u?.error != nil ? "—" : u?.plan ?? L("已连接"))
+                    .foregroundStyle(.secondary)
                 // 有远程机器时，给它们的「移除」按钮留出同样的位置，状态文字才对得齐
                 if !hosts.isEmpty { Color.clear.frame(width: Self.removeWidth, height: 1) }
             }
@@ -1024,15 +1027,6 @@ struct GeneralSettings: View {
     }
 
     static let removeWidth: CGFloat = 18
-
-    func status(_ u: ProviderUsage?) -> String {
-        guard let u else { return L("正在获取用量…") }
-        if let e = u.error { return e }
-        var parts = [L("已连接")]
-        if let p = u.plan { parts.append(p) }
-        if u.note != nil { parts.append(L("本地缓存")) }
-        return parts.joined(separator: " · ")
-    }
 
     func shortDate(_ d: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
