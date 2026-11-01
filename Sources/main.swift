@@ -153,6 +153,12 @@ enum I18n {
         "更新失败，继续使用旧价格": ("更新に失敗しました。以前の価格を使用中", "Update failed, using cached prices"),
         "%d 条请求，最早 %@": ("%d 件、最古 %@", "%d requests since %@"),
         "布局": ("レイアウト", "Layout"),
+        "提前重置（用了重置次数）时，或之前用了一半以上时": ("予定より早くリセットされたとき（リセットを使ったとき）、またはそれまでに半分以上使っていたとき", "When reset early (a reset was used), or after over half had been used"),
+        "%@ 已提前重置": ("%@ が予定より早くリセットされました", "%@ was reset early"),
+        "Codex 额度重置次数": ("Codex の上限リセット", "Codex Resets"),
+        "新获得时，以及到期前 24 小时": ("新たにもらったとき、期限の 24 時間前", "When you get one, and 24 hours before one expires"),
+        "Codex 获得了 1 次额度重置": ("Codex の上限リセットを 1 回もらいました", "Codex gave you a limit reset"),
+        "Codex 获得了 %d 次额度重置": ("Codex の上限リセットを %d 回もらいました", "Codex gave you %d limit resets"),
         "每日用量": ("日ごとの使用量", "Daily Usage"),
         "少": ("少", "Less"),
         "多": ("多", "More"),
@@ -170,9 +176,6 @@ enum I18n {
         "预计在重置前用完": ("リセット前に使い切りそうなとき", "On Pace to Run Out"),
         "用了三成以上、用得比时间快时": ("30% 以上使い、時間より速いペースのとき", "Over 30% used and ahead of pace"),
         "额度重置后": ("上限がリセットされたら", "After a Reset"),
-        "之前用了一半以上时": ("それまでに半分以上使っていたとき", "When over half had been used"),
-        "Codex 重置次数快到期": ("Codex のリセットの期限が近いとき", "Codex Reset Expiring"),
-        "到期前 24 小时": ("期限の 24 時間前", "24 hours before it expires"),
         "%@ 已用 %d%%": ("%@ を %d%% 使用", "%@ is %d%% used"),
         "%@ 用得比时间快": ("%@ が速いペースです", "%@ is ahead of pace"),
         "按现在的速度预计 %@ 用完，%@": ("このペースだと %@ に使い切ります。%@", "At this pace it runs out %@; %@"),
@@ -1005,9 +1008,9 @@ struct GeneralSettings: View {
             Divider()
             SettingsRow(L("预计在重置前用完"), detail: L("用了三成以上、用得比时间快时")) { SwitchControl(isOn: asking($notifyRunOut)) }
             Divider()
-            SettingsRow(L("额度重置后"), detail: L("之前用了一半以上时")) { SwitchControl(isOn: asking($notifyReset)) }
+            SettingsRow(L("额度重置后"), detail: L("提前重置（用了重置次数）时，或之前用了一半以上时")) { SwitchControl(isOn: asking($notifyReset)) }
             Divider()
-            SettingsRow(L("Codex 重置次数快到期"), detail: L("到期前 24 小时")) { SwitchControl(isOn: asking($notifyCredits)) }
+            SettingsRow(L("Codex 额度重置次数"), detail: L("新获得时，以及到期前 24 小时")) { SwitchControl(isOn: asking($notifyCredits)) }
         }
         .task {
             let ok = await Notifier.authorized()

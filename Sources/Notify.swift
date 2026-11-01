@@ -12,6 +12,8 @@ enum Notifier {
     static let resetKey = "notifyReset"
     static let creditsKey = "notifyCredits"
     private static let sentKey = "notifySent"
+    /// 上次看到的 Codex 重置次数：变多了就是新拿到了
+    private static let creditCountKey = "notifyCreditCount"
 
     static var anyEnabled: Bool {
         let d = UserDefaults.standard
@@ -66,12 +68,27 @@ enum Notifier {
                     once("runout|\(id)|\(cycle)", L("%@ 用得比时间快", name),
                          L("按现在的速度预计 %@ 用完，%@", shortTime(t), resetText(w.resetsAt)))
                 }
-                // 重置时间往后跳了、用量也降下来了，就是重置了；之前用了一半以上才值得说
+                // 重置时间往后跳了、用量也降下来了，就是重置了。
+                // 还没到原定时间就重置的（用了 Codex 的重置次数）总要提醒；按时重置的，之前用了一半以上才值得说
                 if d.bool(forKey: resetKey), let old = last[id], let o = old.resetsAt, let n = w.resetsAt,
-                   n.timeIntervalSince(o) > 60, w.usedPercent < old.usedPercent, old.usedPercent >= 50 {
-                    once("reset|\(id)|\(cycle)", L("%@ 已重置", name), L("重置前用了 %d%%", Int(old.usedPercent.rounded())))
+                   n.timeIntervalSince(o) > 60, w.usedPercent < old.usedPercent {
+                    let early = o.timeIntervalSinceNow > 60
+                    if early || old.usedPercent >= 50 {
+                        once("reset|\(id)|\(cycle)", early ? L("%@ 已提前重置", name) : L("%@ 已重置", name),
+                             L("重置前用了 %d%%", Int(old.usedPercent.rounded())))
+                    }
                 }
                 last[id] = w
+            }
+            // 新拿到重置次数。只看接口直接查到的（退回本地缓存时不知道次数）；第一次只记下不提醒
+            if u.name == "Codex", u.note == nil, canSend {
+                let count = u.resetCredits?.count ?? 0
+                if d.bool(forKey: creditsKey), let old = d.object(forKey: creditCountKey) as? Int, count > old, let rc = u.resetCredits {
+                    let gained = count - old
+                    send("credit-gain|\(Date().timeIntervalSince1970)",
+                         gained == 1 ? L("Codex 获得了 1 次额度重置") : L("Codex 获得了 %d 次额度重置", gained), rc.text)
+                }
+                d.set(count, forKey: creditCountKey)
             }
             if d.bool(forKey: creditsKey), let rc = u.resetCredits {
                 for e in rc.expiries where e > Date() && e.timeIntervalSinceNow < 86400 {
