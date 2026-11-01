@@ -1023,10 +1023,6 @@ struct StatsView: View {
                     else if shown.count > 1 { set(hidden.union([m])) }  // 至少留一台
                 } label: { check(!hidden.contains(m), name(m)) }
             }
-            Divider()
-            ForEach(all, id: \.self) { m in
-                Button(L("只看 %@", name(m))) { set(Set(all).subtracting([m])) }
-            }
         } label: {
             Label(shown.count == all.count ? L("全部机器") : shown.count == 1 ? name(shown[0]) : L("%d 台机器", shown.count),
                   systemImage: "desktopcomputer")

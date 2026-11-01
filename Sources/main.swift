@@ -196,7 +196,6 @@ enum I18n {
         "来自 OpenAI 账号统计：所有设备合计，只有总 tokens，按 UTC 日，通常晚 1–2 天出数。和上面按日志记录算的数据分开，不参与成本估算。": ("OpenAI アカウントの統計：全デバイスの合計で、総 tokens のみ、UTC 日単位、通常 1〜2 日遅れて反映されます。上のログ記録に基づく集計とは別で、コスト推定には使いません。", "From your OpenAI account statistics: all devices combined, total tokens only, by UTC day, usually 1–2 days behind. Kept separate from the log-based figures above and not used for cost estimates."),
         "本机": ("この Mac", "This Mac"),
         "全部机器": ("すべてのマシン", "All Machines"),
-        "只看 %@": ("%@ のみ", "Only %@"),
         "%d 台机器": ("%d 台のマシン", "%d Machines"),
         "Codex 记录来自哪几台机器": ("Codex の記録をどのマシンから表示するか", "Which machines' Codex logs to show"),
         "所选范围里最近几天服务端还没出数。": ("選択した期間の直近数日はまだサーバーに反映されていません。", "The most recent days in this range aren't on the server yet."),
