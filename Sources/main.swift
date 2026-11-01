@@ -265,6 +265,8 @@ enum I18n {
         "大数字": ("大きな数字", "Big Numbers"),
         "圆环": ("リング", "Rings"),
         "细条": ("細いバー", "Slim Bars"),
+        "标准": ("標準", "Standard"),
+        "排列": ("並べ方", "Arrangement"),
         "走势图": ("推移グラフ", "Trend Chart"),
         "占比条": ("割合バー", "Share Bar"),
         "已用": ("使用済み", "Used"),
@@ -840,7 +842,8 @@ enum Pref {
     static let menuStyle = "menuStyle"         // inline 一行 / stacked 名称在上、数值在下两行
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
-    static let cardLayout = "cardLayout"       // horizontal / vertical / compact / big（大数字）/ rings（圆环）/ slim（细条）
+    static let cardLayout = "cardLayout"       // 排列：horizontal（左右）/ vertical（上下）
+    static let cardStyle = "cardStyle"         // 样式：standard / compact / big（大数字）/ rings（圆环）/ slim（细条）
     static let cardLevelColors = "cardLevelColors"  // 额度卡片按余量着色
     static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
     static let appearance = "appearance"       // auto / light / dark
@@ -861,6 +864,7 @@ enum Pref {
     static let statsCardRange = "statsCardRange"  // today / cycle / 7d
     // 用量卡片自己的布局和外观（和额度卡片分开设置）
     static let statsCardLayout = "statsCardLayout"
+    static let statsCardStyle = "statsCardStyle"  // standard / compact / big（大数字）/ trend（走势图）/ share（占比条）
     static let statsCardScale = "statsCardScale"
     static let statsCardBackground = "statsCardBackground"
     static let statsCardText = "statsCardText"
@@ -907,6 +911,14 @@ enum Pref {
         if saved[resetStyle] == nil, saved[showReset] as? Bool == false { d.set("hidden", forKey: resetStyle) }
         // 去掉了「最紧的那个」，选过它的改成都显示
         if d.string(forKey: menuLimit) == "tightest" { d.set("both", forKey: menuLimit) }
+        // 以前「布局」里混着样式（紧凑、大数字……）：拆成「样式」和「排列」两项
+        for (layoutKey, styleKey) in [(cardLayout, cardStyle), (statsCardLayout, statsCardStyle)] {
+            let l = d.string(forKey: layoutKey) ?? "horizontal"
+            if d.object(forKey: styleKey) == nil, l != "horizontal", l != "vertical" {
+                d.set(l, forKey: styleKey)
+                d.set("horizontal", forKey: layoutKey)
+            }
+        }
     }
     /// 菜单栏显示这一家吗
     static func menuVisible(_ name: String) -> Bool {
@@ -1582,12 +1594,12 @@ struct CardSettings: View {
 /// 一张卡片的各项设置存在哪些键下
 struct CardKeys {
     let stats: Bool  // 用量卡片；否则是额度卡片
-    let show, onTop, claude, codex, layout, scale, background, text, opacity, bgOpacity: String
+    let show, onTop, claude, codex, style, layout, scale, background, text, opacity, bgOpacity: String
     static let limits = CardKeys(stats: false, show: Pref.showCard, onTop: Pref.cardOnTop, claude: Pref.cardShowClaude, codex: Pref.cardShowCodex,
-                                 layout: Pref.cardLayout, scale: Pref.scale, background: Pref.background, text: Pref.textColor,
+                                 style: Pref.cardStyle, layout: Pref.cardLayout, scale: Pref.scale, background: Pref.background, text: Pref.textColor,
                                  opacity: Pref.opacity, bgOpacity: Pref.bgOpacity)
     static let stats = CardKeys(stats: true, show: Pref.showStatsCard, onTop: Pref.statsCardOnTop, claude: Pref.statsCardShowClaude, codex: Pref.statsCardShowCodex,
-                                layout: Pref.statsCardLayout, scale: Pref.statsCardScale, background: Pref.statsCardBackground,
+                                style: Pref.statsCardStyle, layout: Pref.statsCardLayout, scale: Pref.statsCardScale, background: Pref.statsCardBackground,
                                 text: Pref.statsCardText, opacity: Pref.statsCardOpacity, bgOpacity: Pref.statsCardBgOpacity)
 }
 
@@ -1597,6 +1609,7 @@ struct CardForm: View {
     @AppStorage var onTop: Bool
     @AppStorage var showClaude: Bool
     @AppStorage var showCodex: Bool
+    @AppStorage var style: String
     @AppStorage var layout: String
     @AppStorage var scale: Double
     @AppStorage var background: String
@@ -1614,6 +1627,7 @@ struct CardForm: View {
         _onTop = AppStorage(wrappedValue: false, keys.onTop)
         _showClaude = AppStorage(wrappedValue: true, keys.claude)
         _showCodex = AppStorage(wrappedValue: true, keys.codex)
+        _style = AppStorage(wrappedValue: "standard", keys.style)
         _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
         _scale = AppStorage(wrappedValue: 1.0, keys.scale)
         _background = AppStorage(wrappedValue: "none", keys.background)
@@ -1667,32 +1681,32 @@ struct CardForm: View {
                 SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }.disabled(!show)
             }
             SettingsGroup(L("布局")) {
-                SettingsRow(L("布局")) {
-                    if keys.stats {
-                        Picker("", selection: $layout) {
-                            Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
-                            Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
-                            Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
-                            Divider()
-                            Label(L("大数字"), systemImage: "textformat.size").tag("big")
+                SettingsRow(L("样式")) {
+                    // 样式：每家一块怎么画；紧凑、细条、占比条本身就是固定的形状
+                    Picker("", selection: $style) {
+                        Label(L("标准"), systemImage: "rectangle.grid.1x2").tag("standard")
+                        Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
+                        Label(L("大数字"), systemImage: "textformat.size").tag("big")
+                        if keys.stats {
                             Label(L("走势图"), systemImage: "chart.bar.xaxis").tag("trend")
                             Label(L("占比条"), systemImage: "chart.bar.doc.horizontal").tag("share")
-                        }
-                        .labelsHidden().fixedSize()
-                    } else {
-                        // 额度卡片的样式多，用菜单
-                        Picker("", selection: $layout) {
-                            Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
-                            Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
-                            Label(L("紧凑"), systemImage: "list.bullet").tag("compact")
-                            Divider()
-                            Label(L("大数字"), systemImage: "textformat.size").tag("big")
+                        } else {
                             Label(L("圆环"), systemImage: "circle.circle").tag("rings")
                             Label(L("细条"), systemImage: "chart.bar.doc.horizontal").tag("slim")
                         }
-                        .labelsHidden().fixedSize()
                     }
+                    .labelsHidden().fixedSize()
                 }
+                Divider()
+                // 排列：每家一块的样式才分左右、上下
+                SettingsRow(L("排列")) {
+                    Picker("", selection: $layout) {
+                        Label(L("左右"), systemImage: "rectangle.split.2x1").tag("horizontal")
+                        Label(L("上下"), systemImage: "rectangle.split.1x2").tag("vertical")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+                .disabled(!["standard", "big", "rings", "trend"].contains(style))
                 Divider()
                 SettingsRow(L("大小")) { PercentControl(value: $scale, range: 0.8...2.5, step: 0.1) }
             }
@@ -1735,6 +1749,7 @@ struct CardPreview: View {
     @ObservedObject var model: UsageModel
     @ObservedObject var stats: StatsStore
     @AppStorage var show: Bool
+    @AppStorage var style: String
     @AppStorage var layout: String
     @AppStorage var scale: Double
     @AppStorage var textColor: String
@@ -1744,6 +1759,7 @@ struct CardPreview: View {
         self.model = model
         self.stats = stats
         _show = AppStorage(wrappedValue: !keys.stats, keys.show)
+        _style = AppStorage(wrappedValue: "standard", keys.style)
         _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
         _scale = AppStorage(wrappedValue: 1.0, keys.scale)
         _textColor = AppStorage(wrappedValue: "white", keys.text)
@@ -1754,19 +1770,17 @@ struct CardPreview: View {
         let live = keys.stats ? model.statsCardSize : model.cardSize
         if show, live.width > 0 { return live }
         let base: CGSize
-        switch (keys.stats, layout) {
-        case (false, "vertical"): base = CGSize(width: 292, height: 295)
-        case (false, "compact"): base = CGSize(width: 273, height: 93)
-        case (false, "big"): base = CGSize(width: 472, height: 190)
-        case (false, "rings"): base = CGSize(width: 330, height: 175)
+        let v = layout == "vertical"
+        switch (keys.stats, style) {
+        case (_, "compact"): base = CGSize(width: keys.stats ? 330 : 273, height: 93)
         case (false, "slim"): base = CGSize(width: 300, height: 120)
-        case (false, _): base = CGSize(width: 476, height: 167)
-        case (true, "vertical"): base = CGSize(width: 292, height: 330)
-        case (true, "compact"): base = CGSize(width: 330, height: 93)
-        case (true, "big"): base = CGSize(width: 472, height: 170)
-        case (true, "trend"): base = CGSize(width: 252, height: 250)
         case (true, "share"): base = CGSize(width: 252, height: 160)
-        default: base = CGSize(width: 476, height: 180)
+        case (false, "big"): base = v ? CGSize(width: 252, height: 330) : CGSize(width: 472, height: 190)
+        case (false, "rings"): base = v ? CGSize(width: 180, height: 330) : CGSize(width: 330, height: 175)
+        case (true, "big"): base = v ? CGSize(width: 252, height: 300) : CGSize(width: 472, height: 170)
+        case (true, "trend"): base = v ? CGSize(width: 252, height: 250) : CGSize(width: 520, height: 140)
+        case (false, _): base = v ? CGSize(width: 292, height: 295) : CGSize(width: 476, height: 167)
+        default: base = v ? CGSize(width: 292, height: 330) : CGSize(width: 476, height: 180)
         }
         return CGSize(width: base.width * scale, height: base.height * scale)
     }
@@ -2290,6 +2304,7 @@ struct CardView: View {
     @AppStorage(Pref.cardShowCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
+    @AppStorage(Pref.cardStyle) var style = "standard"
     @AppStorage(Pref.cardLayout) var layout = "horizontal"
     @AppStorage(Pref.cardLevelColors) var levelColors = false
     @AppStorage(Pref.showCard) var visible = true
@@ -2303,33 +2318,28 @@ struct CardView: View {
         let _ = (language, displayMode)  // 切换语言或显示方式时重绘
         let white = textColor == "white"
         let shown = model.results.filter { $0.name == "Claude" ? showClaude : showCodex }
-        VStack(alignment: .leading, spacing: (layout == "compact" ? 10 : 14) * s) {
+        VStack(alignment: .leading, spacing: (style == "compact" ? 10 : 14) * s) {
             if model.results.isEmpty {
                 Text(L("正在获取用量…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             }
             Group {
-                switch layout {
-                case "vertical":
-                    VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.name, content: column) }
+                switch style {
                 case "compact":
                     // 网格：各行的同一列上下对齐
                     Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
                         ForEach(shown, id: \.name, content: compactRow)
                     }
-                case "big":
-                    HStack(alignment: .top, spacing: 26 * s) { ForEach(shown, id: \.name, content: bigBlock) }
-                case "rings":
-                    HStack(alignment: .top, spacing: 26 * s) { ForEach(shown, id: \.name, content: ringBlock) }
                 case "slim":
                     Grid(alignment: .leading, horizontalSpacing: 8 * s, verticalSpacing: 7 * s) {
                         ForEach(shown, id: \.name, content: slimRows)
                     }
-                default:
-                    HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.name, content: column) }
+                case "big": arranged(shown, bigBlock)
+                case "rings": arranged(shown, ringBlock)
+                default: arranged(shown, column)
                 }
             }
             .modifier(CardHeightSync(kind: "limits",
-                                     shape: visible && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
+                                     shape: visible && !shown.isEmpty ? "\(style)|\(layout)|\(scale)|\(shown.count)" : "",
                                      scale: s, model: model, report: report))
             if let t = model.lastUpdate {
                 Text(L("更新于 %@", t.formatted(date: .omitted, time: .shortened)))
@@ -2361,6 +2371,15 @@ struct CardView: View {
 }
 
 extension CardView {
+    /// 每家一块：左右排或上下排
+    @ViewBuilder func arranged<V: View>(_ items: [ProviderUsage], _ block: @escaping (ProviderUsage) -> V) -> some View {
+        if layout == "vertical" {
+            VStack(alignment: .leading, spacing: 20 * s) { ForEach(items, id: \.name, content: block) }
+        } else {
+            HStack(alignment: .top, spacing: 24 * s) { ForEach(items, id: \.name, content: block) }
+        }
+    }
+
     /// 一家一栏：名称、各额度的进度条和重置时间
     func column(_ u: ProviderUsage) -> some View {
         VStack(alignment: .leading, spacing: 8 * s) {

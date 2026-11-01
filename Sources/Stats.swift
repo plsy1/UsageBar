@@ -2229,6 +2229,7 @@ struct StatsCardView: View {
     @AppStorage(Pref.statsCardShowClaude) var showClaude = true
     @AppStorage(Pref.statsCardShowCodex) var showCodex = true
     @AppStorage(Pref.language) var language = "auto"
+    @AppStorage(Pref.statsCardStyle) var style = "standard"
     @AppStorage(Pref.statsCardLayout) var layout = "horizontal"
     @AppStorage(Pref.statsCardRange) var range = "today"
 
@@ -2256,32 +2257,26 @@ struct StatsCardView: View {
         let _ = language  // 切换语言时重绘
         let white = textColor == "white"
         let shown = [Source.claude, .codex].filter { $0 == .claude ? showClaude : showCodex }
-        VStack(alignment: .leading, spacing: (layout == "compact" ? 10 : 14) * s) {
+        VStack(alignment: .leading, spacing: (style == "compact" ? 10 : 14) * s) {
             if stats.updated == nil {
                 Text(L("正在读取本机会话记录…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             } else {
                 Group {
-                    switch layout {
-                    case "vertical":
-                        VStack(alignment: .leading, spacing: 20 * s) { ForEach(shown, id: \.self, content: column) }
+                    switch style {
                     case "compact":
                         // 网格：各行的同一列上下对齐
                         Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
                             ForEach(shown, id: \.self, content: compactRow)
                         }
-                    case "big":
-                        HStack(alignment: .top, spacing: 26 * s) { ForEach(shown, id: \.self, content: bigBlock) }
-                    case "trend":
-                        VStack(alignment: .leading, spacing: 16 * s) { ForEach(shown, id: \.self, content: trendBlock) }
-                    case "share":
-                        shareBlock(shown)
-                    default:
-                        HStack(alignment: .top, spacing: 24 * s) { ForEach(shown, id: \.self, content: column) }
+                    case "share": shareBlock(shown)
+                    case "big": arranged(shown, bigBlock)
+                    case "trend": arranged(shown, trendBlock)
+                    default: arranged(shown, column)
                     }
                 }
                 // 和额度卡片布局、大小、家数一样时，对齐到较大的那张
                 .modifier(CardHeightSync(kind: "stats",
-                                         shape: visible && !shown.isEmpty ? "\(layout)|\(scale)|\(shown.count)" : "",
+                                         shape: visible && !shown.isEmpty ? "\(style)|\(layout)|\(scale)|\(shown.count)" : "",
                                          scale: s, model: model, report: report))
             }
             if let t = stats.updated {
@@ -2336,6 +2331,15 @@ struct StatsCardView: View {
             }
         }
         .frame(width: (layout == "vertical" ? CardWindow.wideColumn : CardWindow.column) * s, alignment: .topLeading)
+    }
+
+    /// 每家一块：左右排或上下排
+    @ViewBuilder func arranged<V: View>(_ items: [Source], _ block: @escaping (Source) -> V) -> some View {
+        if layout == "vertical" {
+            VStack(alignment: .leading, spacing: 20 * s) { ForEach(items, id: \.self, content: block) }
+        } else {
+            HStack(alignment: .top, spacing: 24 * s) { ForEach(items, id: \.self, content: block) }
+        }
     }
 
     // MARK: 大数字、走势图、占比条
