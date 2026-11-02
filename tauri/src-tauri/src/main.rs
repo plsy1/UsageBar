@@ -40,9 +40,10 @@ struct Settings {
     /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
     claude_limit_source: String,
     codex_limit_source: String,
-    /// 通知：用量达到多少时提醒（0 不提醒）、预计在重置前用完、额度重置后、Codex 额度重置次数
+    /// 通知：用量达到多少时提醒（0 不提醒）、预计在重置前用完、额度重置后（5 小时 / 每周）、Codex 额度重置次数
     notify_threshold: u32,
     notify_run_out: bool,
+    notify_reset_session: bool,
     notify_reset: bool,
     notify_credits: bool,
     /// 读 Codex 日志的远程机器（~/.ssh/config 里的名字或 user@host）
@@ -100,6 +101,7 @@ impl Default for Settings {
             codex_limit_source: String::new(),
             notify_threshold: 0,
             notify_run_out: false,
+            notify_reset_session: false,
             notify_reset: false,
             notify_credits: false,
             remote_hosts: vec![],
@@ -260,6 +262,10 @@ fn load_settings(app: &AppHandle) -> Settings {
                 *v = "api".into();
             }
         }
+    }
+    // 以前「额度重置后」只有一个开关：拆成 5 小时和每周两个，旧的那个两个都沿用
+    if raw.get("notify_reset_session").is_none() {
+        s.notify_reset_session = s.notify_reset;
     }
     // 旧版托盘和额度卡片共用一份「剩余 / 已用」和显示哪几家：卡片的先沿用
     if raw.get("card_display").is_none() {
@@ -479,6 +485,7 @@ async fn refresh(app: AppHandle) {
             let opts = notify::Options {
                 threshold: s.notify_threshold,
                 run_out: s.notify_run_out,
+                session_reset: s.notify_reset_session,
                 reset: s.notify_reset,
                 credits: s.notify_credits,
             };

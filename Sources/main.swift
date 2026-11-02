@@ -179,7 +179,7 @@ enum I18n {
         "%@ 的额度已重置": ("%@ の上限がリセットされました", "%@ limits have reset"),
         "%@（之前用了 %d%%）": ("%@（それまで %d%% 使用）", "%@ (was %d%% used)"),
         "、": ("、", ", "),
-        "提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时": ("予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき", "When reset early (an across-the-board reset or a reset you used), or after over half had been used"),
+        "提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时；之前没用过的不提醒": ("予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき。使っていなかったときは通知しません", "When reset early (an across-the-board reset or a reset you used), or after over half had been used; never when it was unused"),
         "Codex 额度重置次数": ("Codex の上限リセット", "Codex Resets"),
         "新获得时，以及到期前 24 小时": ("新たにもらったとき、期限の 24 時間前", "When you get one, and 24 hours before one expires"),
         "Codex 获得了 1 次额度重置": ("Codex の上限リセットを 1 回もらいました", "Codex gave you a limit reset"),
@@ -200,7 +200,8 @@ enum I18n {
         "不提醒": ("通知しない", "Off"),
         "预计在重置前用完": ("リセット前に使い切りそうなとき", "On Pace to Run Out"),
         "用了三成以上、用得比时间快时": ("30% 以上使い、時間より速いペースのとき", "Over 30% used and ahead of pace"),
-        "额度重置后": ("上限がリセットされたら", "After a Reset"),
+        "5 小时额度重置后": ("5 時間の上限がリセットされたら", "After a 5-Hour Reset"),
+        "每周额度重置后": ("週間の上限がリセットされたら", "After a Weekly Reset"),
         "%@ 已用 %d%%": ("%@ を %d%% 使用", "%@ is %d%% used"),
         "%@ 用得比时间快": ("%@ が速いペースです", "%@ is ahead of pace"),
         "按现在的速度预计 %@ 用完，%@": ("このペースだと %@ に使い切ります。%@", "At this pace it runs out %@; %@"),
@@ -930,6 +931,8 @@ enum Pref {
         let d = UserDefaults.standard
         let saved = d.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "local.usagebar") ?? [:]
         if saved[resetStyle] == nil, saved[showReset] as? Bool == false { d.set("hidden", forKey: resetStyle) }
+        // 以前「额度重置后」只有一个开关：拆成 5 小时和每周两个，旧的那个两个都沿用
+        if saved[Notifier.sessionResetKey] == nil, let on = saved[Notifier.resetKey] as? Bool { d.set(on, forKey: Notifier.sessionResetKey) }
         // 去掉了「最紧的那个」，选过它的改成都显示
         if d.string(forKey: menuLimit) == "tightest" { d.set("both", forKey: menuLimit) }
         // 以前额度来源默认是「官方接口」：用过旧版的（存过自己的设置）沿用，新装的要自己选
@@ -1091,6 +1094,7 @@ struct GeneralSettings: View {
     @AppStorage(Pref.codexLimitSource) var codexSource = ""
     @AppStorage(Notifier.thresholdKey) var notifyThreshold = 0
     @AppStorage(Notifier.runOutKey) var notifyRunOut = false
+    @AppStorage(Notifier.sessionResetKey) var notifySessionReset = false
     @AppStorage(Notifier.resetKey) var notifyReset = false
     @AppStorage(Notifier.creditsKey) var notifyCredits = false
     @State var notifyAllowed = true
@@ -1191,7 +1195,9 @@ struct GeneralSettings: View {
             Divider()
             SettingsRow(L("预计在重置前用完"), detail: L("用了三成以上、用得比时间快时")) { SwitchControl(isOn: asking($notifyRunOut)) }
             Divider()
-            SettingsRow(L("额度重置后"), detail: L("提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时")) { SwitchControl(isOn: asking($notifyReset)) }
+            SettingsRow(L("5 小时额度重置后"), detail: L("提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时；之前没用过的不提醒")) { SwitchControl(isOn: asking($notifySessionReset)) }
+            Divider()
+            SettingsRow(L("每周额度重置后"), detail: L("提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时；之前没用过的不提醒")) { SwitchControl(isOn: asking($notifyReset)) }
             Divider()
             SettingsRow(L("Codex 额度重置次数"), detail: L("新获得时，以及到期前 24 小时")) { SwitchControl(isOn: asking($notifyCredits)) }
         }

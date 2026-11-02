@@ -9,7 +9,9 @@ enum Notifier {
     /// 用量达到多少时提醒：0 是不提醒
     static let thresholdKey = "notifyThreshold"
     static let runOutKey = "notifyRunOut"
+    /// 额度重置后：resetKey 管每周（沿用以前只有一个开关时的键），sessionResetKey 管 5 小时
     static let resetKey = "notifyReset"
+    static let sessionResetKey = "notifyResetSession"
     static let creditsKey = "notifyCredits"
     private static let sentKey = "notifySent"
     /// 上次看到的 Codex 重置次数：变多了就是新拿到了
@@ -17,7 +19,7 @@ enum Notifier {
 
     static var anyEnabled: Bool {
         let d = UserDefaults.standard
-        return d.integer(forKey: thresholdKey) > 0 || d.bool(forKey: runOutKey) || d.bool(forKey: resetKey) || d.bool(forKey: creditsKey)
+        return d.integer(forKey: thresholdKey) > 0 || d.bool(forKey: runOutKey) || d.bool(forKey: resetKey) || d.bool(forKey: sessionResetKey) || d.bool(forKey: creditsKey)
     }
 
     /// 打开任一项通知时请求权限（系统只问一次，之后在 系统设置 → 通知 里改）；返回是否允许
@@ -71,15 +73,18 @@ enum Notifier {
                 }
                 // 重置了就是开始了新周期：下次重置时间往后推（推了 5 分钟以上才算，Claude 的重置时间会有几秒的抖动）。
                 // 原定时间还没到就推了的是提前重置——OpenAI 时不时给所有人重置一次，或者用了重置次数——总要提醒；
-                // 按时重置的，之前用了一半以上才值得说。退回本地缓存时的数据不可靠，不拿来比
-                if u.note == nil, let old = last[id], let o = old.resetsAt, let n = w.resetsAt, n.timeIntervalSince(o) > 300 {
+                // 按时重置的，之前用了一半以上才值得说。之前没用过的不说：重置了也没区别，而且 Codex 的 5 小时额度
+                // 没在用时重置时间会跟着现在往后挪，看着像提前重置。退回本地缓存时的数据不可靠，不拿来比。
+                // 5 小时和每周各有开关：不到一天的窗口算 5 小时
+                let on = d.bool(forKey: w.length > 0 && w.length < 86400 ? sessionResetKey : resetKey)
+                if on, u.note == nil, let old = last[id], old.usedPercent >= 1, let o = old.resetsAt, let n = w.resetsAt, n.timeIntervalSince(o) > 300 {
                     let early = o.timeIntervalSinceNow > 60
                     if early || old.usedPercent >= 50 { resets.append((w.label, old.usedPercent, early)) }
                 }
                 if u.note == nil { last[id] = w }
             }
             // 5 小时和本周常常一起重置：合成一条
-            if d.bool(forKey: resetKey), !resets.isEmpty {
+            if !resets.isEmpty {
                 let early = resets.contains { $0.early }
                 let cycles = u.windows.map { w in w.resetsAt.map { String(Int(($0.timeIntervalSince1970 + 5) / 60)) } ?? "-" }
                 // 键里是新的重置时间：每次重置都不一样，同一次不会重复提醒

@@ -138,8 +138,9 @@ const T = {
   n_off: ['不提醒', '通知しない', 'Off'],
   n_run_out: ['预计在重置前用完', 'リセット前に使い切りそうなとき', 'On Pace to Run Out'],
   n_run_out_hint: ['用了三成以上、用得比时间快时', '30% 以上使い、時間より速いペースのとき', 'Over 30% used and ahead of pace'],
-  n_reset: ['额度重置后', '上限がリセットされたら', 'After a Reset'],
-  n_reset_hint: ['提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时', '予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき', 'When reset early (an across-the-board reset or a reset you used), or after over half had been used'],
+  n_reset_session: ['5 小时额度重置后', '5 時間の上限がリセットされたら', 'After a 5-Hour Reset'],
+  n_reset: ['每周额度重置后', '週間の上限がリセットされたら', 'After a Weekly Reset'],
+  n_reset_hint: ['提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时；之前没用过的不提醒', '予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき。使っていなかったときは通知しません', 'When reset early (an across-the-board reset or a reset you used), or after over half had been used; never when it was unused'],
   n_credits: ['Codex 额度重置次数', 'Codex の上限リセット', 'Codex Resets'],
   n_credits_hint: ['新获得时，以及到期前 24 小时', '新たにもらったとき、期限の 24 時間前', 'When you get one, and 24 hours before one expires'],
   remote: ['远程机器', 'リモートマシン', 'Remote Machines'],
@@ -691,6 +692,7 @@ function settingsPage() {
       <div class="field"><span>${t('n_threshold')}</span>
         <select id="notify_threshold">${[[0, t('n_off')], [80, '80%'], [90, '90%'], [95, '95%']].map(([v, l]) => `<option value="${v}" ${s.notify_threshold === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><span>${t('n_run_out')}<div class="hint">${t('n_run_out_hint')}</div></span>${toggle('notify_run_out', s.notify_run_out)}</div>
+      <div class="field"><span>${t('n_reset_session')}<div class="hint">${t('n_reset_hint')}</div></span>${toggle('notify_reset_session', s.notify_reset_session)}</div>
       <div class="field"><span>${t('n_reset')}<div class="hint">${t('n_reset_hint')}</div></span>${toggle('notify_reset', s.notify_reset)}</div>
       <div class="field"><span>${t('n_credits')}<div class="hint">${t('n_credits_hint')}</div></span>${toggle('notify_credits', s.notify_credits)}</div>`);
   const usage = group(t('g_stats'), `
@@ -963,7 +965,7 @@ document.addEventListener('change', async (e) => {
   else if (el.id === 'card_style' || el.id === 'stats_card_style') save({ [el.id]: el.value });
   else if (el.id === 'ssh-pick') { if (el.value) addHost(el.value); }
   else if (['show_claude', 'show_codex', 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
-            'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset', 'notify_credits', 'card_show_claude', 'card_show_codex', 'card_level_colors'].includes(el.id)) save({ [el.id]: el.checked });
+            'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset_session', 'notify_reset', 'notify_credits', 'card_show_claude', 'card_show_codex', 'card_level_colors'].includes(el.id)) save({ [el.id]: el.checked });
   else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
   else if (el.id === 'autostart') {
     await invoke(el.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable').catch(() => {});

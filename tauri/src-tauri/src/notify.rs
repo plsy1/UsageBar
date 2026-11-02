@@ -14,13 +14,14 @@ use tauri_plugin_notification::NotificationExt;
 pub struct Options {
     pub threshold: u32, // 用量达到多少时提醒：0 是不提醒
     pub run_out: bool,
-    pub reset: bool,
+    pub session_reset: bool, // 5 小时额度重置后
+    pub reset: bool,         // 每周额度重置后
     pub credits: bool,
 }
 
 impl Options {
     fn any(&self) -> bool {
-        self.threshold > 0 || self.run_out || self.reset || self.credits
+        self.threshold > 0 || self.run_out || self.session_reset || self.reset || self.credits
     }
 }
 
@@ -85,9 +86,11 @@ impl Notifier {
                 }
                 // 重置了就是开始了新周期：下次重置时间往后推（推了 5 分钟以上才算，Claude 的重置时间会有几秒的抖动）。
                 // 原定时间还没到就推了的是提前重置（OpenAI 时不时给所有人重置一次，或者用了重置次数），总要提醒；
-                // 按时重置的，之前用了一半以上才值得说
+                // 按时重置的，之前用了一半以上才值得说。之前没用过的不说：重置了也没区别，而且 Codex 的 5 小时额度
+                // 没在用时重置时间会跟着现在往后挪，看着像提前重置。5 小时和每周各有开关：不到一天的窗口算 5 小时
+                let on = if w.length > 0.0 && w.length < 86400.0 { opts.session_reset } else { opts.reset };
                 if live {
-                    if let Some(old) = self.last.get(&id) {
+                    if let Some(old) = self.last.get(&id).filter(|o| on && o.used >= 1.0) {
                         if let (Some(o), Some(n)) = (old.resets_at, w.resets_at) {
                             if n - o > 300 {
                                 let early = o - now > 60;
@@ -101,7 +104,7 @@ impl Notifier {
                 }
             }
             // 5 小时和本周常常一起重置：合成一条
-            if opts.reset && !resets.is_empty() {
+            if !resets.is_empty() {
                 let early = resets.iter().any(|r| r.2);
                 // 键里是新的重置时间：每次重置都不一样，同一次不会重复提醒
                 let cycles: Vec<String> = p.windows.iter().map(|w| w.resets_at.map(|_| cycle(w).to_string()).unwrap_or("-".into())).collect();
