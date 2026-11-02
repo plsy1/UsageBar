@@ -385,7 +385,17 @@ pub fn compute(store: &Store, pricing: &Pricing, q: &Query, remote_hosts: &[Stri
         vec![]
     };
 
-    let codex_account = account.filter(|_| sources.contains(&Source::Codex)).map(|a| account_range(a, since(Source::Codex), end));
+    // 「全部时间」本来从本机第一条记录算起；服务端统计比本机日志早的那些天也要算进来
+    let codex_account = account.filter(|_| sources.contains(&Source::Codex)).map(|a| {
+        let mut from = since(Source::Codex);
+        if range == StatsRange::All {
+            let first = a.daily.keys().min().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+            if let Some(first) = first.and_then(|d| d.and_hms_opt(0, 0, 0)).map(|t| t.and_utc()) {
+                from = from.min(first);
+            }
+        }
+        account_range(a, from, end)
+    });
 
     View {
         summary: Summary::new(rows.iter().copied()),

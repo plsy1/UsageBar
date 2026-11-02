@@ -12,7 +12,8 @@ Object.assign(T, {
   reset_early: ['提前重置', '早期リセット', 'reset early'],
   cycle_note: ['每周额度从上次重置到下次重置算一个周期，不跟上面的时间范围。Codex 的周期取自会话日志；Claude 只记得查过额度的周期，更早的按 7 天往前推算。已用额度是这个周期里见到的最高比例；满额价值 = 估算成本 ÷ 已用额度（不到 10% 时不算），只是粗略参考：网页、桌面 app 聊天、其他电脑和云端任务也占额度但没有记录，周期中途提前重置过也会让它偏高或偏低', '週間上限の前回リセットから次のリセットまでを 1 期間とし、上の期間の選択には従いません。Codex の期間はセッションログから、Claude は上限を問い合わせた期間だけを記録し、それより前は 7 日ずつさかのぼって推定します。使用した上限はその期間に見られた最大の割合です。上限いっぱいの価値 = 推定コスト ÷ 使用した上限（10% 未満は計算しません）は目安にすぎません：Web、デスクトップアプリのチャット、ほかの PC、クラウドタスクも上限を使いますが記録がなく、期間の途中で早期リセットがあってもずれます', 'A cycle runs from one weekly reset to the next and ignores the period selected above. Codex cycles come from the session logs; Claude only remembers cycles whose limits were checked, and earlier ones are counted back in 7-day steps. Limit Used is the highest share seen in that cycle. Full-Limit Value = estimated cost ÷ limit used (left out below 10%) is only a rough guide: the web, desktop-app chats, other computers and cloud tasks also use the limit but leave no records here, and an early reset in the middle of a cycle skews it too'],
   server_stats: ['服务端数据统计', 'サーバー側の統計', 'Server Statistics'],
-  lifetime: ['累计 %s tokens', '累計 %s tokens', '%s tokens lifetime'],
+  lifetime: ['账号累计 %s tokens', 'アカウント累計 %s tokens', '%s tokens on the account, all time'],
+  period_tokens: ['这段时间 Tokens', 'この期間の Tokens', 'Tokens in Period'],
   daily_avg: ['日均', '1 日平均', 'Daily Avg'],
   peak_day: ['最多的一天', '最多の日', 'Peak Day'],
   data_through: ['数据截至', 'データの最終日', 'Data Through'],
@@ -190,7 +191,7 @@ function accountPanel(v) {
   const has = a.days > 0;
   return `<div class="panel account">
     <div class="panel-head"><b>Codex · ${t('server_stats')}</b><span class="spacer"></span><span class="sub">${t('lifetime', abbrev(a.lifetime))}</span></div>
-    <div class="tiles">${tile('Tokens', has ? abbrev(a.tokens) : '—')}${tile(t('daily_avg'), has ? abbrev(Math.round(a.tokens / a.days)) : '—')}${tile(t('peak_day'), has ? abbrev(a.peak) : '—')}${tile(t('data_through'), a.last_day ? a.last_day.slice(5).replace('-', '/') : '—')}</div>
+    <div class="tiles">${tile(t('period_tokens'), has ? abbrev(a.tokens) : '—')}${tile(t('daily_avg'), has ? abbrev(Math.round(a.tokens / a.days)) : '—')}${tile(t('peak_day'), has ? abbrev(a.peak) : '—')}${tile(t('data_through'), a.last_day ? a.last_day.slice(5).replace('-', '/') : '—')}</div>
     <div class="sub account-note">${t('server_note')}${a.pending ? ' ' + t('server_pending') : ''}</div>
   </div>`;
 }

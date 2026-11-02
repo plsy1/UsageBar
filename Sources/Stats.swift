@@ -1042,6 +1042,8 @@ struct CodexAccount {
     let asOf: String?
     /// 服务端最新有数据的那天
     var lastDay: String? { daily.keys.max() }
+    /// 服务端最早有数据的那天（UTC 零点）
+    var firstDay: Date? { daily.keys.min().flatMap { Self.utcDay.date(from: $0) } }
 
     static let utcDay: DateFormatter = {
         let f = DateFormatter()
@@ -1453,16 +1455,18 @@ struct StatsView: View {
     /// Codex · 服务端数据统计：OpenAI 账号统计，单独显示，不和本机、远程的日志记录混在一起算
     @ViewBuilder func codexAccountPanel(_ rows: [UsageRecord]) -> some View {
         if sources.contains(.codex), let acc = store.codexAccount {
-            let r = acc.range(from: since(.codex), to: end)
+            // 「全部时间」本来从本机第一条记录算起；服务端统计比本机日志早的那些天也要算进来
+            let from = range == .all ? min(since(.codex), acc.firstDay ?? .distantFuture) : since(.codex)
+            let r = acc.range(from: from, to: end)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Codex · " + L("服务端数据统计")).font(.headline)
                     Spacer()
-                    Text(L("累计 %@ tokens", abbrev(acc.lifetime))).font(.callout).foregroundStyle(.secondary)
+                    Text(L("账号累计 %@ tokens", abbrev(acc.lifetime))).font(.callout).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 18)
                 HStack(spacing: 0) {
-                    tile("Tokens", r.days > 0 ? abbrev(r.tokens) : "—", small: true)
+                    tile(L("这段时间 Tokens"), r.days > 0 ? abbrev(r.tokens) : "—", small: true)
                     Divider().padding(.vertical, 4)
                     tile(L("日均"), r.days > 0 ? abbrev(r.tokens / r.days) : "—", small: true)
                     Divider().padding(.vertical, 4)
