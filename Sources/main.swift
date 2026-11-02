@@ -1256,9 +1256,7 @@ struct GeneralSettings: View {
             Divider()
             SettingsRow(L("远程机器"), detail: L("Codex 跑在远程时日志只在那边，用 SSH 读回来")) {
                 HStack(spacing: 6) {
-                    TextField(L("主机名"), text: $newHost)
-                        .textFieldStyle(.roundedBorder).frame(width: 120)
-                        .onSubmit(addHost)
+                    ClickToEditField(placeholder: L("主机名"), text: $newHost, onSubmit: addHost).frame(width: 120)
                     let suggestions = sshConfigHosts.filter { !hosts.contains($0) }
                     if !suggestions.isEmpty {
                         Menu {
@@ -1959,6 +1957,48 @@ struct HideSidebarToggle: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// 「远程机器」的输入框：只在被点中时才拿焦点，也不画蓝色焦点框。
+/// SwiftUI 的 TextField 在窗口里随便点一下就会自己拿到焦点（它是页面上唯一的输入框），光标一直在那闪
+struct ClickToEditField: NSViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+    let onSubmit: () -> Void
+
+    final class Field: NSTextField {
+        override var acceptsFirstResponder: Bool {
+            guard let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === window else { return false }
+            return bounds.contains(convert(e.locationInWindow, from: nil))
+        }
+    }
+
+    func makeNSView(context: Context) -> Field {
+        let f = Field()
+        f.bezelStyle = .roundedBezel
+        f.focusRingType = .none
+        f.usesSingleLineMode = true
+        f.cell?.isScrollable = true
+        f.delegate = context.coordinator
+        f.target = context.coordinator
+        f.action = #selector(Coordinator.submit)
+        return f
+    }
+
+    func updateNSView(_ f: Field, context: Context) {
+        context.coordinator.parent = self
+        f.placeholderString = placeholder
+        if f.stringValue != text { f.stringValue = text }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: ClickToEditField
+        init(_ parent: ClickToEditField) { self.parent = parent }
+        func controlTextDidChange(_ n: Notification) { parent.text = (n.object as? NSTextField)?.stringValue ?? "" }
+        @objc func submit() { parent.onSubmit() }
     }
 }
 
@@ -3173,8 +3213,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
-        // 窗口变成主窗口时系统会把焦点给页面上第一个输入框（通用页的「远程机器」），光标一直在那闪：清掉
-        DispatchQueue.main.async { self.mainWindow?.makeFirstResponder(nil) }
     }
 
     @objc func toggleStatsCard() {
