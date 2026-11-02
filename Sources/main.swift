@@ -3173,6 +3173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
+        // 窗口变成主窗口时系统会把焦点给页面上第一个输入框（通用页的「远程机器」），光标一直在那闪：清掉
+        DispatchQueue.main.async { self.mainWindow?.makeFirstResponder(nil) }
     }
 
     @objc func toggleStatsCard() {
