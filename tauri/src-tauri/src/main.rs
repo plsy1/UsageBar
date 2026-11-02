@@ -914,12 +914,20 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
     if st.flyout_hidden_at.lock().unwrap().map(|t| t.elapsed().as_millis() < 400).unwrap_or(false) {
         return;
     }
-    let size = f.outer_size().unwrap_or_default();
-    let (w, h) = (size.width as f64, size.height as f64);
+    // 大小按逻辑像素记：托盘所在显示器的缩放比例可能和面板上次所在的不一样（比如 150% 的笔记本接 100% 的外接屏），
+    // 物理像素直接搬过去，面板和里面网页的大小会对不上，内容被截掉
+    let monitor = app.monitor_from_point(click.x, click.y).ok().flatten();
+    let from = f.scale_factor().unwrap_or(1.0);
+    let to = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(from);
+    // 摆位置用外框（含阴影边），设大小用内容区（set_size 设的是内容区，用外框会每打开一次大一圈）
+    let outer = f.outer_size().unwrap_or_default();
+    let inner = f.inner_size().unwrap_or_default();
+    let (w, h) = (outer.width as f64 / from * to, outer.height as f64 / from * to);
+    let (lw, lh) = (inner.width as f64 / from, inner.height as f64 / from);
     let mut x = click.x - w / 2.0;
     // 任务栏在下面时往上弹，在上面时往下弹
     let mut y = click.y - h - 12.0;
-    if let Ok(Some(m)) = app.monitor_from_point(click.x, click.y) {
+    if let Some(m) = monitor {
         let (mx, my) = (m.position().x as f64, m.position().y as f64);
         let (mw, mh) = (m.size().width as f64, m.size().height as f64);
         if click.y < my + mh / 2.0 {
@@ -930,6 +938,8 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
     }
     let _ = f.set_position(PhysicalPosition::new(x, y));
     let _ = f.show();
+    // 换到缩放比例不同的显示器后再按逻辑像素设一次大小，让网页跟着窗口重新排版
+    let _ = f.set_size(tauri::LogicalSize::new(lw, lh));
     let _ = f.set_focus();
 }
 

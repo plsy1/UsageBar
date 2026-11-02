@@ -154,7 +154,8 @@ select option { color: var(--text); background: var(--bg); }
 
 /* 托盘小面板（Windows） */
 body.flyout .sidebar { display: none; }
-body.flyout main { padding: 12px; overflow: hidden; }
+/* 不撑满窗口：小面板的高度按内容量（撑满的话量出来至少是窗口高度，面板只会变高不会变矮） */
+body.flyout main { align-self: flex-start; min-width: 0; padding: 12px; overflow: hidden; }
 body.flyout .providers { grid-template-columns: 1fr; gap: 10px; }
 body.flyout .provider { padding: 14px 16px; }
 body.flyout .row { margin-top: 10px; }
