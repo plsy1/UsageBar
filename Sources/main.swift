@@ -115,6 +115,7 @@ enum I18n {
         "本周": ("今週", "Weekly"),
         "本周 Opus": ("今週 Opus", "Weekly Opus"),
         "本周 Sonnet": ("今週 Sonnet", "Weekly Sonnet"),
+        "其他额度": ("その他の上限", "Other Limit"),
         "%d 小时": ("%d時間", "%d hours"),
         "%d 天": ("%d日", "%d days"),
         // 错误和提示
@@ -643,7 +644,9 @@ enum Claude {
             let keys = order.filter { json[$0] != nil } + json.keys.filter { !order.contains($0) }.sorted()
             for key in keys {
                 guard let w = json[key] as? [String: Any], let util = w["utilization"] as? Double else { continue }
-                u.windows.append(LimitWindow(label: labels[key].map { L($0) } ?? key, usedPercent: util,
+                // 认不出的 key（接口里常有 iguana_necktie 这种内部代号）：没用过就不显示，用过的叫「其他额度」
+                if labels[key] == nil, util <= 0 { continue }
+                u.windows.append(LimitWindow(label: L(labels[key] ?? "其他额度"), usedPercent: util,
                                              resetsAt: (w["resets_at"] as? String).flatMap(parseISODate),
                                              weekly: key == "seven_day",
                                              length: key == "five_hour" ? 5 * 3600 : key.hasPrefix("seven_day") ? 7 * 86400 : 0))

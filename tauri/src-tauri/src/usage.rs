@@ -276,12 +276,14 @@ async fn claude(client: &reqwest::Client) -> Provider {
                 .as_str()
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|d| d.timestamp());
+            // 认不出的 key（接口里常有 iguana_necktie 这种内部代号）：没用过就不显示，用过的叫「其他额度」
             let kind = match key.as_str() {
                 "five_hour" => "five_hour",
                 "seven_day" => "weekly",
                 "seven_day_opus" => "weekly_opus",
                 "seven_day_sonnet" => "weekly_sonnet",
-                other => other,
+                _ if util <= 0.0 => continue,
+                _ => "other",
             };
             let length = if key == "five_hour" { 5.0 * 3600.0 } else if key.starts_with("seven_day") { 7.0 * 86400.0 } else { 0.0 };
             p.windows.push(LimitWindow::new(kind, None, util, resets_at, length));

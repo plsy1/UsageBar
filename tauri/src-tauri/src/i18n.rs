@@ -33,6 +33,7 @@ pub fn t(lang: &str, key: &str) -> &'static str {
         "weekly" => ("本周", "今週", "Weekly"),
         "weekly_opus" => ("本周 Opus", "今週 Opus", "Weekly Opus"),
         "weekly_sonnet" => ("本周 Sonnet", "今週 Sonnet", "Weekly Sonnet"),
+        "other" => ("其他额度", "その他の上限", "Other Limit"),
         // 通知（%s 按顺序换成参数）
         "n_used" => ("%s 已用 %s%", "%s を %s% 使用", "%s is %s% used"),
         "n_fast" => ("%s 用得比时间快", "%s が速いペースです", "%s is ahead of pace"),

@@ -111,6 +111,7 @@ const T = {
   weekly: ['本周', '今週', 'Weekly'],
   weekly_opus: ['本周 Opus', '今週 Opus', 'Weekly Opus'],
   weekly_sonnet: ['本周 Sonnet', '今週 Sonnet', 'Weekly Sonnet'],
+  other: ['其他额度', 'その他の上限', 'Other Limit'],
   hours: ['%s 小时', '%s時間', '%s hours'],
   days: ['%s 天', '%s日', '%s days'],
   resets_in: ['%s后重置', '%s後にリセット', 'resets in %s'],
