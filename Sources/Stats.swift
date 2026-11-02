@@ -1705,9 +1705,14 @@ struct StatsView: View {
                 return (String(format: "%@%.0f%%", d >= 0 ? "↑" : "↓", abs(d) * 100), .secondary)
             }()
             let early = !c.current && c.end < c.resets.addingTimeInterval(-60)
+            // 日期有长有短（10/4、10/28）：每个都占最长的宽度，后面的「–」和「进行中」才对得齐
+            func slot(_ d: Date) -> some View {
+                Text("00/00 00:00").monospacedDigit().hidden()
+                    .overlay(alignment: .leading) { Text(f.string(from: d)).monospacedDigit() }
+            }
             return HStack(spacing: 0) {
                 HStack(spacing: 6) {
-                    Text(f.string(from: c.start) + " – " + (c.current ? f.string(from: c.resets) : f.string(from: c.end))).monospacedDigit()
+                    HStack(spacing: 0) { slot(c.start); Text(" – "); slot(c.current ? c.resets : c.end) }
                     if c.current {
                         Text(L("进行中")).font(.caption).foregroundStyle(ChartColor.color(chartColor))
                     } else if early {

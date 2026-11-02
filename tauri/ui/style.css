@@ -374,6 +374,9 @@ td.empty { text-align: center; color: var(--secondary); padding: 30px; }
 .tray-panel .providers { grid-template-columns: 1fr; gap: 10px; }
 .tray-panel .provider { padding: 14px 16px; }
 /* 按周期 */
+.cy-d { display: inline-grid; font-variant-numeric: tabular-nums; }
+.cy-d > span { grid-area: 1 / 1; }
+.cy-d > span + span { visibility: hidden; }
 .cycle-tag { font-size: 11px; color: var(--secondary); margin-left: 6px; }
 .cycle-tag.on { color: var(--accent); }
 .table-foot.cycle-note { display: block; font-size: 12px; line-height: 1.5; padding: 10px 18px; }

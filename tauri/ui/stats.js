@@ -355,7 +355,8 @@ function tabsBar(v) {
 // 满额价值 = 估算成本 ÷ 已用比例（不到 10% 不算）；环比和同一家的上一个周期比（进行中的不比）
 function cycleTable(v) {
   const cs = v.cycles || [];
-  const md = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${d.toTimeString().slice(0, 5)}`; };
+  // 日期有长有短（10/4、10/28）：每个都占最长的宽度，后面的「–」和「进行中」才对得齐
+  const md = (ms) => { const d = new Date(ms); return `<span class="cy-d"><span>${d.getMonth() + 1}/${d.getDate()} ${d.toTimeString().slice(0, 5)}</span><span aria-hidden="true">00/00 00:00</span></span>`; };
   const rows = cs.map((c, i) => {
     const prev = cs.slice(i + 1).find((p) => p.source === c.source);
     const value = c.used != null && c.used >= 10 ? c.cost / (c.used / 100) : null;
