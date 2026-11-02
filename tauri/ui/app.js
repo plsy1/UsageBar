@@ -214,6 +214,8 @@ const T = {
   records_since: ['%s 条请求，最早 %s', '%s 件、最古 %s', '%s requests since %s'],
   g_sources: ['数据来源', 'データソース', 'Data Sources'],
   src_api: ['官方接口', '公式 API', 'Official API'],
+  pick_source: ['还没选，在右边选一个', 'まだ選ばれていません。右から選んでください', 'Not chosen yet, pick one on the right'],
+  no_source: ['还没选额度来源 · 在设置的「通用」里选择', '上限の取得元が未選択です · 設定の「一般」で選んでください', 'No limits source chosen yet · pick one in Settings → General'],
   src_local: ['仅本地', 'ローカルのみ', 'Local Only'],
   sources_note: ['额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志', '上限：「公式 API」はこの PC のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの PC のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。使用量の統計はいずれもローカルのログだけを読みます', 'Limits: Official API asks Anthropic and OpenAI using the logins on this computer and is the most accurate; Local Only reads files on this computer and sends no requests (Codex from its session logs, Claude from the desktop app\'s records, which may be out of date). Usage statistics always read local logs only'],
   footnote: ['托盘图标旁（Linux）或鼠标悬停提示里（Windows）显示每家最紧的那个额度', 'トレイ（Linux はアイコンの横、Windows はツールチップ）に各サービスで最も残りが少ない上限を表示', 'The tray shows each service\'s tightest limit (next to the icon on Linux, in the tooltip on Windows)'],
@@ -789,7 +791,8 @@ function addHost(h) {
 function sourceRow(name) {
   const p = state.providers.find((x) => x.name === name);
   const key = name === 'Claude' ? 'claude_limit_source' : 'codex_limit_source';
-  const status = !p ? '' : p.error ? `<div class="hint error-text">${esc(errorText(p))}</div>`
+  const status = !state.settings[key] ? `<div class="hint error-text">${esc(t('pick_source'))}</div>`
+    : !p ? '' : p.error ? `<div class="hint error-text">${esc(errorText(p))}</div>`
     : p.note ? `<div class="hint">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>`
     : p.plan ? `<div class="hint">${esc(p.plan)}</div>` : '';
   return `<div class="field"><span>${name}${status}</span>${seg(key, [['api', t('src_api')], ['local', t('src_local')]])}</div>`;
@@ -1031,6 +1034,8 @@ function drawGuides([x, y]) {
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
   if (!FLYOUT && !ANY_CARD) sshHosts = await invoke('ssh_config_hosts').catch(() => []);
   state = await invoke('get_state');
+  // 新装还没选额度来源：主窗口先打开「通用」页让用户选
+  if (!FLYOUT && !ANY_CARD && (!state.settings.claude_limit_source || !state.settings.codex_limit_source)) page = 'settings';
   render();
   await listen('state', (e) => {
     // 额度刷新后「重置以来」的起点可能变了：统计页重新查

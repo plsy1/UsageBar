@@ -112,10 +112,23 @@ fn failed(name: &str, key: &str, detail: Option<i64>) -> Provider {
     Provider { name: name.into(), error: Some(key.into()), detail, ..Default::default() }
 }
 
-/// claude_local / codex_local：额度来源选了「仅本地」；remote_limits：远程机器的日志里最新的一份 Codex 额度（和它的时间）
-pub async fn fetch_all(client: &reqwest::Client, claude_local: bool, codex_local: bool, remote_limits: Option<(Value, i64)>) -> Vec<Provider> {
-    let c = async { if claude_local { claude_local_limits() } else { claude(client).await } };
-    let (c, x) = tokio::join!(c, codex(client, codex_local, remote_limits));
+/// claude_source / codex_source：额度来源 api / local，空的是新装还没选（什么都不查）；
+/// remote_limits：远程机器的日志里最新的一份 Codex 额度（和它的时间）
+pub async fn fetch_all(client: &reqwest::Client, claude_source: &str, codex_source: &str, remote_limits: Option<(Value, i64)>) -> Vec<Provider> {
+    let c = async {
+        match claude_source {
+            "api" => claude(client).await,
+            "local" => claude_local_limits(),
+            _ => failed("Claude", "no_source", None),
+        }
+    };
+    let x = async {
+        match codex_source {
+            "api" | "local" => codex(client, codex_source == "local", remote_limits).await,
+            _ => failed("Codex", "no_source", None),
+        }
+    };
+    let (c, x) = tokio::join!(c, x);
     vec![c, x]
 }
 

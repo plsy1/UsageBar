@@ -58,6 +58,12 @@ struct ProviderUsage {
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
     var session: LimitWindow? { windows.first { !$0.weekly } }  // 5 小时（两家都排在第一个）
     var weekly: LimitWindow? { windows.first(where: \.weekly) }
+    /// 还没选额度来源：什么都不查，提示去设置里选
+    static func unchosen(_ name: String) -> ProviderUsage {
+        var u = ProviderUsage(name: name)
+        u.error = L("还没选额度来源 · 在设置的「通用」里选择")
+        return u
+    }
     /// 菜单栏上的百分比：session 5 小时 / weekly 本周 / both「11%/86%」；没有就 nil
     func menuValue(_ which: String, used: Bool) -> String? {
         // 用得比时间快的额度后面加个 ↑
@@ -115,6 +121,8 @@ enum I18n {
         "在终端运行 claude auth login 登录一次": ("ターミナルで claude auth login を実行してログインしてください", "run claude auth login in Terminal"),
         "读不到 Claude Code 登录信息 · %@": ("Claude Code のログイン情報が見つかりません · %@", "No Claude Code login found · %@"),
         "Claude Code 登录已失效 · %@": ("Claude Code のログインが期限切れです · %@", "Claude Code login expired · %@"),
+        "还没选，在右边选一个": ("まだ選ばれていません。右から選んでください", "Not chosen yet, pick one on the right"),
+        "还没选额度来源 · 在设置的「通用」里选择": ("上限の取得元が未選択です · 設定の「一般」で選んでください", "No limits source chosen yet · pick one in Settings → General"),
         "请求失败（HTTP %d）": ("リクエスト失敗（HTTP %d）", "Request failed (HTTP %d)"),
         "登录过期，显示本地缓存（打开 Codex 会自动刷新）": ("ログイン期限切れのためローカルキャッシュを表示（Codex を開くと更新されます）", "Login expired, showing local cache (opening Codex refreshes it)"),
         "接口请求失败（HTTP %d），显示本地缓存": ("API リクエスト失敗（HTTP %d）、ローカルキャッシュを表示", "API request failed (HTTP %d), showing local cache"),
@@ -603,7 +611,8 @@ enum Claude {
     }
 
     static func fetch() async -> ProviderUsage {
-        if Pref.localLimits("Claude") { return fetchLocal() }
+        guard let source = Pref.limitSource("Claude") else { return .unchosen("Claude") }
+        if source == "local" { return fetchLocal() }
         var u = ProviderUsage(name: "Claude")
         let loginHint = L("在终端运行 claude auth login 登录一次")
         guard var creds = readCreds(), let oauth = creds["claudeAiOauth"] as? [String: Any] else {
@@ -680,8 +689,9 @@ enum Codex {
     }
 
     static func fetch() async -> ProviderUsage {
+        guard let source = Pref.limitSource("Codex") else { return .unchosen("Codex") }
         var u = ProviderUsage(name: "Codex")
-        let local = Pref.localLimits("Codex")
+        let local = source == "local"
         if !local, let d = try? Data(contentsOf: home.appendingPathComponent("auth.json")),
            let auth = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
            let tokens = auth["tokens"] as? [String: Any],
@@ -837,9 +847,13 @@ enum Pref {
     /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
     static let claudeLimitSource = "claudeLimitSource"
     static let codexLimitSource = "codexLimitSource"
-    static func localLimits(_ provider: String) -> Bool {
-        UserDefaults.standard.string(forKey: provider == "Claude" ? claudeLimitSource : codexLimitSource) == "local"
+    /// 新装时不设默认值：用户在设置里选过之前什么都不查（nil）
+    static func limitSource(_ provider: String) -> String? {
+        let v = UserDefaults.standard.string(forKey: provider == "Claude" ? claudeLimitSource : codexLimitSource)
+        return v == "api" || v == "local" ? v : nil
     }
+    static func localLimits(_ provider: String) -> Bool { limitSource(provider) == "local" }
+    static var limitSourcesChosen: Bool { limitSource("Claude") != nil && limitSource("Codex") != nil }
     static let menuStyle = "menuStyle"         // inline 一行 / stacked 名称在上、数值在下两行
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
@@ -912,6 +926,10 @@ enum Pref {
         if saved[resetStyle] == nil, saved[showReset] as? Bool == false { d.set("hidden", forKey: resetStyle) }
         // 去掉了「最紧的那个」，选过它的改成都显示
         if d.string(forKey: menuLimit) == "tightest" { d.set("both", forKey: menuLimit) }
+        // 以前额度来源默认是「官方接口」：用过旧版的（存过自己的设置）沿用，新装的要自己选
+        if saved.keys.contains(where: { !$0.hasPrefix("NS") }) {
+            for key in [claudeLimitSource, codexLimitSource] where saved[key] == nil { d.set("api", forKey: key) }
+        }
         // 以前「布局」里混着样式（紧凑、大数字……）：拆成「样式」和「排列」两项
         for (layoutKey, styleKey) in [(cardLayout, cardStyle), (statsCardLayout, statsCardStyle)] {
             let l = d.string(forKey: layoutKey) ?? "horizontal"
@@ -1063,8 +1081,8 @@ struct GeneralSettings: View {
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @AppStorage(LogReader.hostsKey) var remoteHosts = ""
     @State var newHost = ""
-    @AppStorage(Pref.claudeLimitSource) var claudeSource = "api"
-    @AppStorage(Pref.codexLimitSource) var codexSource = "api"
+    @AppStorage(Pref.claudeLimitSource) var claudeSource = ""
+    @AppStorage(Pref.codexLimitSource) var codexSource = ""
     @AppStorage(Notifier.thresholdKey) var notifyThreshold = 0
     @AppStorage(Notifier.runOutKey) var notifyRunOut = false
     @AppStorage(Notifier.resetKey) var notifyReset = false
@@ -1286,10 +1304,10 @@ struct GeneralSettings: View {
         let u = model.results.first { $0.name == name }
         let selection = name == "Claude" ? $claudeSource : $codexSource
         let local = selection.wrappedValue == "local"
-        let detail = u?.error ?? (u == nil ? L("正在获取用量…")
+        let detail = selection.wrappedValue.isEmpty ? L("还没选，在右边选一个") : u?.error ?? (u == nil ? L("正在获取用量…")
             : local ? u?.note ?? L("仅本地")
             : [source, u?.plan, u?.note].compactMap { $0 }.joined(separator: " · "))
-        return SettingsRow(name, detail: detail, warning: u?.error != nil) {
+        return SettingsRow(name, detail: detail, warning: selection.wrappedValue.isEmpty || u?.error != nil) {
             HStack(spacing: 8) {
                 Picker("", selection: selection) {
                     Text(L("官方接口")).tag("api")
@@ -2938,6 +2956,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         refresh()
         scheduleTimer()
+        // 新装还没选额度来源：打开设置让用户选
+        if !Pref.limitSourcesChosen { openMain(.general) }
         // 统计在后台先读好，打开窗口时不用等；之后按自己的间隔增量更新
         stats.reload()  // 先用磁盘缓存马上出数，改动过的日志在后台再读
         scheduleStatsTimer()
@@ -3069,7 +3089,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                        Pref.menuLimit, Pref.menuResetStyle, Pref.showCard, Pref.showStatsCard, Pref.language]
             .map { "\(d.object(forKey: $0) ?? "")" }.joined(separator: "|")
         // 换了额度来源：马上按新的来源查一次
-        let sourceKey = "\(Pref.localLimits("Claude"))|\(Pref.localLimits("Codex"))"
+        let sourceKey = "\(Pref.limitSource("Claude") ?? "")|\(Pref.limitSource("Codex") ?? "")"
         if sourceKey != lastSourceKey {
             if !lastSourceKey.isEmpty { refresh(); stats.reload() }
             lastSourceKey = sourceKey

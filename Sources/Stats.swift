@@ -1116,8 +1116,8 @@ final class StatsStore: ObservableObject {
             await self.requery()
             await MainActor.run { self.loading = false }
             let due = await MainActor.run { self.accountFetchedAt.map { Date().timeIntervalSince($0) > 3600 } ?? true }
-            // 服务端统计要请求 OpenAI 的接口：额度来源选了「仅本地」就不查
-            if Pref.localLimits("Codex") {
+            // 服务端统计要请求 OpenAI 的接口：额度来源选了「官方接口」才查
+            if Pref.limitSource("Codex") != "api" {
                 await MainActor.run { self.codexAccount = nil; self.accountFetchedAt = nil }
             } else if due, let acc = await Codex.fetchAccount() {
                 await MainActor.run { self.codexAccount = acc; self.accountFetchedAt = Date() }

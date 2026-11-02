@@ -95,8 +95,9 @@ impl Default for Settings {
             tray_reset: "full".into(),
             appearance: "auto".into(),
             accent: "pink".into(),
-            claude_limit_source: "api".into(),
-            codex_limit_source: "api".into(),
+            // 新装不设默认值，打开后让用户自己选
+            claude_limit_source: String::new(),
+            codex_limit_source: String::new(),
             notify_threshold: 0,
             notify_run_out: false,
             notify_reset: false,
@@ -252,6 +253,14 @@ fn load_settings(app: &AppHandle) -> Settings {
     let mut s: Settings = serde_json::from_str(&text).unwrap_or_default();
     // 旧版没有用量卡片：它的外观先沿用额度卡片的
     let raw: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    // 以前额度来源默认是「官方接口」：用过旧版的（已经有设置文件）沿用，新装的要自己选
+    if !text.is_empty() {
+        for (v, key) in [(&mut s.claude_limit_source, "claude_limit_source"), (&mut s.codex_limit_source, "codex_limit_source")] {
+            if raw.get(key).is_none() {
+                *v = "api".into();
+            }
+        }
+    }
     // 旧版托盘和额度卡片共用一份「剩余 / 已用」和显示哪几家：卡片的先沿用
     if raw.get("card_display").is_none() {
         s.card_display = s.display.clone();
@@ -442,12 +451,12 @@ async fn refresh(app: AppHandle) {
     let _ = app.emit("state", snapshot(&app));
     let client = reqwest::Client::new();
     loop {
-        let (claude_local, codex_local) = {
+        let (claude_source, codex_source) = {
             let s = app.state::<AppState>().settings.lock().unwrap().clone();
-            (s.claude_limit_source == "local", s.codex_limit_source == "local")
+            (s.claude_limit_source, s.codex_limit_source)
         };
         let remote_limits = app.state::<AppState>().remote_limits.lock().unwrap().clone();
-        let providers = usage::fetch_all(&client, claude_local, codex_local, remote_limits).await;
+        let providers = usage::fetch_all(&client, &claude_source, &codex_source, remote_limits).await;
         // 官方接口直接查到的周额度记进「按周期」（退回本地缓存的不算）
         let cycles: Vec<(String, i64, f64)> = providers
             .iter()
@@ -559,10 +568,10 @@ async fn refresh_stats(app: AppHandle, force_prices: bool) {
         *st.remote_limits.lock().unwrap() = limits;
         *st.stats_updated.lock().unwrap() = Some(chrono::Utc::now().timestamp());
     }
-    // 服务端统计要请求 OpenAI 的接口：额度来源选了「仅本地」就不查
-    let codex_local = st.settings.lock().unwrap().codex_limit_source == "local";
+    // 服务端统计要请求 OpenAI 的接口：额度来源选了「官方接口」才查
+    let codex_api = st.settings.lock().unwrap().codex_limit_source == "api";
     let due = st.codex_account.lock().unwrap().as_ref().map(|(_, at)| at.elapsed().as_secs() > 3600).unwrap_or(true);
-    if codex_local {
+    if !codex_api {
         *st.codex_account.lock().unwrap() = None;
     } else if due {
         if let Some(acc) = usage::codex_account(&reqwest::Client::new()).await {
@@ -1125,8 +1134,13 @@ fn main() {
             tauri::async_runtime::spawn(watch_monitors(handle.clone()));
             tauri::async_runtime::spawn(stats_loop(handle.clone()));
 
-            // 带 --show 启动时直接打开窗口（从应用列表启动、或调试时用）
-            if std::env::args().any(|a| a == "--show") {
+            // 带 --show 启动时直接打开窗口（从应用列表启动、或调试时用）；新装还没选额度来源也打开，让用户去选
+            let unchosen = {
+                let st = app.state::<AppState>();
+                let s = st.settings.lock().unwrap();
+                s.claude_limit_source.is_empty() || s.codex_limit_source.is_empty()
+            };
+            if unchosen || std::env::args().any(|a| a == "--show") {
                 show_main(&handle);
             }
             tauri::async_runtime::spawn(update_loop(handle.clone()));
