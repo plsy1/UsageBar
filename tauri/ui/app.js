@@ -137,7 +137,7 @@ const T = {
   n_threshold: ['用量达到', '使用量が達したら', 'Usage Reaches'],
   n_off: ['不提醒', '通知しない', 'Off'],
   n_run_out: ['预计在重置前用完', 'リセット前に使い切りそうなとき', 'On Pace to Run Out'],
-  n_run_out_hint: ['用了三成以上、用得比时间快时', '30% 以上使い、時間より速いペースのとき', 'Over 30% used and ahead of pace'],
+  n_run_out_hint: ['用了三成以上、照现在的速度会在重置前用完时', '30% 以上使い、今のペースだとリセット前に使い切るとき', 'Over 30% used and, at the current pace, it would run out before the reset'],
   n_reset_session: ['5 小时额度重置后', '5 時間の上限がリセットされたら', 'After a 5-Hour Reset'],
   n_reset: ['每周额度重置后', '週間の上限がリセットされたら', 'After a Weekly Reset'],
   n_reset_hint: ['提前重置（官方统一重置或用了重置次数）时，或之前用了一半以上时；之前没用过的不提醒', '予定より早くリセットされたとき（公式の一斉リセットやリセットの使用）、またはそれまでに半分以上使っていたとき。使っていなかったときは通知しません', 'When reset early (an across-the-board reset or a reset you used), or after over half had been used; never when it was unused'],
