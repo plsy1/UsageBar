@@ -94,6 +94,7 @@ const T = {
   requests: ['请求数', 'リクエスト数', 'Requests'],
   hit_rate: ['缓存命中率', 'キャッシュヒット率', 'Cache Hit Rate'],
   reading_logs: ['正在读取本机会话记录…', 'ローカルのセッション記録を読み込み中…', 'Reading local session logs…'],
+  no_logs: ['还没有会话记录', 'セッション記録はまだありません', 'No session logs yet'],
   stats_refresh: ['统计刷新间隔', '統計の更新間隔', 'Statistics Refresh'],
   reset_count: ['可用重置 %s 次', 'リセット %s 回分', '%s resets available'],
   expires: ['%s 到期', '%s まで', 'expires %s'],
@@ -574,6 +575,9 @@ function statsShareBlock(names) {
       <span class="c-val">${money(c)}<span class="c-share">${total > 0 ? Math.round((c / total) * 100) + '%' : '—'}</span></span></div>`).join('')}</div>`;
 }
 
+// 库里一条记录都没有时：还没读完第一次（没有 overview）是「正在读取」，读完了就是真的没有
+const logsEmptyText = (o) => t(o ? 'no_logs' : 'reading_logs');
+
 function statsCardPage() {
   const s = state.settings, shown = usageShown(), st = s.stats_card_style;
   const body = state.usage.updated == null && !state.usage.claude.requests && !state.usage.codex.requests
@@ -683,7 +687,7 @@ function settingsPage() {
       <div class="field"><span>${t('price_table')}<div class="hint">${state.pricing_updated ? t('price_updated', dateTime(state.pricing_updated)) : t('not_loaded')}</div></span>
         ${state.stats_loading ? `<span class="sub">${t('refreshing')}</span>` : `<button class="btn" id="update-prices">${t('update_now')}</button>`}</div>
       <div class="field"><span>${t('session_logs')}</span><span class="sub">${state.overview?.earliest
-        ? t('records_since', state.overview.count.toLocaleString(), new Date(state.overview.earliest).toLocaleDateString()) : t('reading_logs')}</span></div>`);
+        ? t('records_since', state.overview.count.toLocaleString(), new Date(state.overview.earliest).toLocaleDateString()) : logsEmptyText(state.overview)}</span></div>`);
   const refresh = group(t('g_refresh'), `
       <div class="field"><span>${t('nav_usage')}<div class="hint">${t('limits_detail')}</div></span>${minutesSelect('refresh_minutes', [1, 2, 5, 10, 15, 30])}</div>
       <div class="field"><span>${t('nav_stats')}<div class="hint">${t('stats_detail')}</div></span>${minutesSelect('stats_refresh_minutes', [1, 2, 5, 10, 15, 30, 60])}</div>`, t('refresh_note'));
@@ -715,7 +719,7 @@ function dataPage() {
       <div class="field"><span>${t('location')}<div class="hint path-hint">${esc(dataInfo?.path ?? '')}</div></span><button class="btn" id="reveal-db">${t('show_file')}</button></div>
       <div class="field"><span>${t('db_size')}</span><span class="sub">${dataInfo ? fileSize(dataInfo.size) : '—'}</span></div>
       <div class="field"><span>${t('session_logs')}</span><span class="sub">${o?.earliest
-        ? t('records_since', o.count.toLocaleString(), new Date(o.earliest).toLocaleDateString()) : t('reading_logs')}</span></div>`, t('database_note'));
+        ? t('records_since', o.count.toLocaleString(), new Date(o.earliest).toLocaleDateString()) : logsEmptyText(o)}</span></div>`, t('database_note'));
   const backup = group(t('g_backup'), `
       <div class="field"><span>${t('backup_to')}<div class="hint">${t('backup_hint')}</div></span><button class="btn" id="backup-db" ${dataBusy ? 'disabled' : ''}>${t('backup_btn')}</button></div>
       <div class="field"><span>${t('import_from')}<div class="hint">${t('import_hint')}</div></span><button class="btn" id="import-db" ${dataBusy ? 'disabled' : ''}>${t('import_btn')}</button></div>`,

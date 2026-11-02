@@ -1078,6 +1078,8 @@ final class StatsStore: ObservableObject {
     @Published var daily: [LogReader.DayTotal] = []
     /// 库里一共多少条、最早一条、出现过哪些远程机器
     @Published var overview = LogReader.Overview()
+    /// 库里一条记录都没有时：正在读日志（刚启动时会先从库里取一次，那时日志还没读）就是「正在读取」，读完了就是真的没有
+    var emptyText: String { loading || updated == nil ? L("正在读取本机会话记录…") : L("还没有会话记录") }
     @Published var loading = false
     @Published var updated: Date?
     /// Codex 账号统计：一天才更新一次，最多一小时拉一次
