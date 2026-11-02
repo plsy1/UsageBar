@@ -372,10 +372,19 @@ function flyoutPage() {
     </div>`;
 }
 
+// 窗口大小按网页自己的像素比换成物理像素：不用窗口记的缩放比例，
+// 窗口刚换到缩放不同的显示器（比如 150% 的笔记本和 100% 的外接屏）时它可能还没跟上，窗口就比内容小、内容被截掉
+const physical = (css) => Math.round(Math.ceil(css) * window.devicePixelRatio);
+
 // 小面板的高度跟着内容走
 function fitFlyout() {
-  const h = Math.ceil(document.getElementById('content').scrollHeight);
-  window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(340, h)).catch(() => {});
+  const h = document.getElementById('content').scrollHeight;
+  window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.PhysicalSize(physical(340), physical(h))).catch(() => {});
+}
+
+// 像素比变了（窗口换到缩放不同的显示器）：小面板和卡片按新的比例重新算大小
+function watchPixelRatio() {
+  matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => { render(); watchPixelRatio(); }, { once: true });
 }
 
 // MARK: 桌面卡片（布局和尺寸照 macOS 版的 CardView）
@@ -610,7 +619,7 @@ function cardPage() {
 // 卡片窗口的大小跟着内容走
 function fitCard() {
   const r = document.querySelector('.card-box').getBoundingClientRect();
-  invoke('fit_card', { width: Math.ceil(r.width), height: Math.ceil(r.height) });
+  invoke('fit_card', { width: physical(r.width), height: physical(r.height) });
 }
 
 function seg(key, options) {
@@ -1045,6 +1054,9 @@ function drawGuides([x, y]) {
   autostart = await invoke('plugin:autostart|is_enabled').catch(() => false);
   if (!FLYOUT && !ANY_CARD) sshHosts = await invoke('ssh_config_hosts').catch(() => []);
   state = await invoke('get_state');
+  if (FLYOUT || ANY_CARD) watchPixelRatio();
+  // 小面板每次弹出时重新量一次（可能刚换到缩放不同的显示器）
+  if (FLYOUT) await listen('flyout_shown', () => fitFlyout());
   // 新装还没选额度来源：主窗口先打开「通用」页让用户选
   if (!FLYOUT && !ANY_CARD && (!state.settings.claude_limit_source || !state.settings.codex_limit_source)) page = 'settings';
   render();

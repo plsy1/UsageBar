@@ -356,14 +356,15 @@ fn open_main(app: AppHandle) {
     show_main(&app);
 }
 
-/// 卡片窗口跟着内容改大小（逻辑像素）
+/// 卡片窗口跟着内容改大小（物理像素：网页按自己的像素比换好了，不用窗口记的缩放比例）
 #[tauri::command]
-fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
+fn fit_card(window: tauri::WebviewWindow, width: u32, height: u32) {
     // GTK 会忽略「不可调整大小」窗口的改大小请求；tao 在窗口第一次显示时又会按配置把它设回不可调整，
     // 所以每次改大小前再设一次。卡片没有边框，用户拖不了边
     #[cfg(target_os = "linux")]
     let _ = window.set_resizable(true);
-    let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    let size = tauri::PhysicalSize::new(width, height);
+    let _ = window.set_size(size);
     // 变大后可能超出屏幕，挪回来
     let app = window.app_handle();
     let st = app.state::<AppState>();
@@ -372,8 +373,6 @@ fn fit_card(window: tauri::WebviewWindow, width: f64, height: f64) {
     cards::keep_on_screen(app, &window, &place);
     // 另一张卡片还是自动摆的（没被拖过）：按这张的新大小重新挨着放，免得被盖住
     let other = if window.label() == "card" { "stats_card" } else { "card" };
-    let sf = window.scale_factor().unwrap_or(1.0);
-    let size = tauri::PhysicalSize::new((width * sf).round() as u32, (height * sf).round() as u32);
     if let (Some(o), Some(true), Ok(pos)) = (app.get_webview_window(other), s.card_places.get(other).map(|p| p.auto), window.outer_position()) {
         if let (Some(p), Ok(osize)) = (cards::next_to(app, &o, pos, size), o.outer_size()) {
             let _ = o.set_position(p);
@@ -914,16 +913,14 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
     if st.flyout_hidden_at.lock().unwrap().map(|t| t.elapsed().as_millis() < 400).unwrap_or(false) {
         return;
     }
-    // 大小按逻辑像素记：托盘所在显示器的缩放比例可能和面板上次所在的不一样（比如 150% 的笔记本接 100% 的外接屏），
-    // 物理像素直接搬过去，面板和里面网页的大小会对不上，内容被截掉
+    // 托盘所在显示器的缩放比例可能和面板上次所在的不一样（比如 150% 的笔记本接 100% 的外接屏）：
+    // 摆位置时按目标显示器换算面板大小，弹出后网页再按自己的像素比把窗口设成合适的大小（见 flyout_shown）
     let monitor = app.monitor_from_point(click.x, click.y).ok().flatten();
     let from = f.scale_factor().unwrap_or(1.0);
     let to = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(from);
-    // 摆位置用外框（含阴影边），设大小用内容区（set_size 设的是内容区，用外框会每打开一次大一圈）
+    // 摆位置用外框（含阴影边）
     let outer = f.outer_size().unwrap_or_default();
-    let inner = f.inner_size().unwrap_or_default();
     let (w, h) = (outer.width as f64 / from * to, outer.height as f64 / from * to);
-    let (lw, lh) = (inner.width as f64 / from, inner.height as f64 / from);
     let mut x = click.x - w / 2.0;
     // 任务栏在下面时往上弹，在上面时往下弹
     let mut y = click.y - h - 12.0;
@@ -938,8 +935,8 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
     }
     let _ = f.set_position(PhysicalPosition::new(x, y));
     let _ = f.show();
-    // 换到缩放比例不同的显示器后再按逻辑像素设一次大小，让网页跟着窗口重新排版
-    let _ = f.set_size(tauri::LogicalSize::new(lw, lh));
+    // 让面板按网页现在的像素比重新量一次大小（可能刚换到缩放比例不同的显示器）
+    let _ = app.emit_to("flyout", "flyout_shown", ());
     let _ = f.set_focus();
 }
 
