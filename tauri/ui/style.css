@@ -132,6 +132,8 @@ select option { color: var(--text); background: var(--bg); }
   font: inherit; font-size: 13px; padding: 3px 12px; border-radius: 5px; cursor: pointer;
 }
 .seg button.on { background: var(--accent); color: var(--accent-text); }
+.chart-seg button { display: inline-flex; align-items: center; }
+.chart-seg svg { width: 15px; height: 15px; }
 
 .switch { position: relative; width: 38px; height: 22px; flex-shrink: 0; }
 .switch input { display: none; }

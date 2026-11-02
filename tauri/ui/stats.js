@@ -94,6 +94,12 @@ let statsQ = Object.assign({ range: 'today', source: 'all', hidden: [], status: 
 statsQ.page = 0;
 let statsView = null, statsBusy = false, statsAgain = false;
 let chartStyle = STORE('chart') || 'line';
+// 曲线 / 柱状的切换按钮：用同样大小的线条图标（文字符号在 Windows 上来自不同字体，大小粗细不一）
+const chartIcon = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const CHART_ICONS = {
+  line: chartIcon('<path d="M4 4v16h16"/><path d="M7 15l4-5 3 3 5-6"/>'),
+  bar: chartIcon('<path d="M4 4v16h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>'),
+};
 let moreTiles = STORE('more') || false;
 let selected = null;      // 打开详情的那条请求
 let machineOpen = false;  // 机器筛选的弹出面板
@@ -228,7 +234,7 @@ function monotonePath(pts) {
 function chartPanel(v) {
   return `<div class="panel chart-panel">
     <div class="panel-head"><span class="sub strong">${t(v.hourly ? 'tokens_hourly' : 'tokens_daily')}</span><span class="spacer"></span>
-      <div class="seg">${[['line', '⌇'], ['bar', '▮▮']].map(([s, l]) => `<button data-chart="${s}" title="${t(s === 'line' ? 'line' : 'bars')}" class="${chartStyle === s ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="seg chart-seg">${[['line', CHART_ICONS.line], ['bar', CHART_ICONS.bar]].map(([s, l]) => `<button data-chart="${s}" title="${t(s === 'line' ? 'line' : 'bars')}" class="${chartStyle === s ? 'on' : ''}">${l}</button>`).join('')}</div>
     </div>
     <div class="chart" id="chart"></div>
   </div>`;
