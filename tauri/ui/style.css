@@ -78,6 +78,8 @@ body {
 .nav-section { color: var(--secondary); font-size: 12px; font-weight: 600; padding: 14px 10px 4px; }
 .nav.active { background: var(--accent); color: var(--accent-text); }
 .nav.active .ico { color: var(--accent-text); }
+.nav-badge { margin-left: auto; padding: 1px 6px; border-radius: 99px; font-size: 10px; font-weight: 600; background: var(--accent); color: var(--accent-text); }
+.nav.active .nav-badge { background: var(--accent-text); color: var(--accent); }
 .version { margin-top: auto; padding: 0 10px; color: var(--tertiary); font-size: 12px; }
 
 /* 内容 */

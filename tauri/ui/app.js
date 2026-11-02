@@ -94,6 +94,7 @@ const T = {
   requests: ['请求数', 'リクエスト数', 'Requests'],
   hit_rate: ['缓存命中率', 'キャッシュヒット率', 'Cache Hit Rate'],
   reading_logs: ['正在读取本机会话记录…', 'ローカルのセッション記録を読み込み中…', 'Reading local session logs…'],
+  has_update: ['有更新', '更新あり', 'Update'],
   no_logs: ['还没有会话记录', 'セッション記録はまだありません', 'No session logs yet'],
   stats_refresh: ['统计刷新间隔', '統計の更新間隔', 'Statistics Refresh'],
   reset_count: ['可用重置 %s 次', 'リセット %s 回分', '%s resets available'],
@@ -885,6 +886,11 @@ function render() {
     b.classList.toggle('active', b.dataset.page === page);
     const ico = b.querySelector('.ico');
     if (ico && !ico.firstChild) ico.innerHTML = icon(b.dataset.page);
+    // 自动检查查到新版：「关于」后面挂个小标签
+    if (b.dataset.page === 'about') {
+      b.querySelector('.nav-badge')?.remove();
+      if (state.update?.status === 'available') b.insertAdjacentHTML('beforeend', `<span class="nav-badge">${t('has_update')}</span>`);
+    }
   });
   if (FLYOUT) {
     document.getElementById('content').innerHTML = flyoutPage();

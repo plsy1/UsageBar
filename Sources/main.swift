@@ -399,6 +399,7 @@ enum I18n {
         "耗时（估算）": ("所要時間（推定）", "Duration (est.)"),
         "耗时按会话日志的时间戳估算：从请求发出到最后一段内容写进日志。日志要等一段内容生成完才写，所以首字偏大。": ("時間はセッション記録のタイムスタンプから推定しています（リクエスト送信から最後の内容が記録されるまで）。記録は内容のまとまりが生成し終わってから書かれるため、初回応答は長めに出ます。", "Times are estimated from session log timestamps, from when the request was sent until its last part was logged. The log is written only after each part finishes, so TTFT reads high."),
         "正在读取本机会话记录…": ("ローカルのセッション記録を読み込み中…", "Reading local session logs…"),
+        "有更新": ("更新あり", "Update"),
         "还没有会话记录": ("セッション記録はまだありません", "No session logs yet"),
         "该时间段内没有记录": ("この期間の記録はありません", "No usage in this period"),
         "成本按 models.dev 的 API 价格估算，统计本机和已添加的远程机器上的会话记录": ("コストは models.dev の API 価格による推定で、この Mac と追加したリモートマシンのセッション記録を集計しています", "Cost is estimated from models.dev API prices and covers session logs on this Mac and the remote machines you added"),
@@ -2111,7 +2112,7 @@ struct MainView: View {
     @ObservedObject var nav: MainNav
     @ObservedObject var stats: StatsStore
     let model: UsageModel
-    let updater: Updater
+    @ObservedObject var updater: Updater
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage("statsChartColor") var themeColor = "pink"
 
@@ -2159,6 +2160,13 @@ struct MainView: View {
                     .foregroundStyle(selected ? Color.white : theme)
                 Text(t.title).foregroundStyle(selected ? Color.white : Color.primary)
                 Spacer(minLength: 0)
+                // 自动检查查到新版：「关于」后面挂个小标签
+                if t == .about, case .available = updater.state {
+                    Text(L("有更新")).font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 1.5)
+                        .background(Capsule().fill(selected ? Color.white : theme))
+                        .foregroundStyle(selected ? theme : Color.white)
+                }
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
