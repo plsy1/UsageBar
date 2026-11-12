@@ -2236,8 +2236,8 @@ struct StatsCardView: View {
     @AppStorage(Pref.statsCardScale) var scale = 1.0
     @AppStorage(Pref.statsCardOpacity) var opacity = 1.0
     @AppStorage(Pref.statsCardBgOpacity) var bgOpacity = 1.0
-    @AppStorage(Pref.statsCardShowClaude) var showClaude = true
-    @AppStorage(Pref.statsCardShowCodex) var showCodex = true
+    /// 用量卡片只有有统计的几家（没有 Gemini：它只有额度）
+    @StateObject var flags = ProviderFlags(Pref.statsCardShowPrefix, Provider.withStats)
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.statsCardStyle) var style = "standard"
     @AppStorage(Pref.statsCardLayout) var layout = "horizontal"
@@ -2266,10 +2266,13 @@ struct StatsCardView: View {
     var body: some View {
         let _ = language  // 切换语言时重绘
         let white = textColor == "white"
-        let shown = [Source.claude, .codex].filter { $0 == .claude ? showClaude : showCodex }
+        let shown = Provider.withStats.filter { flags[$0.name] }.compactMap(\.stats)
         VStack(alignment: .leading, spacing: (style == "compact" ? 10 : 14) * s) {
             if stats.updated == nil {
                 Text(L("正在读取本机会话记录…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
+            } else if Provider.withStats.allSatisfy({ !Pref.enabled($0.name) }) {
+                // 有统计的两家都停用了（Gemini 开着也没有统计可显示）
+                Text(L("Claude 和 Codex 都停用了")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
             } else {
                 Group {
                     switch style {
@@ -2757,7 +2760,7 @@ func printStats() async {
     }
     // 重置以来：先查额度拿到周额度的重置时间
     let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
-    for u in [await Claude.fetch(), await Codex.fetch()] {
+    for u in await Provider.fetchEnabled(Provider.withStats) {
         guard let src = Source(rawValue: u.name), let reset = u.windows.first(where: \.weekly)?.resetsAt else { continue }
         let start = Date(timeIntervalSince1970: ((reset.timeIntervalSince1970 + 5) / 60).rounded(.down) * 60 - 7 * 86400)
         let s = Summary(recs.filter { $0.time >= start && $0.source == src })

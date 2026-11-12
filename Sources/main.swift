@@ -1,7 +1,8 @@
-// UsageBar — 菜单栏显示 Claude / Codex 剩余用量
+// UsageBar — 菜单栏显示 Claude / Codex / Gemini 剩余用量
 // 数据来源：
 //   Claude: macOS 钥匙串 "Claude Code-credentials" 里的 OAuth token → api.anthropic.com/api/oauth/usage
 //   Codex : ~/.codex/auth.json → chatgpt.com/backend-api/wham/usage，失败时退回最近一次会话日志里的 rate_limits
+//   Gemini: ~/.gemini/antigravity/daemon/hub_*.json 里的端口和 token → 本机 127.0.0.1 上 Gemini App agent 模式的语言服务器
 
 import AppKit
 import SwiftUI
@@ -14,10 +15,21 @@ struct LimitWindow {
     let label: String
     let usedPercent: Double
     let resetsAt: Date?
-    /// 主要的周额度（Claude 的 seven_day、Codex 的 7 天窗口）；用量统计按它算「重置以来」
+    /// 主要的周额度（Claude 的 seven_day、Codex 的 7 天窗口、Gemini 自己那组的本周）；用量统计按它算「重置以来」
     var weekly = false
     /// 窗口总长（秒）：5 小时或 7 天；不知道时为 0，不算速度
     var length: TimeInterval = 0
+    /// 不是这家主要的那组额度时的组名（Gemini 里 Claude、GPT 那组的「第三方模型」等），label 前面已经带着它。
+    /// 菜单栏上的 5 小时 / 本周只看主要的那组（group 为 nil）
+    var group: String?
+    /// 通知键用的固定身份（Gemini 的 bucketId），不随位置变：某个额度这次没给比例被跳过时，
+    /// 后面的不会挪到别人的键上、误报「提前重置」。Claude、Codex 是 nil，照旧用位置
+    var key: String?
+    /// 去掉组名的额度名（「5 小时」「本周」）：圆环里地方小，组名另起一行
+    var period: String {
+        guard let g = group, label.hasPrefix(g + " · ") else { return label }
+        return String(label.dropFirst(g.count + 3))
+    }
     var remaining: Double { max(0, 100 - usedPercent) }
 
     /// 这个窗口已经过去的比例（0~1）
@@ -56,8 +68,10 @@ struct ProviderUsage {
     var resetCredits: ResetCredits?
     /// 各窗口里最紧的那个（剩余最少）
     var binding: LimitWindow? { windows.min { $0.remaining < $1.remaining } }
-    var session: LimitWindow? { windows.first { !$0.weekly } }  // 5 小时（两家都排在第一个）
+    var session: LimitWindow? { windows.first { !$0.weekly && $0.group == nil } }  // 5 小时（各家都排在第一个）
     var weekly: LimitWindow? { windows.first(where: \.weekly) }
+    /// 菜单栏上的简写（Cc / Cx / Gm）
+    var short: String { Provider(rawValue: name)?.short ?? name }
     /// 还没选额度来源：什么都不查，提示去设置里选
     static func unchosen(_ name: String) -> ProviderUsage {
         var u = ProviderUsage(name: name)
@@ -115,7 +129,11 @@ enum I18n {
         "本周": ("今週", "Weekly"),
         "本周 Opus": ("今週 Opus", "Weekly Opus"),
         "本周 Sonnet": ("今週 Sonnet", "Weekly Sonnet"),
+        "本周 %@": ("今週 %@", "Weekly %@"),
         "其他额度": ("その他の上限", "Other Limit"),
+        "第三方模型": ("他社モデル", "Third-party models"),
+        "Gemini 第三方模型": ("Gemini の他社モデル", "Gemini third-party models"),
+        "在 Gemini App 里用 Claude、GPT 等模型的额度，算在 Gemini 套餐里": ("Gemini アプリで Claude や GPT などを使うための上限（Gemini のプランに含まれます）", "Limits for using Claude, GPT and similar models in the Gemini app; part of your Gemini plan"),
         "%d 小时": ("%d時間", "%d hours"),
         "%d 天": ("%d日", "%d days"),
         // 错误和提示
@@ -166,7 +184,16 @@ enum I18n {
         "布局": ("レイアウト", "Layout"),
         "官方接口": ("公式 API", "Official API"),
         "仅本地": ("ローカルのみ", "Local Only"),
-        "额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志": ("上限：「公式 API」はこの Mac のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの Mac のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。使用量の統計はいずれもローカルのログだけを読みます", "Limits: Official API asks Anthropic and OpenAI using the logins on this Mac and is the most accurate; Local Only reads files on this Mac and sends no requests (Codex from its session logs, Claude from the desktop app's records, which may be out of date). Usage statistics always read local logs only"),
+        "停用": ("オフ", "Off"),
+        "已停用：不查询，菜单栏、卡片和通知里都不显示": ("オフ：問い合わせず、メニューバー・カード・通知にも表示しません", "Off: not checked, and hidden from the menu bar, cards and notifications"),
+        "已在「通用 → 数据来源」里停用": ("「一般 → データソース」でオフになっています", "Turned off under General → Data Sources"),
+        "Claude 和 Codex 都停用了": ("Claude と Codex はどちらもオフです", "Claude and Codex are both turned off"),
+        "所有服务都停用了": ("すべてのサービスがオフです", "All services are turned off"),
+        "本机 Gemini App": ("この Mac の Gemini アプリ", "Gemini App on This Mac"),
+        "Gemini App 没在运行 · 数据时间 %@": ("Gemini アプリが起動していません · データ時刻 %@", "Gemini App isn't running · data from %@"),
+        "Gemini 没有返回额度数据": ("Gemini からクォータのデータが返ってきませんでした", "Gemini didn't return any quota data"),
+        "Gemini App 没在运行 · 打开 Gemini 的 agent 模式后自动读取": ("Gemini アプリが起動していません · Gemini のエージェントモードを開くと自動で読み取ります", "Gemini App isn't running · read automatically once Gemini's agent mode is open"),
+        "额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。Gemini 只向本机 Gemini App 的 agent 模式查询，它没开着时显示上次的数据。用量统计都只读本地日志，不含 Gemini": ("上限：「公式 API」はこの Mac のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの Mac のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。Gemini はこの Mac の Gemini アプリのエージェントモードにだけ問い合わせ、開いていないときは前回のデータを表示します。使用量の統計はいずれもローカルのログだけを読み、Gemini は含みません", "Limits: Official API asks Anthropic and OpenAI using the logins on this Mac and is the most accurate; Local Only reads files on this Mac and sends no requests (Codex from its session logs, Claude from the desktop app's records, which may be out of date). Gemini asks only the Gemini app's agent mode on this Mac and shows the last data when it isn't open. Usage statistics always read local logs only and don't include Gemini"),
         "本机没有 Claude 的额度记录（Claude 桌面 app 查看过用量后才会有）": ("この Mac に Claude の上限の記録がありません（Claude デスクトップアプリで使用量を表示すると作られます）", "No Claude limit records on this Mac (the Claude desktop app writes one when it shows usage)"),
         "Claude 桌面 app 最近没有查过用量（最近一次 %@）": ("Claude デスクトップアプリが最近使用量を取得していません（最後は %@）", "The Claude desktop app hasn't checked usage recently (last at %@)"),
         "来自 Claude 桌面 app 的记录 · 数据时间 %@": ("Claude デスクトップアプリの記録 · %@ 時点", "From the Claude desktop app · as of %@"),
@@ -339,7 +366,7 @@ enum I18n {
         "关掉时贴在桌面上，会被其他窗口盖住": ("オフのときはデスクトップに置かれ、他のウインドウに隠れます", "When off, the card sits on the desktop behind other windows"),
         "开机启动、外观、刷新频率和数据来源": ("ログイン時の起動、外観、更新頻度、データソース", "Launch at login, appearance, refresh and data sources"),
         "用量统计只读取新写入的日志，刷新很快": ("使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります", "Usage statistics only read newly written logs, so refreshing is quick"),
-        "向 Anthropic 和 OpenAI 查询剩余额度": ("Anthropic と OpenAI に残りの上限を問い合わせます", "Asks Anthropic and OpenAI for remaining limits"),
+        "查询各家的剩余额度": ("各サービスの残りの上限を問い合わせます", "Checks each service's remaining limits"),
         "读取本机和远程机器的会话记录": ("この Mac とリモートマシンのセッション記録を読み込みます", "Reads session logs on this Mac and remote machines"),
         "菜单栏文字": ("メニューバーの文字", "Menu Bar Text"),
         "显示的额度": ("表示する上限", "Limit Shown"),
@@ -353,7 +380,7 @@ enum I18n {
         "隐私": ("プライバシー", "Privacy"),
         "所有版本": ("すべてのリリース", "All Releases"),
         "反馈问题": ("問題を報告", "Report an Issue"),
-        "默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「通用 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求": ("既定ではこの Mac の Claude Code と Codex のログイン情報で Anthropic・OpenAI の使用量 API に問い合わせます。「一般 → データソース」で「ローカルのみ」にすると、この Mac のファイルだけを読みリクエストを送りません", "By default, queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this Mac; switch to Local Only under General → Data Sources to read files on this Mac only and send no requests"),
+        "默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「通用 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求。Gemini 默认停用，打开后只向本机 Gemini App 的 agent 模式查询（127.0.0.1），只有额度、没有用量统计": ("既定ではこの Mac の Claude Code と Codex のログイン情報で Anthropic・OpenAI の使用量 API に問い合わせます。「一般 → データソース」で「ローカルのみ」にすると、この Mac のファイルだけを読みリクエストを送りません。Gemini は既定でオフです。オンにすると、この Mac の Gemini アプリのエージェントモード（127.0.0.1）にだけ問い合わせます。上限のみで、使用量の統計はありません", "By default, queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this Mac; switch to Local Only under General → Data Sources to read files on this Mac only and send no requests. Gemini is off by default; when turned on it asks only the Gemini app's agent mode on this Mac (127.0.0.1), for limits only, with no usage statistics"),
         "卡片": ("カード", "Cards"),
         "额度卡片": ("上限カード", "Limits Card"),
         "用量卡片": ("使用量カード", "Usage Card"),
@@ -424,7 +451,7 @@ enum I18n {
         "关于": ("情報", "About"),
         "预览": ("プレビュー", "Preview"),
         "版本 %@": ("バージョン %@", "Version %@"),
-        "在菜单栏和桌面显示 Claude 与 Codex 的剩余用量": ("Claude と Codex の残り使用量をメニューバーとデスクトップに表示", "Shows remaining Claude and Codex usage in the menu bar and on the desktop"),
+        "在菜单栏和桌面显示 Claude、Codex 与 Gemini 的剩余用量": ("Claude・Codex・Gemini の残り使用量をメニューバーとデスクトップに表示", "Shows remaining Claude, Codex and Gemini usage in the menu bar and on the desktop"),
         "语言": ("言語", "Language"),
         "跟随系统": ("システムに合わせる", "System"),
         "桌面卡片": ("デスクトップカード", "Desktop Card"),
@@ -446,7 +473,7 @@ enum I18n {
         "%@ 重置": ("%@ にリセット", "resets %@"),
         "菜单栏": ("メニューバー", "Menu Bar"),
         "名称": ("表示名", "Labels"),
-        "简写（Cc / Cx）": ("略称（Cc / Cx）", "Short (Cc / Cx)"),
+        "简写（Cc / Cx / Gm）": ("略称（Cc / Cx / Gm）", "Short (Cc / Cx / Gm)"),
         "全名（Claude / Codex）": ("フルネーム（Claude / Codex）", "Full (Claude / Codex)"),
         "刷新间隔": ("更新間隔", "Refresh Interval"),
         "刷新间隔（后台增量更新）": ("更新間隔（バックグラウンドで差分更新）", "Refresh Interval (in the background)"),
@@ -617,6 +644,7 @@ enum Claude {
 
     static func fetch() async -> ProviderUsage {
         guard let source = Pref.limitSource("Claude") else { return .unchosen("Claude") }
+        if source == "off" { return ProviderUsage(name: "Claude") }  // 调用方本该先看 Pref.enabled，这里兜底：停用的不发请求
         if source == "local" { return fetchLocal() }
         var u = ProviderUsage(name: "Claude")
         let loginHint = L("在终端运行 claude auth login 登录一次")
@@ -654,6 +682,18 @@ enum Claude {
                                              resetsAt: (w["resets_at"] as? String).flatMap(parseISODate),
                                              weekly: key == "seven_day",
                                              length: key == "five_hour" ? 5 * 3600 : key.hasPrefix("seven_day") ? 7 * 86400 : 0))
+            }
+            // limits 里单独算某个模型的每周额度（kind 为 weekly_scoped，比如 Fable，顶层没有）：「本周 Fable」。
+            // 顶层已经有同一个模型的（seven_day_opus 这种）不重复。放在最后、键用模型名：
+            // 这一项有时有、有时没有，前面的位置不变，通知不会对错
+            for l in json["limits"] as? [[String: Any]] ?? [] where l["kind"] as? String == "weekly_scoped" {
+                guard let name = ((l["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String, !name.isEmpty,
+                      let used = (l["percent"] as? NSNumber)?.doubleValue else { continue }
+                let label = L("本周 %@", name)
+                guard !u.windows.contains(where: { $0.label == label }) else { continue }
+                var w = LimitWindow(label: label, usedPercent: used, resetsAt: (l["resets_at"] as? String).flatMap(parseISODate), length: 7 * 86400)
+                w.key = "weekly_model:\(name)"
+                u.windows.append(w)
             }
             return u
         }
@@ -698,6 +738,7 @@ enum Codex {
     static func fetch() async -> ProviderUsage {
         guard let source = Pref.limitSource("Codex") else { return .unchosen("Codex") }
         var u = ProviderUsage(name: "Codex")
+        if source == "off" { return u }  // 同上：停用的不发请求
         let local = source == "local"
         if !local, let d = try? Data(contentsOf: home.appendingPathComponent("auth.json")),
            let auth = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
@@ -788,6 +829,246 @@ enum Codex {
     }
 }
 
+// MARK: - Gemini
+
+/// Gemini.app（macOS）的 agent 模式其实是 Antigravity 的 agy：开着时本机跑着一个语言服务器，
+/// 把端口和 CSRF token 写在 ~/.gemini/antigravity/daemon/hub_<端口>.json。额度向它查，只连 127.0.0.1，不出这台 Mac。
+/// 它没开着时查不到，显示上次查到的（存在 Application Support/UsageBar/gemini-quota.json）。
+/// 只有额度，没有用量统计：它的对话记录是加密的
+enum Gemini {
+    static let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity")
+    static var cacheURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("UsageBar/gemini-quota.json")
+    }
+    /// 只连本机：不走系统代理（开着代理软件时 127.0.0.1 也可能被转出去），超时短一点，没在运行时别卡着
+    static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.connectionProxyDictionary = [:]
+        c.timeoutIntervalForRequest = 5
+        c.timeoutIntervalForResource = 5
+        return URLSession(configuration: c)
+    }()
+
+    /// 最新的发现文件（按修改时间）。进程退出后旧文件可能还留着，那样请求会失败，退回缓存
+    static func hub() -> (port: Int, token: String)? {
+        let dir = home.appendingPathComponent("daemon")
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return nil }
+        let newest = files.filter { $0.lastPathComponent.hasPrefix("hub_") && $0.pathExtension == "json" }
+            .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast) }
+            .max { $0.1 < $1.1 }?.0
+        guard let url = newest, let d = try? Data(contentsOf: url),
+              let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let port = (j["httpPort"] as? NSNumber)?.intValue ?? (j["httpPort"] as? String).flatMap({ Int($0) }), port > 0,
+              let token = j["csrfToken"] as? String, !token.isEmpty else { return nil }
+        return (port, token)
+    }
+
+    /// 调语言服务器的一个方法（Connect 协议的 JSON 形式）。token 只放在请求头里，不打印、不记下来
+    static func call(_ method: String, _ hub: (port: Int, token: String)) async -> (status: Int, json: [String: Any]?) {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(hub.port)/exa.language_server_pb.LanguageServerService/\(method)")!,
+                             timeoutInterval: 5)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
+        req.setValue(hub.token, forHTTPHeaderField: "X-Codeium-Csrf-Token")
+        req.httpBody = Data(#"{"metadata":{"ideName":"antigravity","extensionName":"antigravity"}}"#.utf8)
+        guard let (data, resp) = try? await session.data(for: req) else { return (0, nil) }
+        return ((resp as? HTTPURLResponse)?.statusCode ?? 0, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
+    }
+
+    static func fetch() async -> ProviderUsage {
+        var u = ProviderUsage(name: "Gemini")
+        guard Pref.limitSource("Gemini") == "app" else { return u }  // 停用的不查（调用方本该先看 Pref.enabled，这里兜底）
+        let now = Date()
+        if let hub = hub() {
+            let (status, json) = await call("RetrieveUserQuotaSummary", hub)
+            if status == 200, let json {
+                let summary = json["response"] as? [String: Any] ?? json
+                // 在运行、也回了，只是一个能用的额度都没有（都没给比例，或者没有额度组）：不是「没在运行」，
+                // 也不退回缓存冒充现在的数据。看的是全部的组，关掉的第三方模型不算「没返回」
+                guard !windows(summary, now: now).isEmpty else {
+                    u.error = L("Gemini 没有返回额度数据")
+                    return u
+                }
+                // 套餐查不到不要紧，只是不显示
+                let plan = await call("GetUserStatus", hub).json.flatMap(plan(status:))
+                u.windows = windows(summary, now: now, thirdParty: Pref.showThirdParty)
+                u.plan = plan
+                saveCache(summary, plan: plan, at: now)
+                return u
+            }
+        }
+        // 没在运行（没有发现文件、连不上、不是 200）：显示上次查到的，带着数据时间。
+        // 有 note 时通知不拿它和上次比「重置了没有」，和 Claude 的本地数据一样
+        if let c = loadCache() {
+            u.windows = windows(c.summary, now: now, thirdParty: Pref.showThirdParty)
+            u.plan = c.plan
+            let f = DateFormatter(); f.dateFormat = "M/d HH:mm"
+            u.note = L("Gemini App 没在运行 · 数据时间 %@", f.string(from: c.at))
+        } else {
+            u.error = L("Gemini App 没在运行 · 打开 Gemini 的 agent 模式后自动读取")
+        }
+        return u
+    }
+
+    /// 存原始的额度数据（不存显示名）：读缓存时按当时的界面语言和时间重新算一遍
+    static func saveCache(_ summary: [String: Any], plan: String?, at: Date) {
+        var obj: [String: Any] = ["at": at.timeIntervalSince1970, "summary": summary]
+        if let plan { obj["plan"] = plan }
+        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? d.write(to: cacheURL, options: .atomic)
+    }
+
+    static func loadCache() -> (summary: [String: Any], plan: String?, at: Date)? {
+        guard let d = try? Data(contentsOf: cacheURL),
+              let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let summary = obj["summary"] as? [String: Any], let at = obj["at"] as? Double else { return nil }
+        return (summary, obj["plan"] as? String, Date(timeIntervalSince1970: at))
+    }
+}
+
+// Gemini 额度的解析（不碰网络和文件，单独拿出来好测）
+extension Gemini {
+    /// 套餐名：userStatus.planStatus.planInfo.planName（「Pro」）
+    static func plan(status json: [String: Any]) -> String? {
+        let info = ((json["userStatus"] as? [String: Any])?["planStatus"] as? [String: Any])?["planInfo"] as? [String: Any]
+        return planName(info?["planName"] as? String)
+    }
+
+    /// 剩余比例（0~1）：一般在 remainingFraction，也可能在 remaining.remainingFraction。
+    /// 没给就是不知道用了多少：返回 nil，这个额度跳过，不当成用完了
+    static func fraction(_ b: [String: Any]) -> Double? {
+        let nested = b["remaining"] as? [String: Any]
+        let v = b["remainingFraction"] ?? b["remaining_fraction"] ?? nested?["remainingFraction"] ?? nested?["remaining_fraction"]
+        return (v as? NSNumber)?.doubleValue ?? (v as? String).flatMap { Double($0) }
+    }
+
+    /// 组的顺序：Gemini 自己那组（0，不加前缀，它的 5 小时、本周就是菜单栏上显示的那两个）、
+    /// Claude、GPT 那组（1，显示成「第三方模型」）、其他组（2，按接口给的顺序）。顺序固定，显示时不跳来跳去
+    static func rank(_ g: [String: Any]) -> Int {
+        let ids = (g["buckets"] as? [[String: Any]] ?? []).compactMap { $0["bucketId"] as? String }
+        let name = g["displayName"] as? String
+        if name == "Gemini Models" || ids.contains(where: { $0 == "gemini-5h" || $0 == "gemini-weekly" }) { return 0 }
+        if name == "Claude and GPT models" || ids.contains(where: { $0.hasPrefix("3p-") }) { return 1 }
+        return 2
+    }
+
+    /// response.groups[].buckets[] → 额度窗口。组里先 5 小时、再本周、再别的；
+    /// 已经过了重置时间的（缓存里的旧数据）算已经重置：用量归零、不写重置时间
+    /// thirdParty：false 时不要「第三方模型」那组（设置里关掉了）
+    static func windows(_ summary: [String: Any], now: Date, thirdParty: Bool = true) -> [LimitWindow] {
+        let groups = (summary["groups"] as? [[String: Any]] ?? []).enumerated()
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
+        var out: [LimitWindow] = []
+        for g in groups {
+            let r = rank(g)
+            if r == 1 && !thirdParty { continue }
+            let group: String? = r == 0 ? nil : r == 1 ? L("第三方模型") : (g["displayName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? L("其他额度")
+            let order = ["5h": 0, "weekly": 1]
+            let buckets = (g["buckets"] as? [[String: Any]] ?? []).enumerated()
+                .sorted { (order[$0.element["window"] as? String ?? ""] ?? 2, $0.offset) < (order[$1.element["window"] as? String ?? ""] ?? 2, $1.offset) }
+                .map(\.element)
+            for b in buckets {
+                guard let frac = fraction(b) else { continue }
+                let window = b["window"] as? String ?? ""
+                let period = window == "5h" ? L("5 小时") : window == "weekly" ? L("本周") : L("其他额度")
+                var reset = (b["resetTime"] as? String).flatMap(parseISODate)
+                var used = min(100, max(0, (1 - frac) * 100))
+                if let t = reset, t <= now { reset = nil; used = 0 }
+                var w = LimitWindow(label: group.map { "\($0) · \(period)" } ?? period, usedPercent: used, resetsAt: reset,
+                                    // 只有主要那组的本周算「主要的周额度」；别的组的本周靠 length 照样算速度、分 5 小时 / 每周的通知开关
+                                    weekly: group == nil && window == "weekly",
+                                    length: window == "5h" ? 5 * 3600 : window == "weekly" ? 7 * 86400 : 0)
+                w.group = group
+                w.key = (b["bucketId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "\(group ?? "")|\(window)"
+                out.append(w)
+            }
+        }
+        return out
+    }
+}
+
+// MARK: - 支持的几家
+
+/// 支持的几家，按这个顺序显示。各家的偏好键都按名字拼（menuShowClaude、cardShowGemini、geminiLimitSource……），
+/// 旧版存的设置照样读得到。加一家：这里加一项（switch 会逼着把每一处都填上），再写它的 fetch
+enum Provider: String, CaseIterable {
+    case claude = "Claude", codex = "Codex", gemini = "Gemini"
+
+    var name: String { rawValue }
+    /// 菜单栏上的简写
+    var short: String {
+        switch self {
+        case .claude: return "Cc"
+        case .codex: return "Cx"
+        case .gemini: return "Gm"
+        }
+    }
+    /// 额度来源存在哪个键：claudeLimitSource / codexLimitSource / geminiLimitSource
+    var sourceKey: String { rawValue.lowercased() + "LimitSource" }
+    /// 额度来源能选哪几种：api 官方接口 / local 只读本机文件 / app 问本机的 Gemini App / off 停用
+    var sources: [String] {
+        switch self {
+        case .claude, .codex: return ["api", "local", "off"]
+        case .gemini: return ["app", "off"]
+        }
+    }
+    /// 没选过时当作什么。Claude、Codex 是 nil：新装时什么都不查，打开设置让人选；
+    /// Gemini 是后加的，新装和老用户都默认停用，也不挡着首次启动的「选额度来源」
+    var defaultSource: String? {
+        switch self {
+        case .claude, .codex: return nil
+        case .gemini: return "off"
+        }
+    }
+    /// 存着的值 → 实际的来源（不认识的、没存的按默认）
+    func source(_ stored: String?) -> String? { sources.contains(stored ?? "") ? stored : defaultSource }
+    /// 「数据来源」那一行写的读取位置
+    var location: String {
+        switch self {
+        case .claude: return L("Claude Code 登录（钥匙串）")
+        case .codex: return "~/.codex/auth.json"
+        case .gemini: return "~/.gemini/antigravity"
+        }
+    }
+    /// 用量统计里对应的那家；Gemini 没有（对话记录是加密的，只有额度）
+    var stats: Source? { Source(rawValue: rawValue) }
+    static var withStats: [Provider] { allCases.filter { $0.stats != nil } }
+
+    static func sourceLabel(_ tag: String) -> String {
+        switch tag {
+        case "api": return L("官方接口")
+        case "local": return L("仅本地")
+        case "app": return L("本机 Gemini App")
+        default: return L("停用")
+        }
+    }
+
+    func fetch() async -> ProviderUsage {
+        switch self {
+        case .claude: return await Claude.fetch()
+        case .codex: return await Codex.fetch()
+        case .gemini: return await Gemini.fetch()
+        }
+    }
+
+    /// 开着的几家一起查，按上面的顺序返回。关掉的那家不查，结果里也没有它：菜单栏、卡片、通知自然都不显示；
+    /// 查的途中又停用了的也不要
+    static func fetchEnabled(_ list: [Provider] = allCases) async -> [ProviderUsage] {
+        let on = list.filter { Pref.enabled($0.name) }
+        let r = await withTaskGroup(of: (Int, ProviderUsage).self) { g in
+            for (i, p) in on.enumerated() { g.addTask { (i, await p.fetch()) } }
+            var out: [(Int, ProviderUsage)] = []
+            for await x in g { out.append(x) }
+            return out.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+        return r.filter { Pref.enabled($0.name) }
+    }
+}
+
 // MARK: - 菜单栏 UI
 
 func bar(_ percent: Double, width: Int = 12) -> String {
@@ -846,21 +1127,26 @@ enum Pref {
     static let opacity = "cardOpacity"
     static let bgOpacity = "cardBgOpacity"     // 毛玻璃背景单独的不透明度
     static let showReset = "showReset"
-    static let showClaude = "showClaude"
-    static let showCodex = "showCodex"
     static let refreshMinutes = "refreshMinutes"
     static let statsRefreshMinutes = "statsRefreshMinutes"
     static let menuLabel = "menuLabel"         // short / full
-    /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
-    static let claudeLimitSource = "claudeLimitSource"
-    static let codexLimitSource = "codexLimitSource"
-    /// 新装时不设默认值：用户在设置里选过之前什么都不查（nil）
+    /// 额度从哪来（存在 Provider.sourceKey 下）：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求 /
+    /// app 问本机的 Gemini App / off 关掉这一家（不查、哪里都不显示，比如退订了）。
+    /// Claude、Codex 新装时不设默认值：用户在设置里选过之前什么都不查（nil）；Gemini 没选过就是停用
     static func limitSource(_ provider: String) -> String? {
-        let v = UserDefaults.standard.string(forKey: provider == "Claude" ? claudeLimitSource : codexLimitSource)
-        return v == "api" || v == "local" ? v : nil
+        guard let p = Provider(rawValue: provider) else { return nil }
+        return p.source(UserDefaults.standard.string(forKey: p.sourceKey))
     }
+    /// 这一家开着吗：关掉的不查询，菜单栏、卡片、通知都不显示（统计页的历史记录还在）。还没选来源的算开着，好提示去选
+    static func enabled(_ provider: String) -> Bool { limitSource(provider) != "off" }
+    /// 每家都停用了：菜单、卡片里说一声，不然只是一片空白
+    static var allOff: Bool { Provider.allCases.allSatisfy { !enabled($0.name) } }
+    /// Gemini 的「第三方模型」组（在 Gemini App 里用 Claude、GPT 等模型的额度）显示不显示，默认显示
+    static let geminiThirdParty = "geminiThirdParty"
+    static var showThirdParty: Bool { UserDefaults.standard.object(forKey: geminiThirdParty) as? Bool ?? true }
     static func localLimits(_ provider: String) -> Bool { limitSource(provider) == "local" }
-    static var limitSourcesChosen: Bool { limitSource("Claude") != nil && limitSource("Codex") != nil }
+    /// 要自己选的几家都选过了（Gemini 有默认值，不算）
+    static var limitSourcesChosen: Bool { Provider.allCases.allSatisfy { limitSource($0.name) != nil } }
     static let menuStyle = "menuStyle"         // inline 一行 / stacked 名称在上、数值在下两行
     static let language = "language"           // auto / zh / ja / en
     static let displayMode = "displayMode"     // remaining / used
@@ -869,17 +1155,15 @@ enum Pref {
     static let cardLevelColors = "cardLevelColors"  // 额度卡片按余量着色
     static let resetStyle = "cardResetStyle"   // hidden / relative（多久后）/ absolute（几点）
     static let appearance = "appearance"       // auto / light / dark
-    // 菜单栏和两张卡片各自显示哪几家、剩余还是已用（旧版是共用的 showClaude / showCodex / displayMode，只用来给它们当初始值）
-    static let menuShowClaude = "menuShowClaude"
-    static let menuShowCodex = "menuShowCodex"
+    // 菜单栏和两张卡片各自显示哪几家、剩余还是已用（旧版是共用的 showClaude / showCodex / displayMode，只用来给它们当初始值）。
+    // 显示哪几家的键是前缀加名字：menuShowClaude、cardShowGemini、statsCardShowCodex……
+    static let menuShowPrefix = "menuShow"
     static let menuDisplayMode = "menuDisplayMode"
     static let menuLimit = "menuLimit"             // session / weekly / both：菜单栏文字显示哪个额度
     static let menuResetStyle = "menuResetStyle"   // full / relative / absolute / hidden：下拉菜单里的重置时间
-    static let cardShowClaude = "cardShowClaude"
-    static let cardShowCodex = "cardShowCodex"
+    static let cardShowPrefix = "cardShow"
     static let cardDisplayMode = "cardDisplayMode"
-    static let statsCardShowClaude = "statsCardShowClaude"
-    static let statsCardShowCodex = "statsCardShowCodex"
+    static let statsCardShowPrefix = "statsCardShow"
     static let cardOnTop = "cardOnTop"             // 保持在最前；关掉时贴在桌面层
     static let statsCardOnTop = "statsCardOnTop"
     static let showStatsCard = "showStatsCard" // 用量卡片（成本、请求数、Tokens）
@@ -909,18 +1193,20 @@ enum Pref {
     static func register() {
         UserDefaults.standard.register(defaults: [
             showCard: true, background: "none", textColor: "white", scale: 1.0, opacity: 1.0, bgOpacity: 1.0,
-            showReset: true, showClaude: true, showCodex: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative", appearance: "auto",
+            showReset: true, refreshMinutes: 5, statsRefreshMinutes: 5, menuLabel: "short", language: "auto", displayMode: "remaining", cardLayout: "horizontal", resetStyle: "relative", appearance: "auto",
             showStatsCard: false, statsCardRange: "today", cardOnTop: false, statsCardOnTop: false,
         ])
         // 用量卡片的外观一开始跟额度卡片现在的一样，之后各改各的
         let u = UserDefaults.standard
-        // 各自的显示设置一开始沿用旧版共用的那份
-        let claude = u.bool(forKey: showClaude), codex = u.bool(forKey: showCodex), mode = u.string(forKey: displayMode) ?? "remaining"
-        u.register(defaults: [
-            menuShowClaude: claude, menuShowCodex: codex, menuDisplayMode: mode, menuLimit: "both", menuResetStyle: "full",
-            cardShowClaude: claude, cardShowCodex: codex, cardDisplayMode: mode,
-            statsCardShowClaude: claude, statsCardShowCodex: codex,
-        ])
+        // 各自的显示设置一开始沿用旧版共用的那份（showClaude / showCodex，没存过的算显示；后加的 Gemini 也是显示，
+        // 反正它的来源默认停用，打开了才看得到）
+        let mode = u.string(forKey: displayMode) ?? "remaining"
+        var shows: [String: Any] = [menuDisplayMode: mode, menuLimit: "both", menuResetStyle: "full", cardDisplayMode: mode]
+        for p in Provider.allCases {
+            let old = u.object(forKey: "show" + p.name) as? Bool ?? true
+            for prefix in [menuShowPrefix, cardShowPrefix, statsCardShowPrefix] { shows[prefix + p.name] = old }
+        }
+        u.register(defaults: shows)
         u.register(defaults: [
             statsCardLayout: u.string(forKey: cardLayout) ?? "horizontal", statsCardScale: u.double(forKey: scale),
             statsCardBackground: u.string(forKey: background) ?? "none", statsCardText: u.string(forKey: textColor) ?? "white",
@@ -935,9 +1221,9 @@ enum Pref {
         if saved[Notifier.sessionResetKey] == nil, let on = saved[Notifier.resetKey] as? Bool { d.set(on, forKey: Notifier.sessionResetKey) }
         // 去掉了「最紧的那个」，选过它的改成都显示
         if d.string(forKey: menuLimit) == "tightest" { d.set("both", forKey: menuLimit) }
-        // 以前额度来源默认是「官方接口」：用过旧版的（存过自己的设置）沿用，新装的要自己选
+        // 以前额度来源默认是「官方接口」：用过旧版的（存过自己的设置）沿用，新装的要自己选。有默认值的（Gemini 默认停用）不管
         if saved.keys.contains(where: { !$0.hasPrefix("NS") }) {
-            for key in [claudeLimitSource, codexLimitSource] where saved[key] == nil { d.set("api", forKey: key) }
+            for p in Provider.allCases where p.defaultSource == nil && saved[p.sourceKey] == nil { d.set("api", forKey: p.sourceKey) }
         }
         // 以前「布局」里混着样式（紧凑、大数字……）：拆成「样式」和「排列」两项
         for (layoutKey, styleKey) in [(cardLayout, cardStyle), (statsCardLayout, statsCardStyle)] {
@@ -950,7 +1236,56 @@ enum Pref {
     }
     /// 菜单栏显示这一家吗
     static func menuVisible(_ name: String) -> Bool {
-        UserDefaults.standard.bool(forKey: name == "Claude" ? menuShowClaude : menuShowCodex)
+        enabled(name) && UserDefaults.standard.bool(forKey: menuShowPrefix + name)
+    }
+}
+
+/// 某个地方（菜单栏、额度卡片、用量卡片，键是前缀加名字）显示哪几家：开着这一家、开关也开着。
+/// 设置一变就让视图重画。家数不固定，没法一家写一个 @AppStorage
+final class ProviderFlags: ObservableObject {
+    let prefix: String
+    let providers: [Provider]
+    private(set) var on: [String: Bool]
+    private var observer: NSObjectProtocol?
+
+    init(_ prefix: String, _ providers: [Provider] = Provider.allCases) {
+        self.prefix = prefix
+        self.providers = providers
+        on = Self.read(prefix, providers)
+        observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            let now = Self.read(self.prefix, self.providers)
+            if now != self.on { self.objectWillChange.send(); self.on = now }
+        }
+    }
+    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+
+    static func read(_ prefix: String, _ providers: [Provider]) -> [String: Bool] {
+        Dictionary(uniqueKeysWithValues: providers.map { ($0.name, Pref.enabled($0.name) && UserDefaults.standard.bool(forKey: prefix + $0.name)) })
+    }
+    subscript(_ name: String) -> Bool { on[name] ?? false }
+    /// 显示几家（卡片按这个定大小：跟着设置走，不跟着查到的数据变）
+    var count: Int { on.values.filter { $0 }.count }
+}
+
+/// 菜单栏、卡片设置里「显示这一家」的开关：在「数据来源」里关掉的那家，这里也关着、不能开
+struct ProviderSwitch: View {
+    let provider: Provider
+    @AppStorage var isOn: Bool
+    @AppStorage var source: String
+
+    /// prefix：开关存在哪（Pref.menuShowPrefix 等），键是前缀加名字
+    init(_ provider: Provider, prefix: String) {
+        self.provider = provider
+        _isOn = AppStorage(wrappedValue: true, prefix + provider.name)
+        _source = AppStorage(wrappedValue: "", provider.sourceKey)
+    }
+
+    var body: some View {
+        let off = provider.source(source) == "off"
+        SettingsRow(provider.name, detail: off ? L("已在「通用 → 数据来源」里停用") : nil) {
+            SwitchControl(isOn: off ? .constant(false) : $isOn).disabled(off)
+        }
     }
 }
 
@@ -1090,8 +1425,6 @@ struct GeneralSettings: View {
     @AppStorage(Pref.statsRefreshMinutes) var statsRefreshMinutes = 5
     @AppStorage(LogReader.hostsKey) var remoteHosts = ""
     @State var newHost = ""
-    @AppStorage(Pref.claudeLimitSource) var claudeSource = ""
-    @AppStorage(Pref.codexLimitSource) var codexSource = ""
     @AppStorage(Notifier.thresholdKey) var notifyThreshold = 0
     @AppStorage(Notifier.runOutKey) var notifyRunOut = false
     @AppStorage(Notifier.sessionResetKey) var notifySessionReset = false
@@ -1167,7 +1500,7 @@ struct GeneralSettings: View {
 
     var refresh: some View {
         SettingsGroup(L("刷新"), footer: L("用量统计只读取新写入的日志，刷新很快")) {
-            SettingsRow(L("额度"), detail: L("向 Anthropic 和 OpenAI 查询剩余额度")) {
+            SettingsRow(L("额度"), detail: L("查询各家的剩余额度")) {
                 Picker("", selection: $refreshMinutes) {
                     ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text(L("%d 分钟", $0)).tag($0) }
                 }
@@ -1240,10 +1573,15 @@ struct GeneralSettings: View {
     }
 
     var sources: some View {
-        SettingsGroup(L("数据来源"), footer: L("额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志")) {
-            provider("Claude", source: L("Claude Code 登录（钥匙串）"))
-            Divider()
-            provider("Codex", source: "~/.codex/auth.json")
+        SettingsGroup(L("数据来源"), footer: L("额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。Gemini 只向本机 Gemini App 的 agent 模式查询，它没开着时显示上次的数据。用量统计都只读本地日志，不含 Gemini")) {
+            ForEach(Array(Provider.allCases.enumerated()), id: \.element) { i, p in
+                if i > 0 { Divider() }
+                SourceRow(provider: p, u: model.results.first { $0.name == p.name }, reserveRemove: !hosts.isEmpty)
+                if p == .gemini {
+                    Divider()
+                    ThirdPartyRow(reserveRemove: !hosts.isEmpty)
+                }
+            }
             ForEach(hosts, id: \.self) { host in
                 Divider()
                 // 左边小字：SSH 和日志文件数（连不上时是红色的原因）；右边和上面两行一样只放一项：请求数
@@ -1307,33 +1645,62 @@ struct GeneralSettings: View {
         }
     }
 
-    /// 一家一行：名字和读取的地方，右边是连接状态
-    /// 右边只放一项（套餐），和远程机器的行一样；出错的原因、本地缓存这些写在左边小字里
-    /// 右边选额度来源；左边小字是这次从哪查到了什么（套餐、本地数据的时间），出错时是红色的原因
-    func provider(_ name: String, source: String) -> some View {
-        let u = model.results.first { $0.name == name }
-        let selection = name == "Claude" ? $claudeSource : $codexSource
-        let local = selection.wrappedValue == "local"
-        let detail = selection.wrappedValue.isEmpty ? L("还没选，在右边选一个") : u?.error ?? (u == nil ? L("正在获取用量…")
-            : local ? u?.note ?? L("仅本地")
-            : [source, u?.plan, u?.note].compactMap { $0 }.joined(separator: " · "))
-        return SettingsRow(name, detail: detail, warning: selection.wrappedValue.isEmpty || u?.error != nil) {
-            HStack(spacing: 8) {
-                Picker("", selection: selection) {
-                    Text(L("官方接口")).tag("api")
-                    Text(L("仅本地")).tag("local")
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                // 有远程机器时，给它们的「移除」按钮留出同样的位置，状态文字才对得齐
-                if !hosts.isEmpty { Color.clear.frame(width: Self.removeWidth, height: 1) }
-            }
-        }
-    }
-
     static let removeWidth: CGFloat = 18
 
     func shortDate(_ d: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "M/d HH:mm"; return f.string(from: d)
+    }
+}
+
+/// 「数据来源」里一家一行：名字和读取的地方，右边选额度来源
+/// 右边只放来源的选项，和远程机器的行一样；左边小字是这次从哪查到了什么（套餐、本地数据的时间），出错时是红色的原因
+struct SourceRow: View {
+    let provider: Provider
+    let u: ProviderUsage?
+    /// 有远程机器时，给它们的「移除」按钮留出同样的位置，状态文字才对得齐
+    let reserveRemove: Bool
+    @AppStorage var stored: String
+
+    init(provider: Provider, u: ProviderUsage?, reserveRemove: Bool) {
+        self.provider = provider
+        self.u = u
+        self.reserveRemove = reserveRemove
+        _stored = AppStorage(wrappedValue: "", provider.sourceKey)
+    }
+
+    var body: some View {
+        let source = provider.source(stored)  // nil：还没选（Claude、Codex 新装时）
+        let off = source == "off"
+        let detail = source == nil ? L("还没选，在右边选一个")
+            : off ? L("已停用：不查询，菜单栏、卡片和通知里都不显示") : u?.error ?? (u == nil ? L("正在获取用量…")
+            : source == "local" ? u?.note ?? L("仅本地")
+            : [provider.location, u?.plan, u?.note].compactMap { $0 }.joined(separator: " · "))
+        SettingsRow(provider.name, detail: detail, warning: source == nil || (!off && u?.error != nil)) {
+            HStack(spacing: 8) {
+                Picker("", selection: Binding(get: { source ?? "" }, set: { stored = $0 })) {
+                    ForEach(provider.sources, id: \.self) { Text(Provider.sourceLabel($0)).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                if reserveRemove { Color.clear.frame(width: GeneralSettings.removeWidth, height: 1) }
+            }
+        }
+    }
+}
+
+/// 「数据来源」里 Gemini 下面一行：「第三方模型」那组额度显示不显示。Gemini 停用时关着、不能开
+struct ThirdPartyRow: View {
+    let reserveRemove: Bool
+    @AppStorage(Pref.geminiThirdParty) var isOn = true
+    @AppStorage(Provider.gemini.sourceKey) var source = ""
+
+    var body: some View {
+        let off = Provider.gemini.source(source) == "off"
+        SettingsRow(L("Gemini 第三方模型"), detail: L("在 Gemini App 里用 Claude、GPT 等模型的额度，算在 Gemini 套餐里")) {
+            HStack(spacing: 8) {
+                SwitchControl(isOn: off ? .constant(false) : $isOn).disabled(off)
+                if reserveRemove { Color.clear.frame(width: GeneralSettings.removeWidth, height: 1) }
+            }
+        }
     }
 }
 
@@ -1427,20 +1794,19 @@ struct MenuBarSettings: View {
     @AppStorage(Pref.menuLabel) var menuLabel = "short"
     @AppStorage(Pref.menuStyle) var menuStyle = "inline"
     @AppStorage(Pref.menuDisplayMode) var displayMode = "remaining"
-    @AppStorage(Pref.menuShowClaude) var showClaude = true
-    @AppStorage(Pref.menuShowCodex) var showCodex = true
+    @StateObject var flags = ProviderFlags(Pref.menuShowPrefix)
     @AppStorage(Pref.menuLimit) var limit = "both"
     @AppStorage(Pref.menuResetStyle) var resetStyle = "full"
     @AppStorage(Pref.showCard) var showCard = true
     @AppStorage(Pref.showStatsCard) var showStatsCard = false
 
-    var shown: [ProviderUsage] { model.results.filter { $0.name == "Claude" ? showClaude : showCodex } }
+    var shown: [ProviderUsage] { model.results.filter { flags[$0.name] } }
     var used: Bool { displayMode == "used" }
 
     /// 和菜单栏上一样的文字
     var title: String {
         let parts = shown.map { u -> String in
-            let name = menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx"
+            let name = menuLabel == "full" ? u.name : u.short
             return "\(name) " + (u.menuValue(limit, used: used) ?? "–")
         }
         return parts.isEmpty ? "UsageBar" : parts.joined(separator: "  ")
@@ -1458,10 +1824,10 @@ struct MenuBarSettings: View {
                             }
                             .pickerStyle(.segmented).labelsHidden().fixedSize()
                         }
-                        Divider()
-                        SettingsRow("Claude") { SwitchControl(isOn: $showClaude) }
-                        Divider()
-                        SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }
+                        ForEach(Provider.allCases, id: \.self) { p in
+                            Divider()
+                            ProviderSwitch(p, prefix: Pref.menuShowPrefix)
+                        }
                     }
                     SettingsGroup(L("菜单栏文字")) {
                         SettingsRow(L("样式")) {
@@ -1474,7 +1840,7 @@ struct MenuBarSettings: View {
                         Divider()
                         SettingsRow(L("名称")) {
                             Picker("", selection: $menuLabel) {
-                                Text(L("简写（Cc / Cx）")).tag("short")
+                                Text(L("简写（Cc / Cx / Gm）")).tag("short")
                                 Text(L("全名")).tag("full")
                             }
                             .pickerStyle(.radioGroup).horizontalRadioGroupLayout().labelsHidden().fixedSize()
@@ -1528,7 +1894,7 @@ struct MenuBarSettings: View {
             HStack(alignment: .top, spacing: 10) {
                 ForEach(shown, id: \.name) { u in
                     VStack(alignment: .center, spacing: -1.5) {
-                        Text(menuLabel == "full" ? u.name : u.name == "Claude" ? "Cc" : "Cx")
+                        Text(menuLabel == "full" ? u.name : u.short)
                             .font(.system(size: 8.5, weight: .semibold))
                         Text(u.menuValue(limit, used: used) ?? "–")
                             .font(.system(size: 11, weight: .semibold).monospacedDigit())
@@ -1623,11 +1989,13 @@ struct CardSettings: View {
 /// 一张卡片的各项设置存在哪些键下
 struct CardKeys {
     let stats: Bool  // 用量卡片；否则是额度卡片
-    let show, onTop, claude, codex, style, layout, scale, background, text, opacity, bgOpacity: String
-    static let limits = CardKeys(stats: false, show: Pref.showCard, onTop: Pref.cardOnTop, claude: Pref.cardShowClaude, codex: Pref.cardShowCodex,
+    let show, onTop, showPrefix, style, layout, scale, background, text, opacity, bgOpacity: String
+    /// 能选显示哪几家：额度卡片是全部，用量卡片只有有统计的（没有 Gemini）
+    var providers: [Provider] { stats ? Provider.withStats : Provider.allCases }
+    static let limits = CardKeys(stats: false, show: Pref.showCard, onTop: Pref.cardOnTop, showPrefix: Pref.cardShowPrefix,
                                  style: Pref.cardStyle, layout: Pref.cardLayout, scale: Pref.scale, background: Pref.background, text: Pref.textColor,
                                  opacity: Pref.opacity, bgOpacity: Pref.bgOpacity)
-    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, onTop: Pref.statsCardOnTop, claude: Pref.statsCardShowClaude, codex: Pref.statsCardShowCodex,
+    static let stats = CardKeys(stats: true, show: Pref.showStatsCard, onTop: Pref.statsCardOnTop, showPrefix: Pref.statsCardShowPrefix,
                                 style: Pref.statsCardStyle, layout: Pref.statsCardLayout, scale: Pref.statsCardScale, background: Pref.statsCardBackground,
                                 text: Pref.statsCardText, opacity: Pref.statsCardOpacity, bgOpacity: Pref.statsCardBgOpacity)
 }
@@ -1636,8 +2004,6 @@ struct CardForm: View {
     let keys: CardKeys
     @AppStorage var show: Bool
     @AppStorage var onTop: Bool
-    @AppStorage var showClaude: Bool
-    @AppStorage var showCodex: Bool
     @AppStorage var style: String
     @AppStorage var layout: String
     @AppStorage var scale: Double
@@ -1654,8 +2020,6 @@ struct CardForm: View {
         self.keys = keys
         _show = AppStorage(wrappedValue: !keys.stats, keys.show)
         _onTop = AppStorage(wrappedValue: false, keys.onTop)
-        _showClaude = AppStorage(wrappedValue: true, keys.claude)
-        _showCodex = AppStorage(wrappedValue: true, keys.codex)
         _style = AppStorage(wrappedValue: "standard", keys.style)
         _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
         _scale = AppStorage(wrappedValue: 1.0, keys.scale)
@@ -1704,10 +2068,10 @@ struct CardForm: View {
                     }
                     .disabled(!show)
                 }
-                Divider()
-                SettingsRow("Claude") { SwitchControl(isOn: $showClaude) }.disabled(!show)
-                Divider()
-                SettingsRow("Codex") { SwitchControl(isOn: $showCodex) }.disabled(!show)
+                ForEach(keys.providers, id: \.self) { p in
+                    Divider()
+                    ProviderSwitch(p, prefix: keys.showPrefix).disabled(!show)
+                }
             }
             SettingsGroup(L("布局")) {
                 SettingsRow(L("样式")) {
@@ -1782,11 +2146,13 @@ struct CardPreview: View {
     @AppStorage var layout: String
     @AppStorage var scale: Double
     @AppStorage var textColor: String
+    @StateObject var flags: ProviderFlags
 
     init(keys: CardKeys, model: UsageModel, stats: StatsStore) {
         self.keys = keys
         self.model = model
         self.stats = stats
+        _flags = StateObject(wrappedValue: ProviderFlags(keys.showPrefix, keys.providers))
         _show = AppStorage(wrappedValue: !keys.stats, keys.show)
         _style = AppStorage(wrappedValue: "standard", keys.style)
         _layout = AppStorage(wrappedValue: "horizontal", keys.layout)
@@ -1795,7 +2161,7 @@ struct CardPreview: View {
     }
 
     /// 卡片尺寸：每种排列一个固定尺寸，乘上大小比例
-    var cardSize: CGSize { CardSize.base(style: style, layout: layout) * scale }
+    var cardSize: CGSize { CardSize.base(style: style, layout: layout, count: flags.count) * scale }
 
     var body: some View {
         GeometryReader { g in
@@ -1834,7 +2200,7 @@ struct AboutSettings: View {
                         Text(L("数据说明")).font(.headline)
                         VStack(spacing: 0) {
                             infoRow("gauge.with.dots.needle.50percent", L("额度"),
-                                    L("默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「通用 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求"))
+                                    L("默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「通用 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求。Gemini 默认停用，打开后只向本机 Gemini App 的 agent 模式查询（127.0.0.1），只有额度、没有用量统计"))
                             Divider().padding(.leading, 54)
                             infoRow("chart.bar.xaxis", L("用量统计"),
                                     L("读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「通用」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）。解析结果存在本机的数据库里（~/Library/Application Support/UsageBar），日志被清理后统计也还在；成本按 models.dev 的 API 价格估算，价格每天更新一次"))
@@ -1888,7 +2254,7 @@ struct AboutCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("UsageBar").font(.title2.weight(.semibold))
                     Text(L("版本 %@", updater.currentVersion)).foregroundStyle(.secondary)
-                    Text(L("在菜单栏和桌面显示 Claude 与 Codex 的剩余用量")).font(.callout).foregroundStyle(.secondary)
+                    Text(L("在菜单栏和桌面显示 Claude、Codex 与 Gemini 的剩余用量")).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 16)
                 updateControl
@@ -2240,10 +2606,12 @@ final class UsageModel: ObservableObject {
 
 /// 卡片的固定大小（大小 100% 时，含内边距）：每家一块的样式按左右、上下排，紧凑、细条、占比条是一条。
 /// 同一种排列的卡片一样大，两张卡片摆在一起也整齐
+/// count：显示几家。两家及以下和以前一样大；三家起放大一些（Gemini 的额度有五个），不然缩得字太小
 enum CardSize {
-    static func base(style: String, layout: String) -> CGSize {
-        if ["compact", "slim", "share"].contains(style) { return CGSize(width: 340, height: 150) }
-        return layout == "vertical" ? CGSize(width: 296, height: 340) : CGSize(width: 480, height: 200)
+    static func base(style: String, layout: String, count: Int = 2) -> CGSize {
+        let extra = CGFloat(max(0, count - 2))
+        if ["compact", "slim", "share"].contains(style) { return CGSize(width: 340 + 180 * extra, height: 150 + 100 * extra) }
+        return layout == "vertical" ? CGSize(width: 296, height: 340 + 220 * extra) : CGSize(width: 480 + 240 * extra, height: 200 + 90 * extra)
     }
 }
 
@@ -2346,8 +2714,7 @@ struct CardView: View {
     @AppStorage(Pref.opacity) var opacity = 1.0
     @AppStorage(Pref.bgOpacity) var bgOpacity = 1.0
     @AppStorage(Pref.resetStyle) var resetStyle = "relative"
-    @AppStorage(Pref.cardShowClaude) var showClaude = true
-    @AppStorage(Pref.cardShowCodex) var showCodex = true
+    @StateObject var flags = ProviderFlags(Pref.cardShowPrefix)
     @AppStorage(Pref.language) var language = "auto"
     @AppStorage(Pref.cardDisplayMode) var displayMode = "remaining"
     @AppStorage(Pref.cardStyle) var style = "standard"
@@ -2362,17 +2729,19 @@ struct CardView: View {
     var body: some View {
         let _ = (language, displayMode)  // 切换语言或显示方式时重绘
         let white = textColor == "white"
-        let shown = model.results.filter { $0.name == "Claude" ? showClaude : showCodex }
+        let shown = model.results.filter { flags[$0.name] }
         VStack(alignment: .leading, spacing: (style == "compact" ? 10 : 14) * s) {
             if model.results.isEmpty {
-                Text(L("正在获取用量…")).font(.system(size: 12 * s)).foregroundStyle(.secondary)
+                // 查过了还是空的：每家都在「数据来源」里关掉了
+                Text(Pref.allOff ? L("所有服务都停用了") : L("正在获取用量…"))
+                    .font(.system(size: 12 * s)).foregroundStyle(.secondary)
             }
             Group {
                 switch style {
                 case "compact":
                     // 网格：各行的同一列上下对齐
                     Grid(alignment: .leading, horizontalSpacing: 14 * s, verticalSpacing: 6 * s) {
-                        ForEach(shown, id: \.name, content: compactRow)
+                        ForEach(shown, id: \.name, content: compactRows)
                     }
                 case "slim":
                     Grid(alignment: .leading, horizontalSpacing: 8 * s, verticalSpacing: 7 * s) {
@@ -2388,7 +2757,7 @@ struct CardView: View {
                     .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
-        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout) * s, padding: 16 * s))
+        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout, count: flags.count) * s, padding: 16 * s))
         .environment(\.colorScheme, white ? .dark : .light)
         // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
         .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
@@ -2511,7 +2880,8 @@ extension CardView {
     func bigCell(_ w: LimitWindow) -> some View {
         let tint = w.levelColor(levelColors)
         return VStack(alignment: .leading, spacing: 4 * s) {
-            Text(w.label).font(.system(size: 10 * s)).foregroundStyle(.secondary).lineLimit(1)
+            // 带组名的（「第三方模型 · 5 小时」）比格子宽一点，缩一点字放下
+            Text(w.label).font(.system(size: 10 * s)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.75)
             HStack(alignment: .firstTextBaseline, spacing: 1 * s) {
                 Text("\(Int(w.shown(used).rounded()))")
                     .font(.system(size: 26 * s, weight: .semibold, design: .rounded).monospacedDigit())
@@ -2524,16 +2894,30 @@ extension CardView {
         }
     }
 
-    /// 圆环：每个额度一个环，环里是百分比和额度名，下面是多久后重置（环大、字小，卡片不至于太瘦长）
+    /// 圆环：每个额度一个环，环里是百分比和额度名，下面是多久后重置（环大、字小，卡片不至于太瘦长）。
+    /// 换组时换行（Gemini 有三组额度，排一行太长）；Claude、Codex 没有组，照旧一行
     func ringBlock(_ u: ProviderUsage) -> some View {
         VStack(alignment: .leading, spacing: 10 * s) {
             header(u, caption: !u.windows.isEmpty, credits: true)
             errorText(u)
-            HStack(alignment: .top, spacing: 30 * s) {
-                ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in ring(w) }
+            ForEach(Array(chunked(u.windows).enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .top, spacing: 30 * s) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, w in ring(w) }
+                }
+                .padding(.horizontal, 6 * s)
             }
-            .padding(.horizontal, 6 * s)
         }
+    }
+
+    /// 按组分行：相邻的同一组放一行（没有时是一个空行，好让那一行照样画出名字）。
+    /// 不按个数切：Claude 有四个额度时照旧排一行，卡片不变样
+    func chunked(_ ws: [LimitWindow]) -> [[LimitWindow]] {
+        guard !ws.isEmpty else { return [[]] }
+        var rows: [[LimitWindow]] = []
+        for w in ws {
+            if let last = rows.last?.last, last.group == w.group { rows[rows.count - 1].append(w) } else { rows.append([w]) }
+        }
+        return rows
     }
 
     func ring(_ w: LimitWindow) -> some View {
@@ -2551,7 +2935,11 @@ extension CardView {
                         Text("%").font(.system(size: 10 * s, weight: .medium)).foregroundStyle(.secondary)
                         if w.fast { Text("↑").font(.system(size: 10 * s, weight: .bold)) }
                     }
-                    Text(w.label).font(.system(size: 10 * s)).foregroundStyle(.secondary)
+                    // 不是主要那组的：组名小字另起一行，环里放不下「第三方模型 · 5 小时」
+                    if let g = w.group {
+                        Text(g).font(.system(size: 8 * s)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.6)
+                    }
+                    Text(w.period).font(.system(size: 10 * s)).foregroundStyle(.secondary)
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
                 .frame(maxWidth: size - line * 2 - 6 * s)
@@ -2586,22 +2974,32 @@ extension CardView {
         }
     }
 
-    /// 紧凑：一家一行，每个额度是数字加下面一行小字的重置时间
-    func compactRow(_ u: ProviderUsage) -> some View {
+    /// 紧凑：一家一行，每个额度是数字加下面一行小字的重置时间。Gemini 换组时接着下一行（名字那格空着）
+    func compactRows(_ u: ProviderUsage) -> some View {
+        ForEach(Array(chunked(u.windows).enumerated()), id: \.offset) { i, row in
+            compactRow(u, row, first: i == 0)
+        }
+    }
+
+    func compactRow(_ u: ProviderUsage, _ windows: [LimitWindow], first: Bool) -> some View {
         GridRow(alignment: .firstTextBaseline) {
             // 名字下面一行是重置次数（「↻ 2」），不另占一列
-            VStack(alignment: .leading, spacing: 2 * s) {
-                Text(u.name).font(.system(size: 13 * s, weight: .semibold))
-                if let rc = u.resetCredits {
-                    Text("↻ \(rc.count)").font(.system(size: 9.5 * s).monospacedDigit()).foregroundStyle(.secondary).help(rc.text)
+            if first {
+                VStack(alignment: .leading, spacing: 2 * s) {
+                    Text(u.name).font(.system(size: 13 * s, weight: .semibold))
+                    if let rc = u.resetCredits {
+                        Text("↻ \(rc.count)").font(.system(size: 9.5 * s).monospacedDigit()).foregroundStyle(.secondary).help(rc.text)
+                    }
                 }
+            } else {
+                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
             }
-            if let e = u.error, u.windows.isEmpty {
+            if first, let e = u.error, u.windows.isEmpty {
                 Text(e).font(.system(size: 11 * s)).foregroundStyle(.secondary).lineLimit(1)
                     .frame(maxWidth: 260 * s, alignment: .leading)
                     .gridCellColumns(2)
             }
-            ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
+            ForEach(Array(windows.enumerated()), id: \.offset) { _, w in
                 VStack(alignment: .leading, spacing: 2 * s) {
                     HStack(alignment: .firstTextBaseline, spacing: 5 * s) {
                         Text(w.label).font(.system(size: 11 * s)).foregroundStyle(.secondary)
@@ -3000,7 +3398,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // install.sh 从旧版（LaunchAgent 自启）升级时会带上这个参数
         if CommandLine.arguments.contains("--enable-login-item") { LoginItem.set(true) }
         lastLang = I18n.lang
-        item.button?.title = "Cc …  Cx …"
+        let placeholder = Provider.allCases.filter { Pref.menuVisible($0.name) }.map { "\($0.short) …" }.joined(separator: "  ")
+        item.button?.title = placeholder.isEmpty ? "UsageBar" : placeholder
         UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
         if Notifier.anyEnabled { Task { await Notifier.requestPermission() } }
         model.onRefresh = { [weak self] in self?.refresh() }
@@ -3047,9 +3446,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loading = true
         rebuildMenu()
         Task {
-            async let c = Claude.fetch()
-            async let x = Codex.fetch()
-            let r = await [c, x]
+            // 关掉的那家不查，结果里也没有它：菜单栏、卡片、通知自然都不显示
+            let r = await Provider.fetchEnabled()
             await MainActor.run {
                 self.results = r
                 self.lastUpdate = Date()
@@ -3144,14 +3542,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 菜单栏文字和下拉菜单只在跟它们有关的设置变了时才重画：任何设置一变（包括切换主窗口的页面）都会走到这里
         let d = UserDefaults.standard
-        let menuKey = [Pref.menuLabel, Pref.menuStyle, Pref.menuDisplayMode, Pref.menuShowClaude, Pref.menuShowCodex,
-                       Pref.menuLimit, Pref.menuResetStyle, Pref.showCard, Pref.showStatsCard, Pref.language]
+        let menuKey = ([Pref.menuLabel, Pref.menuStyle, Pref.menuDisplayMode, Pref.menuLimit, Pref.menuResetStyle,
+                        Pref.showCard, Pref.showStatsCard, Pref.language] + Provider.allCases.map { Pref.menuShowPrefix + $0.name })
             .map { "\(d.object(forKey: $0) ?? "")" }.joined(separator: "|")
         // 换了额度来源：马上按新的来源查一次
-        let sourceKey = "\(Pref.limitSource("Claude") ?? "")|\(Pref.limitSource("Codex") ?? "")"
+        let sourceKey = Provider.allCases.map { Pref.limitSource($0.name) ?? "" }.joined(separator: "|")
         if sourceKey != lastSourceKey {
-            if !lastSourceKey.isEmpty { refresh(); stats.reload() }
+            if !lastSourceKey.isEmpty {
+                // 刚停用的那家马上从菜单栏、卡片上拿掉，不等这次查完
+                results = results.filter { Pref.enabled($0.name) }
+                model.results = results
+                for p in Provider.allCases where !Pref.enabled(p.name) { if let src = p.stats { stats.cycleStarts[src] = nil } }
+                updateTitle(); rebuildMenu()
+                refresh(); stats.reload()
+            }
             lastSourceKey = sourceKey
+        }
+        // 开关了 Gemini 的第三方模型：关掉的马上拿掉，再只重新查 Gemini（本机，很快；不重复请求 Claude、Codex 的接口）
+        if Pref.showThirdParty != lastThirdParty {
+            lastThirdParty = Pref.showThirdParty
+            if !lastThirdParty {
+                let tp = L("第三方模型")
+                results = results.map { u in
+                    guard u.name == Provider.gemini.name else { return u }
+                    var u = u; u.windows.removeAll { $0.group == tp }; return u
+                }
+                model.results = results
+                updateTitle(); rebuildMenu()
+            }
+            if Pref.enabled(Provider.gemini.name) {
+                Task {
+                    let g = await Provider.gemini.fetch()
+                    await MainActor.run {
+                        // 查的途中又停用了、或者开关又拨回去了的，不要这次的结果
+                        guard Pref.enabled(Provider.gemini.name), Pref.showThirdParty == self.lastThirdParty,
+                              let i = self.results.firstIndex(where: { $0.name == g.name }) else { return }
+                        self.results[i] = g
+                        self.model.results = self.results
+                        self.updateTitle(); self.rebuildMenu()
+                    }
+                }
+            }
         }
         if menuKey != lastMenuKey {
             lastMenuKey = menuKey
@@ -3161,6 +3592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     var lastMenuKey = ""
     var lastSourceKey = ""
+    lazy var lastThirdParty = Pref.showThirdParty
     var refreshAgain = false
 
     /// 统计和设置都在主窗口里，菜单只留一个入口，打开时回到上次看的页
@@ -3242,14 +3674,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.string(forKey: Pref.menuStyle) == "stacked", !shown.isEmpty {
             item.button?.attributedTitle = NSAttributedString()
             item.button?.image = stackedTitle(shown.map { u in
-                (full ? u.name : u.name == "Claude" ? "Cc" : "Cx", u.menuValue(which, used: Pref.menuUsed))
+                (full ? u.name : u.short, u.menuValue(which, used: Pref.menuUsed))
             })
             return
         }
         item.button?.image = nil
         for (i, u) in results.filter({ Pref.menuVisible($0.name) }).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
-            let short = full ? "\(u.name) " : u.name == "Claude" ? "Cc " : "Cx "
+            let short = (full ? u.name : u.short) + " "
             s.append(NSAttributedString(string: short, attributes: [.font: font]))
             if let v = u.menuValue(which, used: Pref.menuUsed) {
                 s.append(NSAttributedString(string: v, attributes: [.font: font]))
@@ -3321,6 +3753,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(mi)
             menu.addItem(.separator())
         }
+        if Pref.allOff {
+            info(NSAttributedString(string: L("所有服务都停用了"), attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+            menu.addItem(.separator())
+        }
 
         let status: String
         if loading { status = L("正在刷新…") }
@@ -3361,15 +3797,31 @@ if CommandLine.arguments.contains("--stats") {
     exit(0)
 }
 
+/// 字符串在终端里占几列：中日韩文字、全角符号占两列，其余一列
+func columns(_ s: String) -> Int {
+    s.unicodeScalars.reduce(0) { n, c in
+        let v = c.value
+        let wide = (0x1100...0x115F).contains(v) || (0x2E80...0xA4CF).contains(v) || (0xAC00...0xD7A3).contains(v)
+            || (0xF900...0xFAFF).contains(v) || (0xFE30...0xFE4F).contains(v) || (0xFF00...0xFF60).contains(v)
+            || (0xFFE0...0xFFE6).contains(v) || (0x20000...0x3FFFD).contains(v)
+        return n + (wide ? 2 : 1)
+    }
+}
+
 // 命令行模式：UsageBar --print，直接在终端打印用量
 if CommandLine.arguments.contains("--print") {
     let sem = DispatchSemaphore(value: 0)
     Task {
-        for u in [await Claude.fetch(), await Codex.fetch()] {
+        let all = await Provider.fetchEnabled()
+        if all.isEmpty { print(L("所有服务都停用了")) }
+        for u in all {
             print("\(u.name)\(u.plan.map { " (\($0))" } ?? "")")
             if let e = u.error { print("  ⚠︎ \(e)") }
+            // 按终端里占的列数对齐（中日文一个字占两列），按这家最长的名字来，Gemini 带组名的才对得齐、不被截掉
+            let width = max(12, (u.windows.map { columns($0.label) }.max() ?? 0) + 1)
             for w in u.windows {
-                print("  \(w.label.padding(toLength: 10, withPad: " ", startingAt: 0))\(bar(w.shown(false))) \(w.shownText(false))  \(resetText(w.resetsAt))")
+                let pad = String(repeating: " ", count: max(0, width - columns(w.label)))
+                print("  \(w.label)\(pad)\(bar(w.shown(false))) \(w.shownText(false))  \(resetText(w.resetsAt))")
             }
             if let n = u.note { print("  ⓘ \(n)") }
         }

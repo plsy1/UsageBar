@@ -100,7 +100,7 @@ const T = {
   reset_count: ['可用重置 %s 次', 'リセット %s 回分', '%s resets available'],
   expires: ['%s 到期', '%s まで', 'expires %s'],
   earliest: ['最早 %s 到期', '最も早いもの %s まで', 'earliest expires %s'],
-  usage_sub: ['Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量', 'Remaining Claude and Codex usage'],
+  usage_sub: ['Claude、Codex 与 Gemini 的剩余用量', 'Claude・Codex・Gemini の残り使用量', 'Remaining Claude, Codex and Gemini usage'],
   settings_sub: ['开机启动、外观、刷新频率和数据来源', 'ログイン時の起動、外観、更新頻度、データソース', 'Launch at login, appearance, refresh and data sources'],
   refresh: ['立即刷新', '今すぐ更新', 'Refresh Now'],
   open_window: ['打开窗口', 'ウィンドウを開く', 'Open Window'],
@@ -113,7 +113,11 @@ const T = {
   weekly: ['本周', '今週', 'Weekly'],
   weekly_opus: ['本周 Opus', '今週 Opus', 'Weekly Opus'],
   weekly_sonnet: ['本周 Sonnet', '今週 Sonnet', 'Weekly Sonnet'],
+  weekly_model: ['本周 %s', '今週 %s', 'Weekly %s'],
   other: ['其他额度', 'その他の上限', 'Other Limit'],
+  third_party: ['第三方模型', '他社モデル', 'Third-party models'],
+  third_party_gemini: ['Gemini 第三方模型', 'Gemini の他社モデル', 'Gemini third-party models'],
+  third_party_hint: ['在 Antigravity 里用 Claude、GPT 等模型的额度，算在 Gemini 套餐里', 'Antigravity で Claude や GPT などを使うための上限（Gemini のプランに含まれます）', 'Limits for using Claude, GPT and similar models in Antigravity; part of your Gemini plan'],
   hours: ['%s 小时', '%s時間', '%s hours'],
   days: ['%s 天', '%s日', '%s days'],
   resets_in: ['%s后重置', '%s後にリセット', 'resets in %s'],
@@ -132,6 +136,9 @@ const T = {
   claude_local_stale: ['Claude 桌面 app 最近没有查过用量（最近一次 %s）', 'Claude デスクトップアプリが最近使用量を取得していません（最後は %s）', "The Claude desktop app hasn't checked usage recently (last at %s)"],
   claude_local: ['来自 Claude 桌面 app 的记录 · 数据时间 %s', 'Claude デスクトップアプリの記録 · %s 時点', 'From the Claude desktop app · as of %s'],
   codex_logs: ['来自会话日志 · 数据时间 %s', 'セッションログより · データ時刻 %s', 'From session logs · data from %s'],
+  gemini_empty: ['Gemini 没有返回额度数据', 'Gemini からクォータのデータが返ってきませんでした', "Gemini didn't return any quota data"],
+  gemini_not_running: ['Antigravity 没在运行 · 打开 Antigravity 后自动读取', 'Antigravity が起動していません · Antigravity を開くと自動で読み込みます', "Antigravity isn't running · it's read automatically once you open Antigravity"],
+  gemini_cache: ['Antigravity 没在运行 · 数据时间 %s', 'Antigravity が起動していません · データ時刻 %s', "Antigravity isn't running · data from %s"],
   codex_logs_none: ['会话日志里还没有额度记录（用一次 Codex 就有）', 'セッションログにまだ上限の記録がありません（Codex を一度使うと記録されます）', 'No limits in the session logs yet (they appear after using Codex once)'],
   g_notify: ['通知', '通知', 'Notifications'],
   n_threshold: ['用量达到', '使用量が達したら', 'Usage Reaches'],
@@ -163,7 +170,7 @@ const T = {
   nav_about: ['关于', '情報', 'About'],
   about_sub: ['版本、更新和数据说明', 'バージョン、アップデート、データについて', 'Version, updates and where the data comes from'],
   version: ['版本 %s', 'バージョン %s', 'Version %s'],
-  tagline: ['在托盘和桌面显示 Claude 与 Codex 的剩余用量', 'Claude と Codex の残り使用量をトレイとデスクトップに表示', 'Shows remaining Claude and Codex usage in the tray and on the desktop'],
+  tagline: ['在托盘和桌面显示 Claude、Codex 与 Gemini 的剩余用量', 'Claude・Codex・Gemini の残り使用量をトレイとデスクトップに表示', 'Shows remaining Claude, Codex and Gemini usage in the tray and on the desktop'],
   check_update: ['检查更新', 'アップデートを確認', 'Check for Updates'],
   checking: ['正在检查…', '確認中…', 'Checking…'],
   downloading: ['正在下载 %s%…', 'ダウンロード中 %s%…', 'Downloading %s%…'],
@@ -180,7 +187,7 @@ const T = {
   no_checksum: ['缺少校验值', 'チェックサムがありません', 'Missing checksum'],
   write: ['没有写入权限', '書き込み権限がありません', 'No permission to replace the app'],
   data_info: ['数据说明', 'データについて', 'About the Data'],
-  info_limits: ['默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「设置 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求', '既定ではこの PC の Claude Code と Codex のログイン情報で Anthropic・OpenAI の使用量 API に問い合わせます。「設定 → データソース」で「ローカルのみ」にすると、この PC のファイルだけを読みリクエストを送りません', "By default, queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this computer; switch to Local Only under Settings → Data Sources to read files on this computer only and send no requests"],
+  info_limits: ['默认用本机 Claude Code 和 Codex 的登录信息，向 Anthropic 和 OpenAI 的用量接口查询；在「设置 → 数据来源」里可以改成「仅本地」，只读本机文件、不发请求。Gemini 默认停用，打开后只问本机正在运行的 Antigravity', '既定ではこの PC の Claude Code と Codex のログイン情報で Anthropic・OpenAI の使用量 API に問い合わせます。「設定 → データソース」で「ローカルのみ」にすると、この PC のファイルだけを読みリクエストを送りません。Gemini は既定でオフで、オンにするとこの PC で動いている Antigravity にだけ問い合わせます', "By default, queried from Anthropic's and OpenAI's usage endpoints using the Claude Code and Codex logins on this computer; switch to Local Only under Settings → Data Sources to read files on this computer only and send no requests. Gemini is off by default; when on, it only asks the Antigravity running on this computer"],
   info_stats: ['读取本机的会话记录（~/.claude/projects 和 ~/.codex/sessions），以及「设置」里添加的远程机器上的 Codex 日志（用 ssh 读取，在远程先过滤）。解析结果存在本机的数据库里，日志被清理后统计也还在；成本按 models.dev 的 API 价格估算，价格每天更新一次', 'この PC のセッション記録（~/.claude/projects と ~/.codex/sessions）と、「設定」で追加したリモートマシンの Codex ログ（ssh で読み込み、リモート側で絞り込み）を読みます。解析結果はこの PC のデータベースに保存されるので、ログが削除されても統計は残ります。コストは models.dev の API 価格で推定し、価格は毎日更新されます', 'Reads the session logs on this computer (~/.claude/projects and ~/.codex/sessions) and the Codex logs on remote machines added in Settings (read over ssh, filtered there). Parsed results are kept in a local database, so statistics stay after logs are cleaned up; costs are estimated from models.dev API prices, updated daily'],
   privacy: ['隐私', 'プライバシー', 'Privacy'],
   info_privacy: ['所有数据只在这台电脑、你添加的远程机器和上述官方服务之间传输，不经过其他服务器', 'データはこの PC、追加したリモートマシン、上記の公式サービスの間でのみやり取りされ、他のサーバーを経由しません', 'Data only travels between this computer, the remote machines you add and those official services, never through other servers'],
@@ -199,7 +206,7 @@ const T = {
   c_orange: ['橙色', 'オレンジ', 'Orange'],
   c_gray: ['灰色', 'グレー', 'Gray'],
   g_refresh: ['刷新', '更新', 'Refresh'],
-  limits_detail: ['向 Anthropic 和 OpenAI 查询剩余额度', 'Anthropic と OpenAI に残りの上限を問い合わせます', 'Asks Anthropic and OpenAI for remaining limits'],
+  limits_detail: ['查询各家的剩余额度', '各サービスの残りの上限を問い合わせます', 'Checks the remaining limits of each service'],
   stats_detail: ['读取本机和远程机器的会话记录', 'この PC とリモートマシンのセッション記録を読み込みます', 'Reads session logs on this computer and remote machines'],
   refresh_note: ['用量统计只读取新写入的日志，刷新很快', '使用統計は新しく書き込まれた記録だけを読むので、更新はすぐ終わります', 'Usage statistics only read newly written logs, so refreshing is quick'],
   g_tray: ['托盘', 'トレイ', 'Tray'],
@@ -221,7 +228,13 @@ const T = {
   pick_source: ['还没选，在右边选一个', 'まだ選ばれていません。右から選んでください', 'Not chosen yet, pick one on the right'],
   no_source: ['还没选额度来源 · 在设置的「通用」里选择', '上限の取得元が未選択です · 設定の「一般」で選んでください', 'No limits source chosen yet · pick one in Settings → General'],
   src_local: ['仅本地', 'ローカルのみ', 'Local Only'],
-  sources_note: ['额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。用量统计都只读本地日志', '上限：「公式 API」はこの PC のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの PC のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。使用量の統計はいずれもローカルのログだけを読みます', 'Limits: Official API asks Anthropic and OpenAI using the logins on this computer and is the most accurate; Local Only reads files on this computer and sends no requests (Codex from its session logs, Claude from the desktop app\'s records, which may be out of date). Usage statistics always read local logs only'],
+  src_off: ['停用', 'オフ', 'Off'],
+  src_app: ['本机 Antigravity', 'この PC の Antigravity', 'Local Antigravity'],
+  src_off_hint: ['已停用：不查询，托盘、卡片和通知里都不显示', 'オフ：問い合わせず、トレイ・カード・通知にも表示しません', 'Off: not checked, and hidden from the tray, cards and notifications'],
+  off_in_sources: ['已在「设置 → 数据来源」里停用', '「設定 → データソース」でオフになっています', 'Turned off under Settings → Data Sources'],
+  all_off: ['所有服务都停用了', 'すべてのサービスがオフです', 'All services are turned off'],
+  both_off: ['Claude 和 Codex 都停用了', 'Claude と Codex はどちらもオフです', 'Claude and Codex are both turned off'],
+  sources_note: ['额度：「官方接口」用本机的登录信息向 Anthropic、OpenAI 查询，最准；「仅本地」只读本机文件、不发请求，Codex 读会话日志，Claude 读桌面 app 的记录，可能不是最新。Gemini 只问本机正在运行的 Antigravity（读 ~/.gemini/antigravity 里的端口），没在运行时显示上次的数据。用量统计都只读本地日志，Gemini 没有用量统计', '上限：「公式 API」はこの PC のログイン情報で Anthropic・OpenAI に問い合わせ、最も正確です。「ローカルのみ」はこの PC のファイルだけを読みリクエストを送りません（Codex はセッションログ、Claude はデスクトップアプリの記録。最新でないことがあります）。Gemini はこの PC で動いている Antigravity にだけ問い合わせ（~/.gemini/antigravity のポートを読みます）、起動していないときは前回のデータを表示します。使用量の統計はいずれもローカルのログだけを読み、Gemini の統計はありません', 'Limits: Official API asks Anthropic and OpenAI using the logins on this computer and is the most accurate; Local Only reads files on this computer and sends no requests (Codex from its session logs, Claude from the desktop app\'s records, which may be out of date). Gemini only asks the Antigravity running on this computer (its port is read from ~/.gemini/antigravity) and shows the last data when it isn\'t running. Usage statistics always read local logs only; there are none for Gemini'],
   footnote: ['托盘图标旁（Linux）或鼠标悬停提示里（Windows）显示每家最紧的那个额度', 'トレイ（Linux はアイコンの横、Windows はツールチップ）に各サービスで最も残りが少ない上限を表示', 'The tray shows each service\'s tightest limit (next to the icon on Linux, in the tooltip on Windows)'],
   g_general: ['通用', '一般', 'General'],
   g_display: ['额度显示', '上限の表示', 'Limits'],
@@ -234,9 +247,24 @@ const T = {
   remaining: ['剩余', '残り', 'Remaining'],
   used_opt: ['已使用', '使用済み', 'Used'],
   tray_label: ['托盘名称', 'トレイの表示名', 'Tray Labels'],
-  short: ['简写（Cc / Cx）', '略称（Cc / Cx）', 'Short (Cc / Cx)'],
+  short: ['简写（Cc / Cx / Gm）', '略称（Cc / Cx / Gm）', 'Short (Cc / Cx / Gm)'],
   full: ['全名', 'フルネーム', 'Full'],
 };
+
+// 几家服务（和 Rust 那边的 usage::PROVIDERS 一样）：显示顺序、托盘简写、额度来源的选项；
+// 设置的键按 <前缀>_<小写名字> 拼（show_gemini、card_show_gemini），额度来源是 <小写名字>_limit_source。
+// stats：有用量统计（只有 Claude、Codex 有本机日志），也只有这两家新装时必须先选额度来源
+const PROVIDERS = [
+  { name: 'Claude', short: 'Cc', sources: ['api', 'local', 'off'], stats: true },
+  { name: 'Codex', short: 'Cx', sources: ['api', 'local', 'off'], stats: true },
+  { name: 'Gemini', short: 'Gm', sources: ['app', 'off'], path: '~/.gemini/antigravity' },
+];
+const STATS_PROVIDERS = PROVIDERS.filter((p) => p.stats);
+const provider = (name) => PROVIDERS.find((p) => p.name === name);
+const prefKey = (prefix, name) => `${prefix}_${name.toLowerCase()}`;
+const sourceKey = (name) => `${name.toLowerCase()}_limit_source`;
+// 「显示这一家」的开关：托盘 show_*、额度卡片 card_show_*、用量卡片 stats_card_show_*
+const SHOW_KEYS = PROVIDERS.flatMap((p) => ['show', 'card_show', ...(p.stats ? ['stats_card_show'] : [])].map((k) => prefKey(k, p.name)));
 
 let state = null;
 let page = 'stats';
@@ -284,10 +312,15 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const clock = (sec) => new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const dateTime = (sec) => new Date(sec * 1000).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-function windowLabel(w) {
+// 额度名：「5 小时」「本周」；同一家里另一组的额度前面带组名：「第三方模型 · 5 小时」（kindLabel 不带组名）
+function kindLabel(w) {
   if (w.kind === 'hours' || w.kind === 'days') return t(w.kind, w.amount);
+  if (w.kind === 'weekly_model') return t('weekly_model', w.model ?? '');
   return T[w.kind] ? t(w.kind) : w.kind;
 }
+// 组名：Gemini 里 Claude、GPT 那组存的是 third_party 键，按语言翻；别的组用接口给的名字
+const groupLabel = (g) => (g === 'third_party' ? t('third_party') : g);
+const windowLabel = (w) => (w.group ? `${groupLabel(w.group)} · ${kindLabel(w)}` : kindLabel(w));
 
 // 今天内只写几点，否则带上星期几
 function shortTime(sec) {
@@ -363,9 +396,11 @@ function providerHTML(p) {
 
 function flyoutPage() {
   const s = state.settings;
-  const shown = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex));
+  const shown = trayProviders();
   const status = state.loading ? t('refreshing') : state.updated ? t('updated', clock(state.updated)) : t('loading');
-  return `<div class="providers">${shown.map(providerHTML).join('')}</div>
+  const body = state.providers.length ? `<div class="providers">${shown.map(providerHTML).join('')}</div>`
+    : allOff() ? `<div class="sub">${t('all_off')}</div>` : '';
+  return `${body}
     <div class="fly-foot">
       <span class="sub">${status}</span><span class="spacer"></span>
       <button class="btn" id="refresh" ${state.loading ? 'disabled' : ''}>${t('refresh')}</button>
@@ -377,9 +412,9 @@ function flyoutPage() {
 // 窗口刚换到缩放不同的显示器（比如 150% 的笔记本和 100% 的外接屏）时它可能还没跟上，窗口就比内容小、内容被截掉
 const physical = (css) => Math.round(Math.ceil(css) * window.devicePixelRatio);
 
-// 小面板的高度跟着内容走
+// 小面板的高度跟着内容走，最高到屏幕可用高度（三家都开时可能比屏幕还高）：再多的在面板里滚动
 function fitFlyout() {
-  const h = document.getElementById('content').scrollHeight;
+  const h = Math.min(document.getElementById('content').scrollHeight, screen.availHeight - 24);
   window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.PhysicalSize(physical(340), physical(h))).catch(() => {});
 }
 
@@ -391,7 +426,9 @@ function watchPixelRatio() {
 // MARK: 桌面卡片（布局和尺寸照 macOS 版的 CardView）
 
 // 额度卡片：自己的「显示哪几家」和「剩余 / 已用」（托盘的在设置页）
-const shownProviders = () => state.providers.filter((p) => (p.name === 'Claude' ? state.settings.card_show_claude : state.settings.card_show_codex));
+const shownProviders = () => state.providers.filter((p) => state.settings[prefKey('card_show', p.name)]);
+// 托盘（菜单、小面板、预览）显示的几家
+const trayProviders = () => state.providers.filter((p) => state.settings[prefKey('show', p.name)]);
 
 // 按余量着色：剩不到 30% 黄、不到 10% 红；够用时为空（用原来的颜色）。显示「已使用」时也按剩余算
 function levelColor(w) {
@@ -456,8 +493,9 @@ const creditsRow = (p) => (p.resets ? `<div class="c-row"><div class="c-top"><sp
 
 // 大数字：每个额度一格，两格一行
 function bigBlock(p) {
+  // 有组名时组名单独一行（格子窄，「第三方模型 · 5 小时」放不下）
   const cells = p.windows.map((w) => `<div class="c-bigcell">
-      <div class="c-lab">${esc(windowLabel(w))}</div>
+      ${w.group ? `<div class="c-lab">${esc(groupLabel(w.group))}</div>` : ''}<div class="c-lab">${esc(kindLabel(w))}</div>
       <div class="c-big" style="${tintStyle(w)}">${Math.round(shownValue(w))}<span class="c-pct">%</span>${w.fast ? '<span class="up">↑</span>' : ''}</div>
       ${barHTML(w, 'thin')}${resetIcon(w)}</div>`).join('');
   return `<div class="c-block big">${cardHead(p)}${cardErr(p)}<div class="c-grid2">${cells}</div>${creditsRow(p)}</div>`;
@@ -472,11 +510,12 @@ function ringBlock(p) {
     return `<div class="c-ringcell">
       <div class="c-ring"><svg viewBox="0 0 66 66"><circle cx="33" cy="33" r="29.5" class="track"/>
         <circle cx="33" cy="33" r="29.5" stroke="${color}" stroke-dasharray="${(c * v / 100).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 33 33)"/></svg>
-        <div class="c-ringtext"><span style="${tintStyle(w)}">${Math.round(v)}<span class="c-pct">%</span>${w.fast ? '↑' : ''}</span><span class="c-lab">${esc(windowLabel(w))}</span></div></div>
-      ${r ? `<div class="c-reset">${esc(r)}</div>` : ''}</div>`;
+        <div class="c-ringtext"><span style="${tintStyle(w)}">${Math.round(v)}<span class="c-pct">%</span>${w.fast ? '↑' : ''}</span><span class="c-lab">${esc(kindLabel(w))}</span></div></div>
+      ${w.group ? `<div class="c-reset">${esc(groupLabel(w.group))}</div>` : ''}${r ? `<div class="c-reset">${esc(r)}</div>` : ''}</div>`;  // 环里放不下组名，写在环下面
   }).join('');
   const credits = p.resets ? `<span class="c-plan" title="${esc(resetExpiryText(p.resets))}">↻ ${p.resets.count}</span>` : '';
-  return `<div class="c-block">${cardHead(p, credits)}${cardErr(p)}<div class="c-rings">${rings}</div></div>`;
+  // 额度多（Gemini 有五个）时三个一行，不然一家就拉得很宽
+  return `<div class="c-block">${cardHead(p, credits)}${cardErr(p)}<div class="c-rings ${p.windows.length > 4 ? 'wrap' : ''}">${rings}</div></div>`;
 }
 
 // 细条：每个额度一行：名称（每家第一行写）、额度名、细进度条、数值
@@ -504,12 +543,14 @@ function cardBase(style, layout) {
   return layout === 'vertical' ? [296, 340] : [480, 200];
 }
 
-// 卡片外框：固定大小，内容（连同更新时间）居中，由 fitCardContent 等比缩放填满
-function cardFrame(prefix, body, footer) {
+// 卡片外框：固定大小，内容（连同更新时间）居中，由 fitCardContent 等比缩放填满。
+// grow：上面的大小是照两家、每家最多四个额度定的；显示的更多（三家，或 Gemini 那样五个额度）时
+// 外框跟着内容变大，而不是把所有字缩得很小
+function cardFrame(prefix, body, footer, grow = false) {
   const s = state.settings, k = s[prefix + 'scale'];
   const [w, h] = cardBase(s[prefix + 'style'], s[prefix + 'layout']);
   const style = `--s:${k};--bgop:${s[prefix + 'bg_opacity']};opacity:${s[prefix + 'opacity']};width:${w * k}px;height:${h * k}px`;
-  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" style="${style}">
+  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" ${grow ? 'data-grow' : ''} style="${style}">
     <div class="c-fit">${body}${footer}</div>
   </div>`;
 }
@@ -519,7 +560,15 @@ const CARD_MAX_GROW = 1.6;
 function fitCardContent(root = document) {
   for (const box of root.querySelectorAll('.card-box')) {
     const el = box.querySelector('.c-fit'), cs = getComputedStyle(box);
-    const room = [box.clientWidth - parseFloat(cs.paddingLeft) * 2, box.clientHeight - parseFloat(cs.paddingTop) * 2];
+    const pad = parseFloat(cs.paddingLeft) * 2;
+    // 放不下的那一边把外框撑大到正好放下（另一边不动），最大到屏幕可用区域（CSS 像素，就是卡片所在的显示器）：
+    // 三家竖排、放大以后可能比屏幕还高，再撑就有一截看不到；到顶了交给下面的等比缩小
+    if (box.hasAttribute('data-grow')) {
+      const maxW = screen.availWidth - 24, maxH = screen.availHeight - 24;
+      if (el.offsetWidth + pad > box.clientWidth) box.style.width = `${Math.min(maxW, Math.ceil(el.offsetWidth + pad))}px`;
+      if (el.offsetHeight + pad > box.clientHeight) box.style.height = `${Math.min(maxH, Math.ceil(el.offsetHeight + pad))}px`;
+    }
+    const room = [box.clientWidth - pad, box.clientHeight - pad];
     const fit = Math.min(CARD_MAX_GROW, room[0] / el.offsetWidth, room[1] / el.offsetHeight);
     el.style.transform = fit !== 1 ? `scale(${fit})` : '';
   }
@@ -527,7 +576,8 @@ function fitCardContent(root = document) {
 
 // MARK: 用量卡片
 
-const usageShown = () => ['Claude', 'Codex'].filter((n) => state.settings[n === 'Claude' ? 'stats_card_show_claude' : 'stats_card_show_codex']);
+// 用量卡片只有有用量统计的两家（state.usage 里也只有 claude、codex）
+const usageShown = () => STATS_PROVIDERS.map((p) => p.name).filter((n) => !sourceOff(n) && state.settings[prefKey('stats_card_show', n)]);
 const planOf = (name) => state.providers.find((p) => p.name === name)?.plan;
 const usageOf = (name) => state.usage[name.toLowerCase()];
 const rangeTitle = () => t({ today: 'today', cycle: 'since_reset', '7d': 'last_7d' }[state.settings.stats_card_range] || 'today');
@@ -593,6 +643,7 @@ function statsCardPage() {
   const s = state.settings, shown = usageShown(), st = s.stats_card_style;
   const body = state.usage.updated == null && !state.usage.claude.requests && !state.usage.codex.requests
     ? `<div class="c-reset">${t('reading_logs')}</div>`
+    : statsAllOff() ? `<div class="c-reset">${t('both_off')}</div>`
     : st === 'compact'
       ? `<div class="c-lines" style="grid-template-columns: repeat(4, max-content)">${shown.map((n) => statsCompactRow(n)).join('')}${shown.length > 1 ? `<div class="c-sep"></div>${statsCompactRow(t('total'), usageTotal(shown))}` : ''}</div>`
       : st === 'share' ? statsShareBlock(shown)
@@ -607,14 +658,15 @@ const arranged = (layout, items) => `<div class="c-cols ${layout === 'vertical' 
 function cardPage() {
   const s = state.settings;
   const shown = shownProviders();
-  const body = state.providers.length === 0 ? `<div class="c-reset">${t('loading')}</div>`
+  const body = state.providers.length === 0 ? `<div class="c-reset">${t(allOff() ? 'all_off' : 'loading')}</div>`
     : s.card_style === 'compact' ? (() => {
       const cols = Math.max(2, ...shown.map(compactCells));
       return `<div class="c-lines" style="grid-template-columns: repeat(${cols}, max-content)">${shown.map((p) => cardCompactRow(p, cols)).join('')}</div>`;
     })()
     : s.card_style === 'slim' ? `<div class="c-slim">${shown.map(slimRows).join('')}</div>`
     : arranged(s.card_layout, shown.map(s.card_style === 'big' ? bigBlock : s.card_style === 'rings' ? ringBlock : cardColumn));
-  return cardFrame('card_', body, state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : '');
+  const grow = shown.length > 2 || shown.some((p) => p.windows.length > 4);
+  return cardFrame('card_', body, state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : '', grow);
 }
 
 // 卡片窗口的大小跟着内容走
@@ -623,11 +675,19 @@ function fitCard() {
   invoke('fit_card', { width: physical(r.width), height: physical(r.height) });
 }
 
-function seg(key, options) {
-  const cur = state.settings[key];
+function seg(key, options, cur = state.settings[key]) {
   return `<div class="seg">${options.map(([v, label]) => `<button data-set="${key}" data-val="${v}" class="${cur === v ? 'on' : ''}">${esc(label)}</button>`).join('')}</div>`;
 }
 const toggle = (id, on) => `<label class="switch"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}><span></span></label>`;
+// 托盘、卡片设置里「显示这一家」的开关：在「数据来源」里停用的那家，这里也关着、不能开
+// Gemini 的来源空着（旧设置里没有）也是停用
+const sourceOff = (name) => (state.settings[sourceKey(name)] || (provider(name)?.stats ? '' : 'off')) === 'off';
+const allOff = () => PROVIDERS.every((p) => sourceOff(p.name));
+// 用量卡片只管有用量统计的两家
+const statsAllOff = () => STATS_PROVIDERS.every((p) => sourceOff(p.name));
+const providerToggle = (name, id) => sourceOff(name)
+  ? `<div class="field disabled"><span>${name}<div class="hint">${t('off_in_sources')}</div></span>${toggle(id, false)}</div>`
+  : `<div class="field"><span>${name}</span>${toggle(id, state.settings[id])}</div>`;
 // 百分比滑块：拖动时只更新数字，松手再保存
 const slider = (key, min, max, step) => `<span class="slider"><input type="range" data-num="${key}" min="${min}" max="${max}" step="${step}" value="${state.settings[key]}"><span class="pct">${Math.round(state.settings[key] * 100)}%</span></span>`;
 
@@ -646,12 +706,10 @@ function cardSettingsPage() {
     `<button data-cardtab="${v}" class="${cardTab === v ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>`;
   const own = stats
     ? `<div class="field"><span>${t('stats_range')}</span>${seg('stats_card_range', [['today', t('today')], ['cycle', t('since_reset')], ['7d', t('last_7d')]])}</div>
-       <div class="field"><span>Claude</span>${toggle('stats_card_show_claude', s.stats_card_show_claude)}</div>
-       <div class="field"><span>Codex</span>${toggle('stats_card_show_codex', s.stats_card_show_codex)}</div>`
+       ${STATS_PROVIDERS.map((p) => providerToggle(p.name, prefKey('stats_card_show', p.name))).join('')}`
     : `<div class="field"><span>${t('display')}</span>${seg('card_display', [['remaining', t('remaining')], ['used', t('used_opt')]])}</div>
        <div class="field"><span>${t('reset_time')}</span>${seg('card_reset', [['hidden', t('r_hidden')], ['relative', t('r_relative')], ['absolute', t('r_absolute')]])}</div>
-       <div class="field"><span>Claude</span>${toggle('card_show_claude', s.card_show_claude)}</div>
-       <div class="field"><span>Codex</span>${toggle('card_show_codex', s.card_show_codex)}</div>`;
+       ${PROVIDERS.map((p) => providerToggle(p.name, prefKey('card_show', p.name))).join('')}`;
   const form = group(t(stats ? 'usage_card' : 'limits_card'), `
       <div class="field"><span>${t(stats ? 'show_usage_card' : 'show_card')}</span>${toggle(k + 'show', s[k + 'show'])}</div>
       <div class="field"><span>${t('on_top')}<div class="hint">${t('on_top_hint')}</div></span>${toggle(k + 'on_top', s[k + 'on_top'])}</div>
@@ -703,10 +761,10 @@ function settingsPage() {
   const refresh = group(t('g_refresh'), `
       <div class="field"><span>${t('nav_usage')}<div class="hint">${t('limits_detail')}</div></span>${minutesSelect('refresh_minutes', [1, 2, 5, 10, 15, 30])}</div>
       <div class="field"><span>${t('nav_stats')}<div class="hint">${t('stats_detail')}</div></span>${minutesSelect('stats_refresh_minutes', [1, 2, 5, 10, 15, 30, 60])}</div>`, t('refresh_note'));
-  // 数据来源：两家的额度来源，下面是远程机器（和 macOS 版一样放在同一组）
+  // 数据来源：各家的额度来源，下面是远程机器（和 macOS 版一样放在同一组）
   const others = sshHosts.filter((h) => !s.remote_hosts.includes(h));
   const sources = group(t('g_sources'), `
-      ${['Claude', 'Codex'].map(sourceRow).join('')}
+      ${PROVIDERS.map((p) => sourceRow(p.name) + (p.name === 'Gemini' ? thirdPartyRow() : '')).join('')}
       ${s.remote_hosts.map(hostRow).join('')}
       <div class="field"><span>${t('remote')}<div class="hint">${t('remote_hint')}</div></span>
         <span class="host-add">
@@ -753,10 +811,12 @@ async function runData(cmd) {
 function trayText() {
   const s = state.settings, used = s.display === 'used';
   const pct = (w) => `${Math.round(used ? Math.min(100, w.used) : Math.max(0, 100 - w.used))}%${w.fast ? '↑' : ''}`;
-  const parts = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex)).map((p) => {
-    const name = s.menu_label === 'full' ? p.name : p.name === 'Claude' ? 'Cc' : 'Cx';
-    const session = p.windows.find((w) => !w.kind.startsWith('weekly') && w.kind !== 'days');
-    const weekly = p.windows.find((w) => w.kind === 'weekly');
+  const parts = trayProviders().map((p) => {
+    const name = s.menu_label === 'full' ? p.name : provider(p.name)?.short ?? p.name;
+    // 有组的（Gemini 的第三方模型等）不是主额度：托盘只取没有组的 5 小时和本周（和 Rust 的 tray_text 一样）
+    const main = p.windows.filter((w) => !w.group);
+    const session = main.find((w) => !w.kind.startsWith('weekly') && w.kind !== 'days');
+    const weekly = main.find((w) => w.kind === 'weekly');
     const v = s.tray_limit === 'session' ? (session || weekly) : s.tray_limit === 'weekly' ? (weekly || session) : null;
     const text = v ? pct(v) : session && weekly ? `${pct(session)}/${pct(weekly)}` : (session || weekly) ? pct(session || weekly) : '–';
     return `${name} ${text}`;
@@ -768,19 +828,18 @@ function trayPage() {
   const s = state.settings;
   const left = group(t('g_show'), `
       <div class="field"><span>${t('display')}</span>${seg('display', [['remaining', t('remaining')], ['used', t('used_opt')]])}</div>
-      <div class="field"><span>Claude</span>${toggle('show_claude', s.show_claude)}</div>
-      <div class="field"><span>Codex</span>${toggle('show_codex', s.show_codex)}</div>`, t('tray_note'))
+      ${PROVIDERS.map((p) => providerToggle(p.name, prefKey('show', p.name))).join('')}`, t('tray_note'))
     + group(t('g_tray_text'), `
       <div class="field"><span>${t('tray_label')}</span>${seg('menu_label', [['short', t('short')], ['full', t('full')]])}</div>
       <div class="field"><span>${t('tray_limit')}</span>${seg('tray_limit', [['session', t('five_hour')], ['weekly', t('weekly')], ['both', t('both')]])}</div>`)
     + group(t('g_menu'), `
       <div class="field"><span>${t('reset_time_menu')}</span>${seg('tray_reset', [['full', t('r_full')], ['relative', t('r_relative')], ['absolute', t('r_absolute')], ['hidden', t('r_hidden')]])}</div>`);
-  const shown = state.providers.filter((p) => (p.name === 'Claude' ? s.show_claude : s.show_codex));
+  const shown = trayProviders();
   const status = state.loading ? t('refreshing') : state.updated ? t('updated', clock(state.updated)) : t('loading');
   const right = `<section class="sgroup"><div class="group-title">${t('preview')}</div>
     <div class="tray-bar"><span class="tray-text">${esc(trayText())}</span><span class="sub">${clock(Date.now() / 1000)}</span></div>
     <div class="tray-panel">
-      ${state.providers.length ? `<div class="providers">${shown.map(providerHTML).join('')}</div>` : `<div class="sub">${t('loading')}</div>`}
+      ${state.providers.length ? `<div class="providers">${shown.map(providerHTML).join('')}</div>` : `<div class="sub">${t(allOff() ? 'all_off' : 'loading')}</div>`}
       <div class="fly-foot"><span class="sub">${status}</span><span class="spacer"></span>
         <button class="btn" id="refresh" ${state.loading ? 'disabled' : ''}>${t('refresh')}</button></div>
     </div>
@@ -804,15 +863,30 @@ function addHost(h) {
   save({ remote_hosts: [...state.settings.remote_hosts, h] });
 }
 
-// 左边是这次从哪查到了什么（套餐、本地数据的时间），出错时是原因；右边选额度来源
+// 左边是这次从哪查到了什么（套餐、本地数据的时间），出错时是原因；右边选额度来源。
+// Gemini 先写一行它读的目录（~/.gemini/antigravity），没有套餐、提示时也有
 function sourceRow(name) {
-  const p = state.providers.find((x) => x.name === name);
-  const key = name === 'Claude' ? 'claude_limit_source' : 'codex_limit_source';
-  const status = !state.settings[key] ? `<div class="hint error-text">${esc(t('pick_source'))}</div>`
+  const info = provider(name), p = state.providers.find((x) => x.name === name);
+  const key = sourceKey(name);
+  const status = !info.stats || state.settings[key] ? '' : `<div class="hint error-text">${esc(t('pick_source'))}</div>`;
+  const detail = status ? status
+    : sourceOff(name) ? `<div class="hint">${esc(t('src_off_hint'))}</div>`
     : !p ? '' : p.error ? `<div class="hint error-text">${esc(errorText(p))}</div>`
     : p.note ? `<div class="hint">${esc(t(p.note, p.detail ? dateTime(p.detail) : ''))}</div>`
     : p.plan ? `<div class="hint">${esc(p.plan)}</div>` : '';
-  return `<div class="field"><span>${name}${status}</span>${seg(key, [['api', t('src_api')], ['local', t('src_local')]])}</div>`;
+  const path = info.path ? `<div class="hint path-hint">${esc(info.path)}</div>` : '';
+  const labels = { api: t('src_api'), local: t('src_local'), app: t('src_app'), off: t('src_off') };
+  // 空的 Gemini 来源按「停用」高亮
+  const cur = state.settings[key] || (info.stats ? '' : 'off');
+  return `<div class="field"><span>${name}${path}${detail}</span>${seg(key, info.sources.map((v) => [v, labels[v]]), cur)}</div>`;
+}
+
+// 「数据来源」里 Gemini 下面一行：「第三方模型」那组额度显示不显示。Gemini 停用时关着、不能开
+function thirdPartyRow() {
+  const label = `${t('third_party_gemini')}<div class="hint">${esc(t('third_party_hint'))}</div>`;
+  return sourceOff('Gemini')
+    ? `<div class="field disabled"><span>${label}</span>${toggle('gemini_third_party', false)}</div>`
+    : `<div class="field"><span>${label}</span>${toggle('gemini_third_party', state.settings.gemini_third_party)}</div>`;
 }
 
 // MARK: 页面框架：侧边栏和页头的图标（线条图标，和 macOS 版的 SF Symbols 对应）、分组、两列
@@ -964,8 +1038,8 @@ document.addEventListener('change', async (e) => {
   else if (el.id === 'notify_threshold') save({ notify_threshold: Number(el.value) });
   else if (el.id === 'card_style' || el.id === 'stats_card_style') save({ [el.id]: el.value });
   else if (el.id === 'ssh-pick') { if (el.value) addHost(el.value); }
-  else if (['show_claude', 'show_codex', 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
-            'stats_card_show_claude', 'stats_card_show_codex', 'notify_run_out', 'notify_reset_session', 'notify_reset', 'notify_credits', 'card_show_claude', 'card_show_codex', 'card_level_colors'].includes(el.id)) save({ [el.id]: el.checked });
+  else if ([...SHOW_KEYS, 'card_show', 'card_on_top', 'stats_card_show', 'stats_card_on_top',
+            'notify_run_out', 'notify_reset_session', 'notify_reset', 'notify_credits', 'card_level_colors', 'gemini_third_party'].includes(el.id)) save({ [el.id]: el.checked });
   else if (el.dataset.num) save({ [el.dataset.num]: Number(el.value) });
   else if (el.id === 'autostart') {
     await invoke(el.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable').catch(() => {});
@@ -1059,8 +1133,8 @@ function drawGuides([x, y]) {
   if (FLYOUT || ANY_CARD) watchPixelRatio();
   // 小面板每次弹出时重新量一次（可能刚换到缩放不同的显示器）
   if (FLYOUT) await listen('flyout_shown', () => fitFlyout());
-  // 新装还没选额度来源：主窗口先打开「通用」页让用户选
-  if (!FLYOUT && !ANY_CARD && (!state.settings.claude_limit_source || !state.settings.codex_limit_source)) page = 'settings';
+  // 新装还没选额度来源：主窗口先打开「通用」页让用户选（Gemini 默认停用，不用选）
+  if (!FLYOUT && !ANY_CARD && STATS_PROVIDERS.some((p) => !state.settings[sourceKey(p.name)])) page = 'settings';
   render();
   await listen('state', (e) => {
     // 额度刷新后「重置以来」的起点可能变了：统计页重新查

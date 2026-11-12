@@ -26,6 +26,7 @@ pub fn t(lang: &str, key: &str) -> &'static str {
         "hide_usage_card" => ("隐藏用量卡片", "使用量カードを隠す", "Hide Usage Card"),
         "keep_on_top" => ("保持在最前", "常に手前に表示", "Keep on Top"),
         "loading" => ("正在获取用量…", "使用量を取得中…", "Fetching usage…"),
+        "all_off" => ("所有服务都停用了", "すべてのサービスがオフです", "All services are turned off"),
         "used" => ("已用", "使用済み", "used"),
         "left" => ("剩", "残り", "left"),
         "error" => ("读取失败，打开窗口查看原因", "取得に失敗しました。ウィンドウで詳細を確認", "Couldn't read usage, open the window for details"),
@@ -33,7 +34,9 @@ pub fn t(lang: &str, key: &str) -> &'static str {
         "weekly" => ("本周", "今週", "Weekly"),
         "weekly_opus" => ("本周 Opus", "今週 Opus", "Weekly Opus"),
         "weekly_sonnet" => ("本周 Sonnet", "今週 Sonnet", "Weekly Sonnet"),
+        "weekly_model" => ("本周 %s", "今週 %s", "Weekly %s"),
         "other" => ("其他额度", "その他の上限", "Other Limit"),
+        "third_party" => ("第三方模型", "他社モデル", "Third-party models"),
         // 通知（%s 按顺序换成参数）
         "n_used" => ("%s 已用 %s%", "%s を %s% 使用", "%s is %s% used"),
         "n_fast" => ("%s 用得比时间快", "%s が速いペースです", "%s is ahead of pace"),
@@ -64,7 +67,17 @@ pub fn t(lang: &str, key: &str) -> &'static str {
     }
 }
 
+/// 额度名：「5 小时」「本周」；同一家里另一组的额度前面带组名：「第三方模型 · 5 小时」
 pub fn window_label(lang: &str, w: &LimitWindow) -> String {
+    let base = kind_label(lang, w);
+    match &w.group {
+        Some(g) if g == crate::usage::THIRD_PARTY => format!("{} · {base}", t(lang, g)),
+        Some(g) => format!("{g} · {base}"),
+        None => base,
+    }
+}
+
+fn kind_label(lang: &str, w: &LimitWindow) -> String {
     match (w.kind.as_str(), w.amount) {
         ("hours", Some(n)) => match lang {
             "zh" => format!("{n} 小时"),
@@ -76,6 +89,7 @@ pub fn window_label(lang: &str, w: &LimitWindow) -> String {
             "ja" => format!("{n}日"),
             _ => format!("{n} days"),
         },
+        ("weekly_model", _) => fmt(lang, "weekly_model", &[w.model.as_deref().unwrap_or_default()]),
         (kind, _) => {
             let s = t(lang, kind);
             if s.is_empty() { kind.to_string() } else { s.to_string() }

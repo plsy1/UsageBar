@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md)
 
-在 macOS 菜单栏、Windows / Linux 托盘和桌面上显示 **Claude** 与 **Codex** 的剩余用量（5 小时额度 / 每周额度）。
+在 macOS 菜单栏、Windows / Linux 托盘和桌面上显示 **Claude**、**Codex** 与 **Gemini** 的剩余用量（5 小时额度 / 每周额度）。
 
 - **菜单栏**：`Claude 68%/79%  Codex 0%/47%`，可选显示 5 小时额度、每周额度或两个都显示，单行或双行（名称在上、数值在下）样式；点开看每个额度的进度和重置时间。用得比时间快的额度会标上 ↑，菜单里写出按这个速度预计何时用完
 - **通知**：额度用到 80/90/95%、按现在的速度会在重置前用完、额度重置后、Codex 的重置次数快到期时提醒
@@ -51,6 +51,10 @@
 **官方接口会发什么**：只发不带请求体的 GET 请求，请求头里是登录令牌、Codex 的账号 ID，以及和官方客户端一样的 User-Agent（`claude-code`、`codex-cli`）；不会上传会话内容、用量记录或其他本地数据。Claude 的令牌过期时，UsageBar 会像 Claude Code 一样用刷新令牌换一个新的并写回钥匙串。
 
 **仅本地**：不发任何请求，也不读钥匙串和 `auth.json`；统计页的 Codex 服务端数据统计和额度重置次数这时不显示。
+
+**停用**：不再查询这一家，菜单栏、两张卡片和通知里都不显示它（比如退订了）；统计页里它以前的用量记录还在。
+
+**Gemini** 默认停用，在「通用 → 数据来源」里选「本机 Gemini App」打开。只在 Gemini App 的 agent 模式（Antigravity）开着时才查得到：这时它会把本机端口和一个 CSRF token 写进 `~/.gemini/antigravity/daemon/hub_<端口>.json`，UsageBar 读这个文件，再向 `127.0.0.1` 发两个 POST 请求（`RetrieveUserQuotaSummary` 查额度，`GetUserStatus` 查套餐名），数据不出这台 Mac。显示 Gemini 模型的 5 小时和每周额度（菜单栏上显示的就是这两个），以及 app 单独列出的其他组：「第三方模型」是在 Gemini App 里用 Claude、GPT 等模型的额度（算在 Gemini 套餐里，和你的 Claude、Codex 订阅无关），还有 Argon 等。不想看第三方模型的，可以在「数据来源」里 Gemini 下面的「Gemini 第三方模型」把它关掉。agent 模式没开时显示上次读到的数据和它的时间，之后已经过了重置时间的额度按没用过显示。只有额度：Gemini 的对话记录是加密存的，没有用量统计。Windows 和 Linux 上读的是 Antigravity 写的同样的文件（用户目录下的同一个文件夹）。
 
 **Windows 和 Linux 上**：Claude Code 把登录信息存在 `~/.claude/.credentials.json`（Windows 上是 `%USERPROFILE%\.claude`），读这个文件而不是钥匙串；「仅本地」读 `%APPDATA%\Claude` 或 `~/.config/Claude` 里 Claude 桌面 app 的记录。这些选项在「设置 → 数据来源」里。
 

@@ -49,6 +49,16 @@ fn cycle(w: &LimitWindow) -> i64 {
 
 impl Notifier {
     pub fn check(&mut self, app: &AppHandle, lang: &str, opts: &Options, providers: &[Provider]) {
+        // 停用了的那家（结果里没有它）忘掉上次的额度：过几周再打开时，别拿旧数据报一次早就过去的「已重置」
+        // Gemini 退回缓存或出错时也忘掉：App 关着的这段时间可能已经重置过几次，等它再开时拿新数据重新开始比
+        // Gemini 这次没有的额度（比如关掉了第三方模型）也忘掉，过一阵再打开时同样不补报
+        self.last.retain(|k, _| {
+            providers.iter().any(|p| {
+                k.starts_with(&format!("{}|", p.name))
+                    && !(p.name == "Gemini"
+                        && (p.note.is_some() || p.error.is_some() || !p.windows.iter().any(|w| w.id.as_ref().is_some_and(|b| *k == format!("{}|{b}", p.name)))))
+            })
+        });
         if !opts.any() {
             return;
         }
@@ -68,9 +78,10 @@ impl Notifier {
             // 退回本地缓存、或者选了「仅本地」时的数据不可靠，不拿来判断重置
             let live = p.note.is_none();
             let mut resets: Vec<(String, f64, bool)> = Vec::new();
-            // 用位置当键，不用显示名：显示名跟着界面语言变，换了语言会重复提醒
+            // 用位置当键，不用显示名：显示名跟着界面语言变，换了语言会重复提醒。
+            // 有稳定标识的（Gemini 的 bucketId）用标识：它的窗口数会变，按位置会把不同的窗口对上
             for (i, w) in p.windows.iter().enumerate() {
-                let id = format!("{}|{i}", p.name);
+                let id = w.id.as_ref().map(|b| format!("{}|{b}", p.name)).unwrap_or_else(|| format!("{}|{i}", p.name));
                 let name = format!("{} · {}", p.name, i18n::window_label(lang, w));
                 let reset = w.resets_at.map(|r| i18n::reset_text(lang, r)).unwrap_or_default();
                 if opts.threshold > 0 && w.used >= opts.threshold as f64 {
@@ -90,7 +101,8 @@ impl Notifier {
                 // 没在用时重置时间会跟着现在往后挪，看着像提前重置。5 小时和每周各有开关：不到一天的窗口算 5 小时
                 let on = if w.length > 0.0 && w.length < 86400.0 { opts.session_reset } else { opts.reset };
                 if live {
-                    if let Some(old) = self.last.get(&id).filter(|o| on && o.used >= 1.0) {
+                    // 同一种、同一组的窗口才比（万一键对上了不同的窗口，别报假的「已重置」）
+                    if let Some(old) = self.last.get(&id).filter(|o| on && o.used >= 1.0 && o.kind == w.kind && o.group == w.group) {
                         if let (Some(o), Some(n)) = (old.resets_at, w.resets_at) {
                             if n - o > 300 {
                                 let early = o - now > 60;

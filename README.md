@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-Shows your remaining **Claude** and **Codex** usage (5-hour and weekly limits) in the macOS menu bar or the Windows / Linux tray, and on the desktop.
+Shows your remaining **Claude**, **Codex** and **Gemini** usage (5-hour and weekly limits) in the macOS menu bar or the Windows / Linux tray, and on the desktop.
 
 - **Menu bar**: `Claude 68%/79%  Codex 0%/47%` — the 5-hour limit, the weekly limit, or both, on one line or two (name above, value below); click to see every limit's progress and reset time. A ↑ marks a limit used faster than its period is passing, and the menu says when it will run out at that pace
 - **Notifications**: when a limit reaches 80/90/95%, when it is on pace to run out before reset, after a reset, and before a Codex reset expires
@@ -51,6 +51,10 @@ Choose per service under General → Data Sources; a change takes effect immedia
 **What the official API mode sends:** GET requests without a body, carrying the login token, the Codex account ID and the same User-Agent as the official clients (`claude-code`, `codex-cli`). No conversation content, usage records or other local data is uploaded. When Claude's token expires, UsageBar refreshes it the way Claude Code does and writes it back to the Keychain.
 
 **Local Only** sends no requests and doesn't read the Keychain or `auth.json`; the Codex server statistics and reset counts are not shown then.
+
+**Off** stops checking that service and hides it from the menu bar, both cards and notifications (for example after you cancel a subscription); its past usage stays in the statistics.
+
+**Gemini** is off by default; turn it on under General → Data Sources (Gemini App on This Mac). It asks the Gemini app on this Mac, and only while its agent mode (Antigravity) is open: the agent then writes its local port and a CSRF token to `~/.gemini/antigravity/daemon/hub_<port>.json`, and UsageBar reads that file and sends two POST requests to `127.0.0.1` (`RetrieveUserQuotaSummary` for the limits, `GetUserStatus` for the plan name), so nothing leaves your Mac. It shows the Gemini models' 5-hour and weekly limits (these go in the menu bar), plus the other groups the app reports: Third-party models is the limit for using Claude, GPT and similar models inside the Gemini app (it counts against your Gemini plan, not your Claude or Codex subscription), and there may be others such as Argon. To hide the third-party models, turn off "Gemini third-party models" under Gemini in Data Sources. When the agent mode isn't open, it shows the last values read, with their time; limits that have since reset show as unused. Limits only: Gemini keeps its conversations encrypted, so there are no usage statistics for it. On Windows and Linux the same files come from Antigravity, which uses the same folder in your home directory.
 
 **On Windows and Linux** Claude Code keeps its login in `~/.claude/.credentials.json` (`%USERPROFILE%\.claude` on Windows), which is read instead of the Keychain; Local Only reads the Claude desktop app's file from `%APPDATA%\Claude` or `~/.config/Claude`. The settings are under Settings → Data Sources.
 

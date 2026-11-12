@@ -1,16 +1,43 @@
-// 取数：Claude 和 Codex 的额度（移植自 macOS 版 Sources/main.swift）
+// 取数：Claude、Codex 和 Gemini 的额度（移植自 macOS 版 Sources/main.swift）
 //   Claude: ~/.claude/.credentials.json 里的 OAuth token → api.anthropic.com/api/oauth/usage
 //           （Windows / Linux 上 Claude Code 把登录信息存在这个文件；macOS 上在钥匙串，这里不处理）
 //   Codex : ~/.codex/auth.json → chatgpt.com/backend-api/wham/usage，失败时退回最近一次会话日志里的 rate_limits
+//   Gemini: Antigravity 在跑时写的 ~/.gemini/antigravity/daemon/hub_<端口>.json → 本机 language server 的额度接口，
+//           没在跑时显示上次查到的（缓存在 app 数据目录的 gemini.json）
 //   额度来源选「仅本地」时不发请求：Claude 读桌面 app 留下的记录，Codex 读会话日志
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// 一个额度窗口。kind 由界面翻译：five_hour / weekly / weekly_opus / weekly_sonnet / hours / days / 其他原样显示
-#[derive(Serialize, Clone, Debug)]
+/// 一家服务。设置里的键按 <前缀>_<小写名字> 来（show_gemini、card_show_gemini、gemini_limit_source），
+/// 加一家就是在这里加一行、再写它的取数
+pub struct Service {
+    pub name: &'static str,
+    /// 托盘文字的简写（Cc 56%  Cx 47%  Gm 80%）
+    pub short: &'static str,
+    /// 有本机日志、有用量统计（stats::Source 里的两家）；也只有这两家新装时必须先选额度来源
+    pub stats: bool,
+}
+
+/// 显示顺序就是这个顺序
+pub const PROVIDERS: [Service; 3] = [
+    Service { name: "Claude", short: "Cc", stats: true },
+    Service { name: "Codex", short: "Cx", stats: true },
+    // Gemini 的对话是加密的，只有额度、没有用量统计
+    Service { name: "Gemini", short: "Gm", stats: false },
+];
+
+pub fn service(name: &str) -> Option<&'static Service> {
+    PROVIDERS.iter().find(|s| s.name == name)
+}
+
+/// 一个额度窗口。kind 由界面翻译：five_hour / weekly / weekly_opus / weekly_sonnet / weekly_model（「本周 Fable」，模型名在 model）/ hours / days / 其他原样显示
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LimitWindow {
     pub kind: String,
     pub amount: Option<u64>, // kind 为 hours / days 时的数字
@@ -19,14 +46,25 @@ pub struct LimitWindow {
     /// 窗口总长（秒）：5 小时或 7 天；不知道时为 0，不算速度
     pub length: f64,
     /// 用得比时间快（界面和托盘在百分比后面加 ↑）
+    #[serde(default)]
     pub fast: bool,
     /// 按现在的速度什么时候用完（Unix 秒）；重置前用不完就是空
     pub runs_out_at: Option<i64>,
+    /// 同一家里另一组额度（Gemini 里 Claude、GPT 那组是 third_party，界面上翻成「第三方模型 · 5 小时」）。
+    /// 有组的不是这一家的主额度：托盘文字只取没有组的 5 小时和本周
+    pub group: Option<String>,
+    /// 稳定的标识（Gemini 的 bucketId）：Gemini 的窗口数会变（缺 remainingFraction 的跳过、组跟着套餐和模型增减），
+    /// 通知按位置当键会把两个不同的窗口对上。Claude、Codex 没有，照旧按位置
+    #[serde(default)]
+    pub id: Option<String>,
+    /// kind 为 weekly_model 时的模型名（Claude 单独算的某个模型的每周额度，比如 Fable）
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl LimitWindow {
     fn new(kind: &str, amount: Option<u64>, used: f64, resets_at: Option<i64>, length: f64) -> Self {
-        let mut w = LimitWindow { kind: kind.into(), amount, used, resets_at, length, fast: false, runs_out_at: None };
+        let mut w = LimitWindow { kind: kind.into(), amount, used, resets_at, length, fast: false, runs_out_at: None, group: None, id: None, model: None };
         w.update_pace(now());
         w
     }
@@ -112,24 +150,45 @@ fn failed(name: &str, key: &str, detail: Option<i64>) -> Provider {
     Provider { name: name.into(), error: Some(key.into()), detail, ..Default::default() }
 }
 
-/// claude_source / codex_source：额度来源 api / local，空的是新装还没选（什么都不查）；
-/// remote_limits：远程机器的日志里最新的一份 Codex 额度（和它的时间）
-pub async fn fetch_all(client: &reqwest::Client, claude_source: &str, codex_source: &str, remote_limits: Option<(Value, i64)>) -> Vec<Provider> {
-    let c = async {
-        match claude_source {
-            "api" => claude(client).await,
-            "local" => claude_local_limits(),
-            _ => failed("Claude", "no_source", None),
+/// 按 PROVIDERS 的顺序同时查各家。source(名字)：这一家的额度来源，Claude / Codex 是 api / local / off，
+/// 空的是新装还没选（什么都不查）；Gemini 是 app / off，空的也算停用（新加的一家，旧设置里没有，默认不查）。
+/// off 是停用了这一家（比如退订了）：不查，结果里也没有它，托盘、卡片、通知都不显示；
+/// remote_limits：远程机器的日志里最新的一份 Codex 额度（和它的时间）；data_dir：放 Gemini 缓存的目录
+pub async fn fetch_all(client: &reqwest::Client, source: impl Fn(&str) -> String, remote_limits: Option<(Value, i64)>, data_dir: Option<PathBuf>) -> Vec<Provider> {
+    let futs: Vec<Pin<Box<dyn Future<Output = Option<Provider>> + Send + '_>>> = PROVIDERS
+        .iter()
+        .map(|s| Box::pin(fetch_one(client, s.name, source(s.name), remote_limits.clone(), data_dir.clone())) as _)
+        .collect();
+    join_all(futs).await.into_iter().flatten().collect()
+}
+
+async fn fetch_one(client: &reqwest::Client, name: &'static str, source: String, remote_limits: Option<(Value, i64)>, data_dir: Option<PathBuf>) -> Option<Provider> {
+    match (name, source.as_str()) {
+        (_, "off") => None,
+        ("Claude", "api") => Some(claude(client).await),
+        ("Claude", "local") => Some(claude_local_limits()),
+        ("Codex", "api" | "local") => Some(codex(client, source == "local", remote_limits).await),
+        ("Gemini", "app") => Some(gemini(data_dir.as_deref()).await),
+        ("Gemini", _) => None,
+        _ => Some(failed(name, "no_source", None)),
+    }
+}
+
+/// 几个请求一起等（没有引入 futures 库，自己轮询一遍），结果按原来的顺序
+async fn join_all<T>(mut futs: Vec<Pin<Box<dyn Future<Output = T> + Send + '_>>>) -> Vec<T> {
+    let mut out: Vec<Option<T>> = futs.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (f, slot) in futs.iter_mut().zip(out.iter_mut()).filter(|(_, s)| s.is_none()) {
+            match f.as_mut().poll(cx) {
+                Poll::Ready(v) => *slot = Some(v),
+                Poll::Pending => pending = true,
+            }
         }
-    };
-    let x = async {
-        match codex_source {
-            "api" | "local" => codex(client, codex_source == "local", remote_limits).await,
-            _ => failed("Codex", "no_source", None),
-        }
-    };
-    let (c, x) = tokio::join!(c, x);
-    vec![c, x]
+        if pending { Poll::Pending } else { Poll::Ready(()) }
+    })
+    .await;
+    out.into_iter().flatten().collect()
 }
 
 // MARK: - Claude
@@ -261,36 +320,61 @@ async fn claude(client: &reqwest::Client) -> Provider {
             return Provider { plan, ..failed("Claude", key, Some(status as i64)) };
         }
         let Ok(j) = resp.json::<Value>().await else { return Provider { plan, ..failed("Claude", "network", None) } };
-        let mut p = Provider { name: "Claude".into(), plan, ..Default::default() };
-        let order = ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus"];
-        let mut keys: Vec<String> = order.iter().filter(|k| !j[**k].is_null()).map(|k| k.to_string()).collect();
-        if let Some(obj) = j.as_object() {
-            let mut rest: Vec<String> = obj.keys().filter(|k| !order.contains(&k.as_str())).cloned().collect();
-            rest.sort();
-            keys.extend(rest);
-        }
-        for key in keys {
-            let w = &j[&key];
-            let Some(util) = w["utilization"].as_f64() else { continue };
-            let resets_at = w["resets_at"]
-                .as_str()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|d| d.timestamp());
-            // 认不出的 key（接口里常有 iguana_necktie 这种内部代号）：没用过就不显示，用过的叫「其他额度」
-            let kind = match key.as_str() {
-                "five_hour" => "five_hour",
-                "seven_day" => "weekly",
-                "seven_day_opus" => "weekly_opus",
-                "seven_day_sonnet" => "weekly_sonnet",
-                _ if util <= 0.0 => continue,
-                _ => "other",
-            };
-            let length = if key == "five_hour" { 5.0 * 3600.0 } else if key.starts_with("seven_day") { 7.0 * 86400.0 } else { 0.0 };
-            p.windows.push(LimitWindow::new(kind, None, util, resets_at, length));
-        }
-        return p;
+        return Provider { name: "Claude".into(), plan, windows: claude_windows(&j), ..Default::default() };
     }
     failed("Claude", "claude_expired", None)
+}
+
+/// Claude 额度接口的结果 → 额度窗口：先是 five_hour、seven_day 这些顶层的，
+/// 再是 limits 里单独算某个模型的每周额度（kind 为 weekly_scoped，比如 Fable：「本周 Fable」）
+pub fn claude_windows(j: &Value) -> Vec<LimitWindow> {
+    let mut windows = Vec::new();
+    let order = ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus"];
+    let mut keys: Vec<String> = order.iter().filter(|k| !j[**k].is_null()).map(|k| k.to_string()).collect();
+    if let Some(obj) = j.as_object() {
+        let mut rest: Vec<String> = obj.keys().filter(|k| !order.contains(&k.as_str())).cloned().collect();
+        rest.sort();
+        keys.extend(rest);
+    }
+    for key in keys {
+        let w = &j[&key];
+        let Some(util) = w["utilization"].as_f64() else { continue };
+        let resets_at = w["resets_at"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.timestamp());
+        // 认不出的 key（接口里常有 iguana_necktie 这种内部代号）：没用过就不显示，用过的叫「其他额度」
+        let kind = match key.as_str() {
+            "five_hour" => "five_hour",
+            "seven_day" => "weekly",
+            "seven_day_opus" => "weekly_opus",
+            "seven_day_sonnet" => "weekly_sonnet",
+            _ if util <= 0.0 => continue,
+            _ => "other",
+        };
+        let length = if key == "five_hour" { 5.0 * 3600.0 } else if key.starts_with("seven_day") { 7.0 * 86400.0 } else { 0.0 };
+        windows.push(LimitWindow::new(kind, None, util, resets_at, length));
+    }
+    // 单独算的模型额度：顶层已经有同一个模型的（seven_day_opus 这种）就不重复。
+    // 键用模型名，不用位置：这一项有时有、有时没有，后面的不会挪到别人的键上
+    for l in j["limits"].as_array().into_iter().flatten().filter(|l| l["kind"] == "weekly_scoped") {
+        let Some(name) = l["scope"]["model"]["display_name"].as_str().filter(|s| !s.is_empty()) else { continue };
+        let Some(used) = l["percent"].as_f64() else { continue };
+        let dup = match name.to_lowercase().as_str() {
+            "opus" => "weekly_opus",
+            "sonnet" => "weekly_sonnet",
+            _ => "",
+        };
+        if windows.iter().any(|w: &LimitWindow| w.kind == dup || w.model.as_deref() == Some(name)) {
+            continue;
+        }
+        let resets_at = l["resets_at"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp());
+        let mut w = LimitWindow::new("weekly_model", None, used, resets_at, 7.0 * 86400.0);
+        w.model = Some(name.to_string());
+        w.id = Some(format!("weekly_model:{name}"));
+        windows.push(w);
+    }
+    windows
 }
 
 // MARK: - Codex
@@ -469,5 +553,263 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<(PathBuf, i64)>) {
                 .unwrap_or(0);
             out.push((path, mtime));
         }
+    }
+}
+
+// MARK: - Gemini
+
+/// Antigravity 的 agent（Windows / Linux 上是 Antigravity 的 IDE / CLI）在跑时写的发现文件所在目录
+fn gemini_daemon_dir() -> PathBuf {
+    home().join(".gemini").join("antigravity").join("daemon")
+}
+
+/// 最新的 hub_<端口>.json 里的 HTTP 端口和 csrf token。旧的文件（进程已经没了）请求会失败，退回缓存
+fn gemini_hub() -> Option<(u16, String)> {
+    let newest = std::fs::read_dir(gemini_daemon_dir())
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with("hub_") && n.ends_with(".json")
+        })
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
+    let j: Value = serde_json::from_str(&std::fs::read_to_string(newest.path()).ok()?).ok()?;
+    let port = u16::try_from(j["httpPort"].as_u64()?).ok().filter(|p| *p > 0)?;
+    let token = j["csrfToken"].as_str().filter(|t| !t.is_empty())?.to_string();
+    Some((port, token))
+}
+
+/// 调本机 language server 的一个方法（Connect 协议的 JSON）；不是 200 就算没查到。token 只放在请求头里，不记日志
+async fn gemini_call(client: &reqwest::Client, port: u16, token: &str, method: &str) -> Option<Value> {
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{method}"))
+        .header("Connect-Protocol-Version", "1")
+        .header("X-Codeium-Csrf-Token", token)
+        .json(&json!({ "metadata": { "ideName": "antigravity", "extensionName": "antigravity" } }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    if resp.status().as_u16() != 200 {
+        return None;
+    }
+    resp.json().await.ok()
+}
+
+/// 重置时间：ISO-8601，偶尔是秒数
+fn gemini_time(v: &Value) -> Option<i64> {
+    match v {
+        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp()).or_else(|| s.parse::<f64>().ok().map(|n| n as i64)),
+        Value::Number(n) => n.as_f64().map(|n| n as i64),
+        _ => None,
+    }
+}
+
+/// Gemini 里 Claude、GPT 那组的组名：存的是这个键，界面按语言翻成「第三方模型」
+pub const THIRD_PARTY: &str = "third_party";
+
+/// RetrieveUserQuotaSummary 的结果 → 额度窗口（id 是 bucketId，通知拿它当键）。排序固定：
+/// 「Gemini Models」组（主额度，不加前缀）的 5 小时、本周，「Claude and GPT models」组（组名存成 third_party，界面上翻成「第三方模型」）的 5 小时、本周，
+/// 再是其他组（比如 Gemini 4 Argon 的本周，按组名排）。没有 remainingFraction 的是不知道用了多少：跳过，不当成用完了
+pub fn gemini_windows(j: &Value) -> Vec<LimitWindow> {
+    let mut found: Vec<((u8, String, u8, u8, String), LimitWindow)> = Vec::new();
+    for g in j["response"]["groups"].as_array().into_iter().flatten() {
+        let gname = g["displayName"].as_str().unwrap_or_default().to_string();
+        let buckets = g["buckets"].as_array().cloned().unwrap_or_default();
+        let id = |b: &Value| b["bucketId"].as_str().unwrap_or_default().to_string();
+        // 用稳定的 bucketId 认组，组名只是备用（显示名可能改）
+        let rank = if buckets.iter().any(|b| matches!(id(b).as_str(), "gemini-5h" | "gemini-weekly")) || gname == "Gemini Models" {
+            0
+        } else if buckets.iter().any(|b| id(b).starts_with("3p-")) || gname == "Claude and GPT models" {
+            1
+        } else {
+            2
+        };
+        let group = match rank {
+            0 => None,
+            1 => Some(THIRD_PARTY.to_string()),
+            _ => Some(if gname.is_empty() { "Gemini".into() } else { gname.clone() }),
+        };
+        for b in &buckets {
+            let Some(left) = b["remainingFraction"].as_f64().or_else(|| b["remaining"]["remainingFraction"].as_f64()) else { continue };
+            let bid = id(b);
+            // 没写 window 时按 bucketId 猜
+            let cadence = b["window"].as_str().map(str::to_string).unwrap_or_else(|| {
+                if bid.ends_with("5h") { "5h".into() } else if bid.contains("weekly") { "weekly".into() } else { String::new() }
+            });
+            let (kind, length, order) = match cadence.as_str() {
+                "5h" => ("five_hour", 5.0 * 3600.0, 0),
+                "weekly" => ("weekly", 7.0 * 86400.0, 1),
+                _ => ("other", 0.0, 2),
+            };
+            let used = ((1.0 - left) * 100.0).clamp(0.0, 100.0);
+            let resets_at = gemini_time(&b["resetTime"]).or_else(|| gemini_time(&b["remaining"]["resetTime"]));
+            // 同一组同一种窗口有好几个时，常规的那个（gemini-5h、3p-weekly 这种）排前面，托盘取的是它
+            let canonical = if matches!(bid.as_str(), "gemini-5h" | "gemini-weekly" | "3p-5h" | "3p-weekly") { 0 } else { 1 };
+            let w = LimitWindow { group: group.clone(), id: Some(bid.clone()), ..LimitWindow::new(kind, None, used, resets_at, length) };
+            found.push(((rank, if rank == 2 { gname.clone() } else { String::new() }, order, canonical, bid), w));
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found.into_iter().map(|(_, w)| w).collect()
+}
+
+/// 上次查到的结果（存在 app 数据目录的 gemini.json）：Antigravity 没在跑时显示这个
+#[derive(Serialize, Deserialize)]
+pub struct GeminiCache {
+    pub at: i64,
+    pub plan: Option<String>,
+    pub windows: Vec<LimitWindow>,
+}
+
+/// 缓存 → 显示的结果：重置时间已经过了的窗口已经重置过，按 0% 显示、不写重置时间。
+/// 带着 note，通知就不拿它判断「已重置」（和 Claude 的本地数据一样）
+pub fn gemini_cached(c: GeminiCache, now: f64) -> Provider {
+    let windows = c
+        .windows
+        .into_iter()
+        .map(|w| {
+            let expired = w.resets_at.map(|r| (r as f64) < now).unwrap_or(false);
+            let (used, resets_at) = if expired { (0.0, None) } else { (w.used, w.resets_at) };
+            // 旧版缓存里这组存的是「Claude/GPT」
+            let group = if w.group.as_deref() == Some("Claude/GPT") { Some(THIRD_PARTY.to_string()) } else { w.group.clone() };
+            LimitWindow { group, id: w.id.clone(), ..LimitWindow::new(&w.kind, w.amount, used, resets_at, w.length) }
+        })
+        .collect();
+    Provider { name: "Gemini".into(), plan: c.plan, windows, note: Some("gemini_cache".into()), detail: Some(c.at), ..Default::default() }
+}
+
+/// 查 Gemini：Antigravity 没在跑（没有发现文件、连不上、不是 200）时退回缓存，没有缓存就报「没在运行」
+pub async fn gemini(data_dir: Option<&Path>) -> Provider {
+    let cache_path = data_dir.map(|d| d.join("gemini.json"));
+    let live = async {
+        let (port, token) = gemini_hub()?;
+        // 只连本机：不走系统 / 环境变量里的代理，token 也不会发到别处
+        let client = reqwest::Client::builder().no_proxy().build().ok()?;
+        let (quota, status) = tokio::join!(
+            gemini_call(&client, port, &token, "RetrieveUserQuotaSummary"),
+            gemini_call(&client, port, &token, "GetUserStatus"),
+        );
+        let windows = gemini_windows(&quota?);
+        let plan = status.and_then(|s| plan_name(s["userStatus"]["planStatus"]["planInfo"]["planName"].as_str()));
+        Some((windows, plan))
+    }
+    .await;
+    // 连上了、也是 200，但一个能用的额度都没有：是返回的格式变了，不是没在运行，别拿缓存冒充
+    if let Some((_, plan)) = live.as_ref().filter(|(w, _)| w.is_empty()) {
+        return Provider { plan: plan.clone(), ..failed("Gemini", "gemini_empty", None) };
+    }
+    if let Some((windows, plan)) = live {
+        if let Some(path) = &cache_path {
+            let c = GeminiCache { at: now() as i64, plan: plan.clone(), windows: windows.clone() };
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, serde_json::to_string(&c).unwrap_or_default());
+        }
+        return Provider { name: "Gemini".into(), plan, windows, ..Default::default() };
+    }
+    match cache_path.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<GeminiCache>(&t).ok()) {
+        Some(c) => gemini_cached(c, now()),
+        None => failed("Gemini", "gemini_not_running", None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 本机 Gemini.app 的 agent 实际返回的 RetrieveUserQuotaSummary（去掉了说明文字）
+    const SAMPLE: &str = r#"{"response":{"groups":[
+      {"displayName":"Gemini Models","buckets":[
+        {"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","remainingFraction":1,"resetTime":"2026-11-19T07:02:48Z"},
+        {"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","remainingFraction":1,"resetTime":"2026-11-12T12:02:48Z"}]},
+      {"displayName":"Claude and GPT models","buckets":[
+        {"bucketId":"3p-weekly","displayName":"Weekly Limit Remaining","window":"weekly","remainingFraction":1,"resetTime":"2026-11-19T07:02:48Z"},
+        {"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","remainingFraction":1,"resetTime":"2026-11-12T12:02:48Z"}]},
+      {"displayName":"Gemini 4 Argon","buckets":[
+        {"bucketId":"gemini-argon-wtu-weekly","displayName":"Gemini 4 Argon Weekly Limit","window":"weekly","remainingFraction":1,"resetTime":"2026-11-19T07:02:48Z"}]}]}}"#;
+
+    fn shape(ws: &[LimitWindow]) -> Vec<(Option<&str>, &str)> {
+        ws.iter().map(|w| (w.group.as_deref(), w.kind.as_str())).collect()
+    }
+
+    #[test]
+    fn claude_model_limits() {
+        // 实际返回的样子（去掉了别的字段）：Fable 只在 limits 里，顶层没有
+        let j: Value = serde_json::from_str(r#"{
+          "five_hour":{"utilization":4.0,"resets_at":"2026-11-12T14:19:59.547813+00:00"},
+          "seven_day":{"utilization":43.0,"resets_at":"2026-11-15T21:00:00.547833+00:00"},
+          "seven_day_opus":null,"iguana_necktie":null,
+          "limits":[
+            {"kind":"session","group":"session","percent":4,"resets_at":"2026-11-12T14:19:59.547813+00:00","scope":null},
+            {"kind":"weekly_all","group":"weekly","percent":43,"resets_at":"2026-11-15T21:00:00.547833+00:00","scope":null},
+            {"kind":"weekly_scoped","group":"weekly","percent":12,"resets_at":"2026-11-15T21:00:00+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}"#).unwrap();
+        let ws = claude_windows(&j);
+        let kinds: Vec<&str> = ws.iter().map(|w| w.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["five_hour", "weekly", "weekly_model"]);
+        assert_eq!(ws[2].model.as_deref(), Some("Fable"));
+        assert_eq!(ws[2].used, 12.0);
+        assert_eq!(ws[2].id.as_deref(), Some("weekly_model:Fable"));
+        assert_eq!(ws[2].resets_at, Some(1_794_776_400));
+        assert_eq!(crate::i18n::window_label("zh", &ws[2]), "本周 Fable");
+        assert_eq!(crate::i18n::window_label("en", &ws[2]), "Weekly Fable");
+        // 顶层已经有 Opus 的，limits 里的 Opus 不重复
+        let j2: Value = serde_json::from_str(r#"{"seven_day_opus":{"utilization":5.0,"resets_at":null},
+          "limits":[{"kind":"weekly_scoped","percent":5,"scope":{"model":{"display_name":"Opus"}}}]}"#).unwrap();
+        assert_eq!(claude_windows(&j2).iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), vec!["weekly_opus"]);
+    }
+
+    #[test]
+    fn gemini_order_and_groups() {
+        let ws = gemini_windows(&serde_json::from_str(SAMPLE).unwrap());
+        assert_eq!(
+            shape(&ws),
+            vec![(None, "five_hour"), (None, "weekly"), (Some(THIRD_PARTY), "five_hour"), (Some(THIRD_PARTY), "weekly"), (Some("Gemini 4 Argon"), "weekly")]
+        );
+        assert_eq!(ws[0].length, 18000.0);
+        assert_eq!(ws[1].length, 604800.0);
+        assert_eq!(ws[1].resets_at, Some(chrono::DateTime::parse_from_rfc3339("2026-11-19T07:02:48Z").unwrap().timestamp()));
+        assert!(ws.iter().all(|w| w.used == 0.0));
+        // 组的顺序换了，结果一样（显示顺序固定）
+        let mut j: Value = serde_json::from_str(SAMPLE).unwrap();
+        j["response"]["groups"].as_array_mut().unwrap().reverse();
+        assert_eq!(shape(&gemini_windows(&j)), shape(&ws));
+    }
+
+    #[test]
+    fn gemini_missing_fraction_is_skipped() {
+        let mut j: Value = serde_json::from_str(SAMPLE).unwrap();
+        // 第三方模型的 5 小时没有 remainingFraction：不知道用了多少，跳过（不是用完了）
+        j["response"]["groups"][1]["buckets"][1].as_object_mut().unwrap().remove("remainingFraction");
+        // Gemini 的 5 小时换成另一种写法 remaining.remainingFraction
+        let b = j["response"]["groups"][0]["buckets"][1].as_object_mut().unwrap();
+        b.remove("remainingFraction");
+        b.insert("remaining".into(), json!({ "remainingFraction": 0.25 }));
+        let ws = gemini_windows(&j);
+        assert_eq!(shape(&ws), vec![(None, "five_hour"), (None, "weekly"), (Some(THIRD_PARTY), "weekly"), (Some("Gemini 4 Argon"), "weekly")]);
+        assert_eq!(ws[0].used, 75.0);
+        // 通知按 bucketId 当键：少了一个窗口，后面的标识不跟着挪
+        let ids: Vec<&str> = ws.iter().map(|w| w.id.as_deref().unwrap_or_default()).collect();
+        assert_eq!(ids, vec!["gemini-5h", "gemini-weekly", "3p-weekly", "gemini-argon-wtu-weekly"]);
+    }
+
+    #[test]
+    fn gemini_stale_cache() {
+        let now = 1_800_000_000.0;
+        let w = |used: f64, resets_at: i64, group: Option<&str>| LimitWindow {
+            group: group.map(str::to_string),
+            id: group.map(|_| "3p-weekly".to_string()),
+            ..LimitWindow::new("weekly", None, used, Some(resets_at), 7.0 * 86400.0)
+        };
+        let c = GeminiCache { at: 1_799_990_000, plan: Some("Pro".into()), windows: vec![w(40.0, 1_799_999_000, None), w(30.0, 1_800_100_000, Some("Claude/GPT"))] };
+        let text = serde_json::to_string(&c).unwrap();
+        let p = gemini_cached(serde_json::from_str(&text).unwrap(), now);
+        // 重置时间已过：已经重置了，0%、不写重置时间
+        assert_eq!((p.windows[0].used, p.windows[0].resets_at), (0.0, None));
+        assert_eq!((p.windows[1].used, p.windows[1].resets_at), (30.0, Some(1_800_100_000)));
+        assert_eq!(p.windows[1].group.as_deref(), Some(THIRD_PARTY));  // 旧缓存的「Claude/GPT」换成键
+        assert_eq!(p.windows[1].id.as_deref(), Some("3p-weekly"));
+        assert_eq!((p.note.as_deref(), p.detail, p.plan.as_deref(), p.error.as_deref()), (Some("gemini_cache"), Some(1_799_990_000), Some("Pro"), None));
     }
 }

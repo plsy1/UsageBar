@@ -1,5 +1,5 @@
-// UsageBar（Windows / Linux 版）：托盘显示 Claude / Codex 剩余用量
-//   托盘：Linux 顶栏直接显示「Cc 56%  Cx 47%」；Windows 托盘只有图标，悬停看用量，左键点开小面板（flyout）
+// UsageBar（Windows / Linux 版）：托盘显示 Claude / Codex / Gemini 剩余用量
+//   托盘：Linux 顶栏直接显示「Cc 56%  Cx 47%  Gm 80%」；Windows 托盘只有图标，悬停看用量，左键点开小面板（flyout）
 //   桌面卡片：跟 macOS 版一样的悬浮卡片，右键菜单；位置和拖动吸附见 cards.rs
 //   窗口：「用量统计」「额度」「桌面卡片」「设置」四页（ui/）
 
@@ -29,17 +29,23 @@ struct Settings {
     language: String,     // auto / zh / ja / en
     // 托盘（Linux 顶栏文字、Windows 悬停提示、托盘菜单和小面板）和主窗口的「额度」页
     display: String,      // remaining / used
-    menu_label: String,   // short（Cc / Cx）/ full（Claude / Codex）
+    menu_label: String,   // short（Cc / Cx / Gm）/ full（Claude / Codex / Gemini）
     refresh_minutes: u64, // 额度刷新间隔
+    // 各家的开关、来源都按 <前缀>_<小写名字> 命名（usage::PROVIDERS），界面也按这个规则拼键
     show_claude: bool,
     show_codex: bool,
+    show_gemini: bool,
     tray_limit: String,   // session（5 小时）/ weekly（本周）/ both：托盘文字显示哪个额度
     tray_reset: String,   // full / relative / absolute / hidden：托盘菜单和小面板里的重置时间
     appearance: String,   // auto / light / dark
     accent: String,       // 主题色：pink / purple / blue / teal / green / orange / gray
-    /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求
+    /// 额度从哪来：api 用本机的登录信息请求官方接口 / local 只读本机文件、不发请求 / off 停用这一家（不查、哪里都不显示）
     claude_limit_source: String,
     codex_limit_source: String,
+    /// Gemini 只有 app（本机 Antigravity）/ off，默认 off：新加的一家，不打扰没在用的人
+    gemini_limit_source: String,
+    /// Gemini 的「第三方模型」组（在 Gemini App 里用 Claude、GPT 等模型的额度）显示不显示，默认显示
+    gemini_third_party: bool,
     /// 通知：用量达到多少时提醒（0 不提醒）、预计在重置前用完、额度重置后（5 小时 / 每周）、Codex 额度重置次数
     notify_threshold: u32,
     notify_run_out: bool,
@@ -63,7 +69,8 @@ struct Settings {
     card_display: String,    // 额度卡片自己的「剩余 / 已用」和显示哪几家（第一次沿用托盘的）
     card_show_claude: bool,
     card_show_codex: bool,
-    // 用量卡片（成本、请求数、Tokens），布局和外观自己一套（第一次沿用额度卡片的）
+    card_show_gemini: bool,
+    // 用量卡片（只有 Claude、Codex 有用量统计）（成本、请求数、Tokens），布局和外观自己一套（第一次沿用额度卡片的）
     stats_card_show: bool,
     stats_card_on_top: bool,
     stats_card_range: String,  // today / cycle / 7d
@@ -92,6 +99,7 @@ impl Default for Settings {
             refresh_minutes: 5,
             show_claude: true,
             show_codex: true,
+            show_gemini: true,
             tray_limit: "both".into(),
             tray_reset: "full".into(),
             appearance: "auto".into(),
@@ -99,6 +107,8 @@ impl Default for Settings {
             // 新装不设默认值，打开后让用户自己选
             claude_limit_source: String::new(),
             codex_limit_source: String::new(),
+            gemini_limit_source: "off".into(),
+            gemini_third_party: true,
             notify_threshold: 0,
             notify_run_out: false,
             notify_reset_session: false,
@@ -119,6 +129,7 @@ impl Default for Settings {
             card_display: "remaining".into(),
             card_show_claude: true,
             card_show_codex: true,
+            card_show_gemini: true,
             stats_card_show: false,
             stats_card_on_top: false,
             stats_card_range: "today".into(),
@@ -211,8 +222,10 @@ fn snapshot(app: &AppHandle) -> Snapshot {
     let lang = i18n::resolve(&settings.language);
     let usage = usage_card(&st, &settings, &providers);
     let stats_loading = *st.stats_loading.lock().unwrap();
+    // 只有有用量统计的两家要（统计页按 stats::Source 分）
     let cycle = providers
         .iter()
+        .filter(|p| usage::service(&p.name).is_some_and(|s| s.stats))
         .filter_map(|p| {
             let reset = p.windows.iter().find(|w| w.kind == "weekly")?.resets_at?;
             Some((p.name.clone(), stats::cycle_start(chrono::DateTime::from_timestamp(reset, 0)?).timestamp_millis()))
@@ -246,6 +259,44 @@ fn usage_card(st: &AppState, s: &Settings, providers: &[usage::Provider]) -> Usa
     }
 }
 
+impl Settings {
+    /// 这一家的额度来源（api / local / app / off，空的是还没选；Gemini 空的算 off）
+    fn source_of(&self, name: &str) -> &str {
+        match name {
+            "Claude" => &self.claude_limit_source,
+            "Codex" => &self.codex_limit_source,
+            "Gemini" if self.gemini_limit_source.is_empty() => "off",
+            "Gemini" => &self.gemini_limit_source,
+            _ => "off",
+        }
+    }
+
+    /// 托盘里显示不显示这一家
+    fn tray_shows(&self, name: &str) -> bool {
+        match name {
+            "Claude" => self.show_claude,
+            "Codex" => self.show_codex,
+            "Gemini" => self.show_gemini,
+            _ => false,
+        }
+    }
+
+    /// 关掉了 Gemini 的「第三方模型」：把那组额度拿掉（托盘、卡片、通知都不看它；缓存里还留着，再打开马上就有）
+    fn hide_third_party(&self, providers: &mut [usage::Provider]) {
+        if self.gemini_third_party {
+            return;
+        }
+        for p in providers.iter_mut().filter(|p| p.name == "Gemini") {
+            p.windows.retain(|w| w.group.as_deref() != Some(usage::THIRD_PARTY));
+        }
+    }
+
+    /// 所有服务都停用了：托盘菜单、卡片里说一声，不然只是一片空白
+    fn all_off(&self) -> bool {
+        usage::PROVIDERS.iter().all(|p| self.source_of(p.name) == "off")
+    }
+}
+
 fn settings_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("settings.json"))
 }
@@ -262,6 +313,10 @@ fn load_settings(app: &AppHandle) -> Settings {
                 *v = "api".into();
             }
         }
+    }
+    // Gemini 是后来加的：旧设置里没有（或空的）就是停用
+    if s.gemini_limit_source.is_empty() {
+        s.gemini_limit_source = "off".into();
     }
     // 以前「额度重置后」只有一个开关：拆成 5 小时和每周两个，旧的那个两个都沿用
     if raw.get("notify_reset_session").is_none() {
@@ -311,14 +366,23 @@ fn get_state(app: AppHandle) -> Snapshot {
 
 #[tauri::command]
 fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
-    let source_changed = {
+    let (source_changed, third_party_changed) = {
         // 卡片位置只由拖动来改，界面传来的旧值不算
         let st = app.state::<AppState>();
         let mut cur = st.settings.lock().unwrap();
         settings.card_places = cur.card_places.clone();
         settings.card_x = cur.card_x;
         settings.card_y = cur.card_y;
-        let changed = cur.claude_limit_source != settings.claude_limit_source || cur.codex_limit_source != settings.codex_limit_source;
+        let changed = usage::PROVIDERS.iter().any(|p| cur.source_of(p.name) != settings.source_of(p.name));
+        // 刚停用的那家马上从托盘、卡片上拿掉，不等这次查完
+        if changed {
+            st.providers.lock().unwrap().retain(|p| settings.source_of(&p.name) != "off");
+        }
+        // 开关了第三方模型：关掉的马上拿掉，打开的等下面重新查一次（本机查得很快）
+        let third_party_changed = cur.gemini_third_party != settings.gemini_third_party;
+        if third_party_changed {
+            settings.hide_third_party(&mut st.providers.lock().unwrap());
+        }
         let hosts_changed = cur.remote_hosts != settings.remote_hosts;
         let removed: Vec<String> = cur.remote_hosts.iter().filter(|h| !settings.remote_hosts.contains(h)).cloned().collect();
         *cur = settings.clone();
@@ -332,12 +396,14 @@ fn set_settings(app: AppHandle, mut settings: Settings) -> Snapshot {
                 refresh_stats(app, false).await;
             });
         }
-        changed
+        (changed, third_party_changed)
     };
     // 换了额度来源：马上按新的来源查一次（统计页的 Codex 服务端统计也跟着查或清掉）
     if source_changed {
         tauri::async_runtime::spawn(refresh(app.clone()));
         tauri::async_runtime::spawn(refresh_stats(app.clone(), false));
+    } else if third_party_changed {
+        tauri::async_runtime::spawn(refresh(app.clone()));
     }
     save_settings(&app, &settings);
     update_tray(&app);
@@ -456,16 +522,21 @@ async fn refresh(app: AppHandle) {
     let _ = app.emit("state", snapshot(&app));
     let client = reqwest::Client::new();
     loop {
-        let (claude_source, codex_source) = {
-            let s = app.state::<AppState>().settings.lock().unwrap().clone();
-            (s.claude_limit_source, s.codex_limit_source)
-        };
+        let settings = app.state::<AppState>().settings.lock().unwrap().clone();
         let remote_limits = app.state::<AppState>().remote_limits.lock().unwrap().clone();
-        let providers = usage::fetch_all(&client, &claude_source, &codex_source, remote_limits).await;
-        // 官方接口直接查到的周额度记进「按周期」（退回本地缓存的不算）
+        let data_dir = app.path().app_data_dir().ok();
+        let mut providers = usage::fetch_all(&client, |n| settings.source_of(n).to_string(), remote_limits, data_dir).await;
+        // 查的途中又停用了的，也不要
+        {
+            let st = app.state::<AppState>();
+            let s = st.settings.lock().unwrap();
+            providers.retain(|p| s.source_of(&p.name) != "off");
+            s.hide_third_party(&mut providers);
+        }
+        // 官方接口直接查到的周额度记进「按周期」（退回本地缓存的不算；Gemini 没有用量统计，不记）
         let cycles: Vec<(String, i64, f64)> = providers
             .iter()
-            .filter(|p| p.error.is_none() && p.note.is_none())
+            .filter(|p| p.error.is_none() && p.note.is_none() && usage::service(&p.name).is_some_and(|s| s.stats))
             .filter_map(|p| {
                 let w = p.windows.iter().find(|w| w.kind == "weekly")?;
                 Some((p.name.clone(), w.resets_at?, w.used))
@@ -815,19 +886,21 @@ async fn refresh_loop(app: AppHandle) {
 
 // MARK: - 托盘
 
-/// 「Cc 11%/86%  Cx 47%」：按设置显示 5 小时、本周或两个都显示
+/// 「Cc 11%/86%  Cx 47%  Gm 100%/100%」：按设置显示 5 小时、本周或两个都显示
 fn tray_text(s: &Settings, providers: &[usage::Provider]) -> String {
     let used = s.display == "used";
     // 用得比时间快的额度后面加个 ↑
     let pct = |w: &usage::LimitWindow| format!("{}%{}", (if used { w.used.min(100.0) } else { w.remaining() }).round() as i64, if w.fast { "↑" } else { "" });
     let parts: Vec<String> = providers
         .iter()
-        .filter(|p| if p.name == "Claude" { s.show_claude } else { s.show_codex })
+        .filter(|p| s.tray_shows(&p.name))
         .map(|p| {
-            let name = if s.menu_label == "full" { p.name.clone() } else if p.name == "Claude" { "Cc".into() } else { "Cx".into() };
-            // 5 小时是第一个不是周额度的（两家都排在最前），本周是 weekly
-            let session = p.windows.iter().find(|w| !w.kind.starts_with("weekly") && w.kind != "days");
-            let weekly = p.windows.iter().find(|w| w.kind == "weekly");
+            let short = usage::service(&p.name).map(|s| s.short).unwrap_or_default();
+            let name = if s.menu_label == "full" || short.is_empty() { p.name.clone() } else { short.into() };
+            // 5 小时是第一个不是周额度的（各家都排在最前），本周是 weekly；有组的（Gemini 的第三方模型等）不是主额度，不取
+            let main = || p.windows.iter().filter(|w| w.group.is_none());
+            let session = main().find(|w| !w.kind.starts_with("weekly") && w.kind != "days");
+            let weekly = main().find(|w| w.kind == "weekly");
             let v = match s.tray_limit.as_str() {
                 "session" => session.or(weekly).map(pct),
                 "weekly" => weekly.or(session).map(pct),
@@ -848,9 +921,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let used = snap.settings.display == "used";
     let menu = Menu::new(app)?;
     if snap.providers.is_empty() {
-        menu.append(&MenuItem::with_id(app, "info", i18n::t(lang, "loading"), false, None::<&str>)?)?;
+        // 查过了还是空的：各家都在「数据来源」里停用了
+        let key = if snap.settings.all_off() { "all_off" } else { "loading" };
+        menu.append(&MenuItem::with_id(app, "info", i18n::t(lang, key), false, None::<&str>)?)?;
     }
-    for p in snap.providers.iter().filter(|p| if p.name == "Claude" { snap.settings.show_claude } else { snap.settings.show_codex }) {
+    for p in snap.providers.iter().filter(|p| snap.settings.tray_shows(&p.name)) {
         let head = match &p.plan { Some(plan) => format!("{}  {plan}", p.name), None => p.name.clone() };
         menu.append(&MenuItem::with_id(app, format!("h-{}", p.name), head, false, None::<&str>)?)?;
         if p.error.is_some() {
@@ -937,8 +1012,10 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
         if click.y < my + mh / 2.0 {
             y = click.y + 12.0;
         }
-        x = x.clamp(mx + 8.0, mx + mw - w - 8.0);
-        y = y.clamp(my + 8.0, my + mh - h - 8.0);
+        // 先 min 后 max，不用 clamp：面板比屏幕还大时 clamp 的下限大于上限会 panic（在托盘事件里就是整个程序退出）。
+        // 放不下时贴着屏幕左上角
+        x = x.min(mx + mw - w - 8.0).max(mx + 8.0);
+        y = y.min(my + mh - h - 8.0).max(my + 8.0);
     }
     let _ = f.set_position(PhysicalPosition::new(x, y));
     let _ = f.show();
@@ -1149,10 +1226,11 @@ fn main() {
             tauri::async_runtime::spawn(stats_loop(handle.clone()));
 
             // 带 --show 启动时直接打开窗口（从应用列表启动、或调试时用）；新装还没选额度来源也打开，让用户去选
+            // （只看 Claude、Codex：Gemini 默认停用，不用先选）
             let unchosen = {
                 let st = app.state::<AppState>();
                 let s = st.settings.lock().unwrap();
-                s.claude_limit_source.is_empty() || s.codex_limit_source.is_empty()
+                usage::PROVIDERS.iter().filter(|p| p.stats).any(|p| s.source_of(p.name).is_empty())
             };
             if unchosen || std::env::args().any(|a| a == "--show") {
                 show_main(&handle);

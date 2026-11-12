@@ -54,11 +54,23 @@ enum Notifier {
             sent.append(key); changed = true
             send(key, title, body)
         }
+        // 停用了的那家（结果里没有它）忘掉上次的额度：过几周再打开时，别拿旧数据报一次早就过去的「已重置」
+        last = last.filter { key, _ in results.contains { key.hasPrefix($0.name + "|") } }
+        // Gemini 没开着时退回缓存（或者没拿到额度）：忘掉上次的额度，重新打开后第一次只记下，不补报早就过去的「已重置」。
+        // Codex 接口偶尔失败一下时照旧记着
+        for u in results where u.name == "Gemini" && (u.note != nil || u.error != nil) {
+            last = last.filter { !$0.key.hasPrefix(u.name + "|") }
+        }
+        // Gemini 这次没有的额度（比如关掉了第三方模型）也忘掉：过一阵再打开时不补报早就过去的「已重置」
+        for u in results where u.name == "Gemini" && u.error == nil {
+            let ids = Set(u.windows.enumerated().map { "\(u.name)|\($1.key ?? String($0))" })
+            last = last.filter { !$0.key.hasPrefix(u.name + "|") || ids.contains($0.key) }
+        }
         for u in results where u.error == nil {
             var resets: [(label: String, used: Double, early: Bool)] = []
-            // 用位置当键，不用显示名：显示名跟着界面语言变，换了语言会重复提醒
+            // 用位置（Gemini 用 bucketId）当键，不用显示名：显示名跟着界面语言变，换了语言会重复提醒
             for (i, w) in u.windows.enumerated() {
-                let id = "\(u.name)|\(i)"
+                let id = "\(u.name)|\(w.key ?? String(i))"
                 // 接口给的重置时间常是 05:59:59.x，取到分钟，同一个周期的键才稳定
                 let cycle = w.resetsAt.map { Int(($0.timeIntervalSince1970 + 5) / 60) } ?? 0
                 let name = "\(u.name) · \(w.label)"
