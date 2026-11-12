@@ -538,20 +538,22 @@ const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
 // 卡片的固定大小（大小 100% 时，含内边距），和 macOS 版 CardSize 一样：每家一块的样式按左右、上下排，
 // 紧凑、细条、占比条是一条。同一种排列的卡片一样大，两张卡片摆在一起也整齐
 const SCALE_RANGE = [0.8, 2.5];
-function cardBase(style, layout) {
-  if (['compact', 'slim', 'share'].includes(style)) return [340, 150];
-  return layout === 'vertical' ? [296, 340] : [480, 200];
+// count：显示几家，三家时大一些（和 macOS 版一样）
+function cardBase(style, layout, count = 2) {
+  const extra = Math.max(0, count - 2);
+  if (['compact', 'slim', 'share'].includes(style)) return [340 + 180 * extra, 150 + 100 * extra];
+  return layout === 'vertical' ? [296, 340 + 220 * extra] : [480 + 240 * extra, 200 + 90 * extra];
 }
 
 // 卡片外框：固定大小，内容（连同更新时间）居中，由 fitCardContent 等比缩放填满。
-// grow：上面的大小是照两家、每家最多四个额度定的；显示的更多（三家，或 Gemini 那样五个额度）时
-// 外框跟着内容变大，而不是把所有字缩得很小
-function cardFrame(prefix, body, footer, grow = false) {
+// reference：参照内容（额度卡片：每家只留两个额度），不显示，只用来定缩放比例——字号和用量卡片一样大；
+// 实际内容比它多（Claude 的「本周 Fable」、Gemini 的几组）时外框跟着变大，而不是把所有字缩小
+function cardFrame(prefix, body, footer, count = 2, reference = null) {
   const s = state.settings, k = s[prefix + 'scale'];
-  const [w, h] = cardBase(s[prefix + 'style'], s[prefix + 'layout']);
+  const [w, h] = cardBase(s[prefix + 'style'], s[prefix + 'layout'], count);
   const style = `--s:${k};--bgop:${s[prefix + 'bg_opacity']};opacity:${s[prefix + 'opacity']};width:${w * k}px;height:${h * k}px`;
-  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" ${grow ? 'data-grow' : ''} style="${style}">
-    <div class="c-fit">${body}${footer}</div>
+  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" style="${style}">
+    <div class="c-fit">${body}${footer}</div>${reference == null ? '' : `<div class="c-fit c-ref" aria-hidden="true">${reference}${footer}</div>`}
   </div>`;
 }
 
@@ -559,17 +561,18 @@ function cardFrame(prefix, body, footer, grow = false) {
 const CARD_MAX_GROW = 1.6;
 function fitCardContent(root = document) {
   for (const box of root.querySelectorAll('.card-box')) {
-    const el = box.querySelector('.c-fit'), cs = getComputedStyle(box);
+    const el = box.querySelector('.c-fit:not(.c-ref)'), ref = box.querySelector('.c-ref'), cs = getComputedStyle(box);
     const pad = parseFloat(cs.paddingLeft) * 2;
-    // 放不下的那一边把外框撑大到正好放下（另一边不动），最大到屏幕可用区域（CSS 像素，就是卡片所在的显示器）：
-    // 三家竖排、放大以后可能比屏幕还高，再撑就有一截看不到；到顶了交给下面的等比缩小
-    if (box.hasAttribute('data-grow')) {
+    // 有参照时按参照算比例；实际内容放不下的那一边把外框撑大到正好放下，最大到屏幕可用区域
+    // （CSS 像素，就是卡片所在的显示器）：再撑就有一截看不到，到顶了交给下面的等比缩小
+    const basis = ref ?? el;
+    let fit = Math.min(CARD_MAX_GROW, (box.clientWidth - pad) / basis.offsetWidth, (box.clientHeight - pad) / basis.offsetHeight);
+    if (ref) {
       const maxW = screen.availWidth - 24, maxH = screen.availHeight - 24;
-      if (el.offsetWidth + pad > box.clientWidth) box.style.width = `${Math.min(maxW, Math.ceil(el.offsetWidth + pad))}px`;
-      if (el.offsetHeight + pad > box.clientHeight) box.style.height = `${Math.min(maxH, Math.ceil(el.offsetHeight + pad))}px`;
+      if (el.offsetWidth * fit + pad > box.clientWidth) box.style.width = `${Math.min(maxW, Math.ceil(el.offsetWidth * fit + pad))}px`;
+      if (el.offsetHeight * fit + pad > box.clientHeight) box.style.height = `${Math.min(maxH, Math.ceil(el.offsetHeight * fit + pad))}px`;
+      fit = Math.min(fit, (box.clientWidth - pad) / el.offsetWidth, (box.clientHeight - pad) / el.offsetHeight);
     }
-    const room = [box.clientWidth - pad, box.clientHeight - pad];
-    const fit = Math.min(CARD_MAX_GROW, room[0] / el.offsetWidth, room[1] / el.offsetHeight);
     el.style.transform = fit !== 1 ? `scale(${fit})` : '';
   }
 }
@@ -655,18 +658,23 @@ function statsCardPage() {
 // 每家一块：左右排或上下排
 const arranged = (layout, items) => `<div class="c-cols ${layout === 'vertical' ? 'vertical' : ''}">${items.join('')}</div>`;
 
-function cardPage() {
+function cardBody(shown) {
   const s = state.settings;
-  const shown = shownProviders();
-  const body = state.providers.length === 0 ? `<div class="c-reset">${t(allOff() ? 'all_off' : 'loading')}</div>`
+  return state.providers.length === 0 ? `<div class="c-reset">${t(allOff() ? 'all_off' : 'loading')}</div>`
     : s.card_style === 'compact' ? (() => {
       const cols = Math.max(2, ...shown.map(compactCells));
       return `<div class="c-lines" style="grid-template-columns: repeat(${cols}, max-content)">${shown.map((p) => cardCompactRow(p, cols)).join('')}</div>`;
     })()
     : s.card_style === 'slim' ? `<div class="c-slim">${shown.map(slimRows).join('')}</div>`
     : arranged(s.card_layout, shown.map(s.card_style === 'big' ? bigBlock : s.card_style === 'rings' ? ringBlock : cardColumn));
-  const grow = shown.length > 2 || shown.some((p) => p.windows.length > 4);
-  return cardFrame('card_', body, state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : '', grow);
+}
+
+function cardPage() {
+  const shown = shownProviders();
+  // 参照：每家只留前两个额度（5 小时和本周，原来的样子），字号按它算
+  const reference = shown.map((p) => ({ ...p, windows: p.windows.slice(0, 2) }));
+  return cardFrame('card_', cardBody(shown), state.updated ? `<div class="c-updated">${t('updated', clock(state.updated))}</div>` : '',
+    shown.length, cardBody(reference));
 }
 
 // 卡片窗口的大小跟着内容走

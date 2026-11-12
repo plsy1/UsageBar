@@ -2147,6 +2147,8 @@ struct CardPreview: View {
     @AppStorage var scale: Double
     @AppStorage var textColor: String
     @StateObject var flags: ProviderFlags
+    /// 卡片实际画出来的大小（额度多时比固定尺寸高）：预览框按它缩
+    @State var measured = CGSize.zero
 
     init(keys: CardKeys, model: UsageModel, stats: StatsStore) {
         self.keys = keys
@@ -2168,7 +2170,8 @@ struct CardPreview: View {
             // 白字配深色底，黑字配浅色底
             let dark = textColor == "white"
             // 按 100% 的样子缩进预览框：调「大小」时预览不跟着变，只有桌面上的卡片变
-            let base = CGSize(width: cardSize.width / scale, height: cardSize.height / scale)
+            let actual = measured.width > 0 && measured.height > 0 ? measured : cardSize
+            let base = CGSize(width: actual.width / scale, height: actual.height / scale)
             let fitBase = min(1, (g.size.width - 48) / base.width, (g.size.height - 48) / base.height)
             let fit = fitBase / scale
             ZStack {
@@ -2178,6 +2181,10 @@ struct CardPreview: View {
                 Group {
                     if keys.stats { StatsCardView(stats: stats, model: model) } else { CardView(model: model) }
                 }
+                .fixedSize()
+                .background(GeometryReader { g in
+                    Color.clear.onAppear { measured = g.size }.onChange(of: g.size) { measured = $0 }
+                })
                 .allowsHitTesting(false)
                 .scaleEffect(fit)
                 // scaleEffect 只缩画面不缩占位，占位也按缩放后的尺寸来，免得撑出预览框
@@ -2623,22 +2630,80 @@ extension CGSize {
 struct CardFrame: ViewModifier {
     let size: CGSize      // 已乘过大小比例
     let padding: CGFloat
+    /// 参照内容（额度卡片：每家只留两个额度）：缩放比例按它算，实际内容比它多的部分让卡片变大，字号不变。
+    /// 没有参照（用量卡片）就按实际内容算，卡片大小固定
+    var reference: AnyView? = nil
     @State var natural = CGSize.zero
+    @State var refNatural = CGSize.zero
+    /// 卡片所在那块屏幕的可用区域（挪到别的屏、改分辨率时跟着变）
+    @State var screen: CGSize?
     static let maxGrow: CGFloat = 1.6
 
     func body(content: Content) -> some View {
         let inner = CGSize(width: size.width - padding * 2, height: size.height - padding * 2)
         // 放不下就缩小，有空就放大（最多 CardFrame.maxGrow 倍），尽量把卡片填满
-        let fit = natural.width > 0 && natural.height > 0 ? min(Self.maxGrow, inner.width / natural.width, inner.height / natural.height) : 1
+        let basis = reference == nil ? natural : refNatural
+        var fit = basis.width > 0 && basis.height > 0 ? min(Self.maxGrow, inner.width / basis.width, inner.height / basis.height) : 1
+        var box = inner
+        if reference != nil, natural.width > 0, natural.height > 0 {
+            // 最大到卡片所在屏幕的可用区域：再大就有一截看不到，到顶了再等比缩小
+            let area = screen ?? CGSize(width: 10000, height: 10000)
+            let limit = CGSize(width: area.width - 24 - padding * 2, height: area.height - 24 - padding * 2)
+            box = CGSize(width: min(limit.width, max(inner.width, natural.width * fit)),
+                         height: min(limit.height, max(inner.height, natural.height * fit)))
+            fit = min(fit, box.width / natural.width, box.height / natural.height)
+        }
         return content
             .fixedSize()
             .background(GeometryReader { g in
                 Color.clear.onAppear { natural = g.size }.onChange(of: g.size) { natural = $0 }
             })
             .scaleEffect(fit)
-            .frame(width: inner.width, height: inner.height)
+            .frame(width: box.width, height: box.height)
+            // 参照只量大小，不显示（background 不占位置）
+            .background {
+                if reference != nil { ScreenReader(size: $screen) }
+                if let reference {
+                    reference.fixedSize().hidden().background(GeometryReader { g in
+                        Color.clear.onAppear { refNatural = g.size }.onChange(of: g.size) { refNatural = $0 }
+                    })
+                }
+            }
             .padding(padding)
     }
+}
+
+/// 量出所在窗口那块屏幕的可用区域：窗口挪到别的屏、屏幕参数变了时重新报
+struct ScreenReader: NSViewRepresentable {
+    @Binding var size: CGSize?
+    func makeNSView(context: Context) -> ScreenProbe { ScreenProbe() }
+    func updateNSView(_ v: ScreenProbe, context: Context) {
+        v.onChange = { new in if size != new { size = new } }
+    }
+}
+
+final class ScreenProbe: NSView {
+    var onChange: ((CGSize?) -> Void)?
+    private var observers: [NSObjectProtocol] = []
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        guard let w = window else { return }
+        observers = [
+            NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: w, queue: .main) { [weak self] _ in self?.report() },
+            NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.report() },
+        ]
+        report()
+    }
+
+    /// 放到下一轮再报：不在 SwiftUI 更新视图的途中改状态
+    private func report() {
+        DispatchQueue.main.async { [weak self] in self?.onChange?(self?.window?.screen?.visibleFrame.size) }
+    }
+
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 }
 
 /// 毛玻璃背景（透出壁纸）
@@ -2730,6 +2795,38 @@ struct CardView: View {
         let _ = (language, displayMode)  // 切换语言或显示方式时重绘
         let white = textColor == "white"
         let shown = model.results.filter { flags[$0.name] }
+        // 参照：每家只留前两个额度（5 小时和本周，原来的样子）。字号按它算，和用量卡片一样大；
+        // 多出来的额度（Claude 的「本周 Fable」、Gemini 的几组）让卡片变高，而不是把所有字缩小
+        let reference = shown.map { u -> ProviderUsage in var u = u; u.windows = Array(u.windows.prefix(2)); return u }
+        content(shown)
+        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout, count: flags.count) * s, padding: 16 * s,
+                            reference: AnyView(content(reference))))
+        .environment(\.colorScheme, white ? .dark : .light)
+        // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
+        .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
+        .background {
+            if background != "none" {
+                Blur(dark: background == "dark")
+                    .clipShape(RoundedRectangle(cornerRadius: 20 * s, style: .continuous))
+                    .opacity(bgOpacity)
+            }
+        }
+        .opacity(opacity)
+        .contextMenu {
+            Button { model.onRefresh() } label: { Label(L("立即刷新"), systemImage: "arrow.clockwise") }
+            Button { model.onOpen() } label: { Label(L("打开 UsageBar…"), systemImage: "macwindow") }
+            Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
+            Divider()
+            Toggle(L("保持在最前"), isOn: $onTop)
+            Button { model.onHide() } label: { Label(L("隐藏额度卡片"), systemImage: "eye.slash") }
+        }
+    }
+}
+
+extension CardView {
+    /// 每家一块：左右排或上下排
+    /// 卡片的内容（不含外框）：实际显示的，或者用来定字号的参照（每家只留两个额度）
+    @ViewBuilder func content(_ shown: [ProviderUsage]) -> some View {
         VStack(alignment: .leading, spacing: (style == "compact" ? 10 : 14) * s) {
             if model.results.isEmpty {
                 // 查过了还是空的：每家都在「数据来源」里关掉了
@@ -2757,31 +2854,8 @@ struct CardView: View {
                     .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
-        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout, count: flags.count) * s, padding: 16 * s))
-        .environment(\.colorScheme, white ? .dark : .light)
-        // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
-        .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
-        .background {
-            if background != "none" {
-                Blur(dark: background == "dark")
-                    .clipShape(RoundedRectangle(cornerRadius: 20 * s, style: .continuous))
-                    .opacity(bgOpacity)
-            }
-        }
-        .opacity(opacity)
-        .contextMenu {
-            Button { model.onRefresh() } label: { Label(L("立即刷新"), systemImage: "arrow.clockwise") }
-            Button { model.onOpen() } label: { Label(L("打开 UsageBar…"), systemImage: "macwindow") }
-            Button { model.onCardSettings() } label: { Label(L("卡片设置…"), systemImage: "slider.horizontal.3") }
-            Divider()
-            Toggle(L("保持在最前"), isOn: $onTop)
-            Button { model.onHide() } label: { Label(L("隐藏额度卡片"), systemImage: "eye.slash") }
-        }
     }
-}
 
-extension CardView {
-    /// 每家一块：左右排或上下排
     @ViewBuilder func arranged<V: View>(_ items: [ProviderUsage], _ block: @escaping (ProviderUsage) -> V) -> some View {
         if layout == "vertical" {
             VStack(alignment: .leading, spacing: 20 * s) { ForEach(items, id: \.name, content: block) }
