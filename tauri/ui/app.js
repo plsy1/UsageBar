@@ -552,7 +552,11 @@ function cardFrame(prefix, body, footer, count = 2, reference = null) {
   const s = state.settings, k = s[prefix + 'scale'];
   const [w, h] = cardBase(s[prefix + 'style'], s[prefix + 'layout'], count);
   const style = `--s:${k};--bgop:${s[prefix + 'bg_opacity']};opacity:${s[prefix + 'opacity']};width:${w * k}px;height:${h * k}px`;
-  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" style="${style}">
+  // data-kind / data-key：和另一张卡片共用缩放比例用（样式、排列一样的才共用）；data-w / data-h：重新算之前先回到固定大小
+  // 紧凑、细条、占比不分排列（排列选项是灰的，存着的可能是以前留下的），只看样式
+  const st = s[prefix + 'style'], kind = prefix === 'card_' ? 'card' : 'stats_card';
+  const key = ['compact', 'slim', 'share'].includes(st) ? st : `${st}|${s[prefix + 'layout']}`;
+  return `<div class="card-box bg-${esc(s[prefix + 'background'])} text-${esc(s[prefix + 'text'])}" data-kind="${kind}" data-key="${esc(key)}" data-w="${w * k}px" data-h="${h * k}px" style="${style}">
     <div class="c-fit">${body}${footer}</div>${reference == null ? '' : `<div class="c-fit c-ref" aria-hidden="true">${reference}${footer}</div>`}
   </div>`;
 }
@@ -563,10 +567,19 @@ function fitCardContent(root = document) {
   for (const box of root.querySelectorAll('.card-box')) {
     const el = box.querySelector('.c-fit:not(.c-ref)'), ref = box.querySelector('.c-ref'), cs = getComputedStyle(box);
     const pad = parseFloat(cs.paddingLeft) * 2;
+    // 上次撑大过的先回到固定大小（另一张卡片的比例变了时只重算、不重画）
+    box.style.width = box.dataset.w;
+    box.style.height = box.dataset.h;
     // 有参照时按参照算比例；实际内容放不下的那一边把外框撑大到正好放下，最大到屏幕可用区域
     // （CSS 像素，就是卡片所在的显示器）：再撑就有一截看不到，到顶了交给下面的等比缩小
     const basis = ref ?? el;
-    let fit = Math.min(CARD_MAX_GROW, (box.clientWidth - pad) / basis.offsetWidth, (box.clientHeight - pad) / basis.offsetHeight);
+    const own = Math.min(CARD_MAX_GROW, (box.clientWidth - pad) / basis.offsetWidth, (box.clientHeight - pad) / basis.offsetHeight);
+    // 两张卡片样式、排列一样时用两边较小的那个比例：字一样大，内容少的那张留点空。
+    // 桌面上的卡片窗口把自己算出的比例报给另一张（报的是自己的、不是取过最小的，不会越缩越小）；设置里的预览只读
+    const kind = box.dataset.kind, other = kind === 'card' ? 'stats_card' : 'card';
+    if ((CARD && kind === 'card') || (STATS_CARD && kind === 'stats_card')) shareCardFit(kind, box.dataset.key, own);
+    const theirs = readCardFit(other);
+    let fit = theirs && theirs.key === box.dataset.key && state.settings[other + '_show'] ? Math.min(own, theirs.fit) : own;
     if (ref) {
       const maxW = screen.availWidth - 24, maxH = screen.availHeight - 24;
       if (el.offsetWidth * fit + pad > box.clientWidth) box.style.width = `${Math.min(maxW, Math.ceil(el.offsetWidth * fit + pad))}px`;
@@ -576,6 +589,33 @@ function fitCardContent(root = document) {
     el.style.transform = fit !== 1 ? `scale(${fit})` : '';
   }
 }
+
+// 卡片之间互报缩放比例：两张卡片是两个窗口，同一个来源，用 localStorage 传（改了另一个窗口会收到 storage 事件）
+function shareCardFit(kind, key, fit) {
+  try {
+    const v = JSON.stringify({ key, fit: Math.round(fit * 1000) / 1000 });
+    if (localStorage.getItem(`cardFit.${kind}`) !== v) localStorage.setItem(`cardFit.${kind}`, v);
+  } catch { /* 存不了就各算各的 */ }
+}
+function readCardFit(kind) {
+  try { return JSON.parse(localStorage.getItem(`cardFit.${kind}`)); } catch { return null; }
+}
+// 只管跟自己有关的：卡片窗口只看另一张卡片的，而且新旧值里至少有一个和自己同组（拖动改大小时另一张会一直变，
+// 不相干的不跟着重算）；外框大小真变了才让窗口跟着改
+window.addEventListener('storage', (e) => {
+  if (!e.key?.startsWith('cardFit.') || !state?.settings) return;
+  if (ANY_CARD) {
+    if (e.key !== `cardFit.${STATS_CARD ? 'card' : 'stats_card'}`) return;
+    const box = document.querySelector('.card-box');
+    if (!box) return;
+    const keyOf = (v) => { try { return JSON.parse(v)?.key; } catch { return null; } };
+    if (keyOf(e.newValue) !== box.dataset.key && keyOf(e.oldValue) !== box.dataset.key) return;
+    const before = box.getBoundingClientRect();
+    fitCardContent();
+    const after = box.getBoundingClientRect();
+    if (after.width !== before.width || after.height !== before.height) fitCard();
+  } else if (page === 'card') { fitCardContent(); fitCardPreview(); }
+});
 
 // MARK: 用量卡片
 

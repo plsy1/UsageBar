@@ -2298,7 +2298,8 @@ struct StatsCardView: View {
                     .font(.system(size: 10 * s)).foregroundStyle(.tertiary)
             }
         }
-        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout) * s, padding: 16 * s))
+        // 和额度卡片样式、排列一样时共用缩放比例，字一样大
+        .modifier(CardFrame(size: CardSize.base(style: style, layout: layout) * s, padding: 16 * s, share: visible ? CardSize.shareKey(style: style, layout: layout) : nil))
         .environment(\.colorScheme, white ? .dark : .light)
         // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
         .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)

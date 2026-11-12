@@ -2622,6 +2622,14 @@ enum CardSize {
     }
 }
 
+extension CardSize {
+    /// 两张卡片共用缩放比例的分组：样式一样、排列一样。紧凑、细条、占比这几种不分排列（排列选项是灰的，
+    /// 存着的可能是以前留下的），只看样式
+    static func shareKey(style: String, layout: String) -> String {
+        ["compact", "slim", "share"].contains(style) ? style : "\(style)|\(layout)"
+    }
+}
+
 extension CGSize {
     static func * (a: CGSize, k: CGFloat) -> CGSize { CGSize(width: a.width * k, height: a.height * k) }
 }
@@ -2635,17 +2643,25 @@ struct CardFrame: ViewModifier {
     var reference: AnyView? = nil
     @State var natural = CGSize.zero
     @State var refNatural = CGSize.zero
+    /// 和另一张卡片共用缩放比例的分组（「样式|排列」）；卡片没显示时为空，不参加
+    var share: String? = nil
     /// 卡片所在那块屏幕的可用区域（挪到别的屏、改分辨率时跟着变）
     @State var screen: CGSize?
+    @State var id = UUID()
+    @ObservedObject var scales = CardScales.shared
     static let maxGrow: CGFloat = 1.6
 
     func body(content: Content) -> some View {
         let inner = CGSize(width: size.width - padding * 2, height: size.height - padding * 2)
         // 放不下就缩小，有空就放大（最多 CardFrame.maxGrow 倍），尽量把卡片填满
         let basis = reference == nil ? natural : refNatural
-        var fit = basis.width > 0 && basis.height > 0 ? min(Self.maxGrow, inner.width / basis.width, inner.height / basis.height) : 1
+        let measured = basis.width > 0 && basis.height > 0
+        let own = measured ? min(Self.maxGrow, inner.width / basis.width, inner.height / basis.height) : 1
+        // 两张卡片样式、排列一样时用两边较小的那个比例：字一样大，内容少的那张留点空
+        let entry = measured ? share.map { CardScales.Entry(key: $0, fit: own) } : nil
+        var fit = min(own, share.flatMap(scales.fit(for:)) ?? own)
         var box = inner
-        if reference != nil, natural.width > 0, natural.height > 0 {
+        if reference != nil || share != nil, natural.width > 0, natural.height > 0 {
             // 最大到卡片所在屏幕的可用区域：再大就有一截看不到，到顶了再等比缩小
             let area = screen ?? CGSize(width: 10000, height: 10000)
             let limit = CGSize(width: area.width - 24 - padding * 2, height: area.height - 24 - padding * 2)
@@ -2660,9 +2676,12 @@ struct CardFrame: ViewModifier {
             })
             .scaleEffect(fit)
             .frame(width: box.width, height: box.height)
+            .onAppear { report(entry) }
+            .onChange(of: entry) { report($0) }
+            .onDisappear { report(nil) }
             // 参照只量大小，不显示（background 不占位置）
             .background {
-                if reference != nil { ScreenReader(size: $screen) }
+                if reference != nil || share != nil { ScreenReader(size: $screen) }
                 if let reference {
                     reference.fixedSize().hidden().background(GeometryReader { g in
                         Color.clear.onAppear { refNatural = g.size }.onChange(of: g.size) { refNatural = $0 }
@@ -2671,6 +2690,27 @@ struct CardFrame: ViewModifier {
             }
             .padding(padding)
     }
+
+    /// 放到下一轮再报：不在 SwiftUI 更新视图的途中改共享的状态
+    func report(_ entry: CardScales.Entry?) {
+        let id = id
+        DispatchQueue.main.async { CardScales.shared.report(id, entry) }
+    }
+}
+
+/// 两张卡片样式和排列一样时共用一个缩放比例：每张卡片（包括设置里的预览）报自己算出的，
+/// 同一组（「样式|排列」）里取最小的。报的是各自的、不是取过最小的，不会互相越缩越小
+final class CardScales: ObservableObject {
+    static let shared = CardScales()
+    struct Entry: Equatable { let key: String; let fit: CGFloat }
+    @Published private(set) var entries: [UUID: Entry] = [:]
+
+    func report(_ id: UUID, _ entry: Entry?) {
+        guard entries[id] != entry else { return }
+        entries[id] = entry
+    }
+
+    func fit(for key: String) -> CGFloat? { entries.values.filter { $0.key == key }.map(\.fit).min() }
 }
 
 /// 量出所在窗口那块屏幕的可用区域：窗口挪到别的屏、屏幕参数变了时重新报
@@ -2800,7 +2840,7 @@ struct CardView: View {
         let reference = shown.map { u -> ProviderUsage in var u = u; u.windows = Array(u.windows.prefix(2)); return u }
         content(shown)
         .modifier(CardFrame(size: CardSize.base(style: style, layout: layout, count: flags.count) * s, padding: 16 * s,
-                            reference: AnyView(content(reference))))
+                            reference: AnyView(content(reference)), share: visible ? CardSize.shareKey(style: style, layout: layout) : nil))
         .environment(\.colorScheme, white ? .dark : .light)
         // 没有背景时直接显示在壁纸上，加一层淡阴影保证看得清
         .shadow(color: background == "none" ? (white ? Color.black : Color.white).opacity(0.6) : Color.clear, radius: 2, y: 1)
